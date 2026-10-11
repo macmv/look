@@ -8,14 +8,17 @@ import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.texture.MissingTextureAtlasSprite;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.core.SectionPos;
+import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -56,6 +59,8 @@ public final class VoxelWorld {
 
   private static final LinkedHashSet<Long> dirty = new LinkedHashSet<>();
   private static final LinkedHashSet<Long> unloads = new LinkedHashSet<>();
+  /** Raw packet data per chunk (keyed by {@link ChunkPos#toLong}), consumed as sections rebuild. */
+  private static final Map<Long, WireChunk> wire = new HashMap<>();
 
   private static ClientLevel level;
   private static int minSection;
@@ -142,20 +147,36 @@ public final class VoxelWorld {
   // --- Events (cheap, no GL) -------------------------------------------------------------------
 
   public static void markDirty(int sx, int sy, int sz) {
-    // While vanilla renders nothing drains the queue; refreshAll() rebuilds everything on enable.
-    if (!LookState.voxelEnabled || !trackLevel()) return;
+    if (!trackLevel()) return;
     if (sy < minSection || sy >= minSection + sectionCount) return;
     dirty.add(SectionPos.asLong(sx, sy, sz));
   }
 
+  /**
+   * Remembers the section bytes of a chunk packet so its sections can be decoded without touching
+   * the live chunk. Must be called before vanilla consumes {@code buf}; this only reads a view.
+   */
+  public static void ingestWire(int cx, int cz, FriendlyByteBuf buf) {
+    if (!trackLevel()) return;
+    WireChunk chunk = WireChunk.parse(new FriendlyByteBuf(buf.duplicate()), sectionCount);
+    if (chunk == null) wire.remove(ChunkPos.asLong(cx, cz));
+    else wire.put(ChunkPos.asLong(cx, cz), chunk);
+  }
+
+  /** A block in this chunk changed, so its packet snapshot is stale. */
+  public static void invalidateWire(int cx, int cz) {
+    if (!wire.isEmpty()) wire.remove(ChunkPos.asLong(cx, cz));
+  }
+
   public static void unloadChunk(ChunkPos pos) {
-    if (!LookState.voxelEnabled || !trackLevel()) return;
+    wire.remove(pos.toLong());
+    if (!trackLevel()) return;
     unloads.add(pos.toLong());
   }
 
   /**
    * Throws away all voxel data and queues every loaded section for a rebuild, nearest first. Used
-   * when the voxel renderer is switched back on, since events are ignored while it is off.
+   * after a resource reload, which invalidates every voxel id.
    */
   public static void refreshAll() {
     Minecraft mc = Minecraft.getInstance();
@@ -208,6 +229,7 @@ public final class VoxelWorld {
 
     dirty.clear();
     unloads.clear();
+    wire.clear();
     resetSlots();
     indirectionStale = true;
   }
@@ -346,8 +368,12 @@ public final class VoxelWorld {
       return;
     }
 
-    LevelChunkSection section = chunk.getSection(chunk.getSectionIndexFromSectionY(sy));
-    if (section.hasOnlyAir() || convert(section) == 0) {
+    int solid = convertWire(sx, sy, sz);
+    if (solid < 0) {
+      LevelChunkSection section = chunk.getSection(chunk.getSectionIndexFromSectionY(sy));
+      solid = section.hasOnlyAir() ? 0 : convert(section);
+    }
+    if (solid == 0) {
       clearIfOwner(key, sx, sy, sz);
       return;
     }
@@ -379,7 +405,21 @@ public final class VoxelWorld {
     writeCell(sx, sy, sz, slot + 1);
   }
 
-  /** Fills {@link #brickScratch} with voxel ids and returns how many are non-air. */
+  /**
+   * Fills {@link #brickScratch} from the packet data of this section and returns how many voxels
+   * are non-air, or -1 if there is no usable packet data (then use {@link #convert}).
+   */
+  private static int convertWire(int sx, int sy, int sz) {
+    long chunkKey = ChunkPos.asLong(sx, sz);
+    WireChunk chunk = wire.get(chunkKey);
+    if (chunk == null) return -1;
+
+    int solid = chunk.take(sy - minSection, brickScratch);
+    if (chunk.isDone()) wire.remove(chunkKey);
+    return solid;
+  }
+
+  /** Slow path: fills {@link #brickScratch} from the live chunk, one block state at a time. */
   private static int convert(LevelChunkSection section) {
     ByteBuffer b = brickScratch;
     int solid = 0;

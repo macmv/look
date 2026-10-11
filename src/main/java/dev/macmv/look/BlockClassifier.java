@@ -72,11 +72,24 @@ public final class BlockClassifier {
       Arrays.fill(voxelIds, UNKNOWN);
     }
 
-    int stateId = Block.BLOCK_STATE_REGISTRY.getId(state);
+    return voxelIdOfStateId(Block.BLOCK_STATE_REGISTRY.getId(state), state);
+  }
+
+  /** Same as {@link #voxelId(BlockState)}, for a raw block state id as sent over the wire. */
+  public static int voxelIdOfStateId(int stateId) {
+    return voxelIdOfStateId(stateId, null);
+  }
+
+  private static int voxelIdOfStateId(int stateId, BlockState state) {
+    if (voxelIds == null) {
+      voxelIds = new int[Block.BLOCK_STATE_REGISTRY.size()];
+      Arrays.fill(voxelIds, UNKNOWN);
+    }
     if (stateId < 0 || stateId >= voxelIds.length) return 0;
 
     int id = voxelIds[stateId];
     if (id == UNKNOWN) {
+      if (state == null) state = Block.stateById(stateId);
       id = classify(state);
       voxelIds[stateId] = id;
     }
