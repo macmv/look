@@ -1,10 +1,12 @@
-//! Pure voxel-brick logic. No JNI in here so it can be unit tested and benchmarked on its own.
+//! Pure voxel-brick logic. No JNI in here so it can be unit tested and
+//! benchmarked on its own.
 
 /// Edge length of a brick, in voxels. One brick is one 16x16x16 chunk section.
 pub const BRICK: usize = 16;
 /// Number of voxels in a brick.
 pub const BRICK_VOLUME: usize = BRICK * BRICK * BRICK;
-/// Edge length of an occupancy cell, in voxels. Each cell is a 4x4x4 block tracked by a u64 mask.
+/// Edge length of an occupancy cell, in voxels. Each cell is a 4x4x4 block
+/// tracked by a u64 mask.
 pub const CELL: usize = 4;
 /// Cells per brick edge.
 pub const CELLS: usize = BRICK / CELL;
@@ -14,14 +16,14 @@ pub const CELL_COUNT: usize = CELLS * CELLS * CELLS;
 /// Block id 0 is air; everything else is solid for occupancy purposes.
 pub const AIR: u16 = 0;
 
-/// Index of a voxel inside a brick. Layout is x fastest, then z, then y (same as vanilla sections).
+/// Index of a voxel inside a brick. Layout is x fastest, then z, then y (same
+/// as vanilla sections).
 #[inline]
-pub fn voxel_index(x: usize, y: usize, z: usize) -> usize {
-  (y * BRICK + z) * BRICK + x
-}
+pub fn voxel_index(x: usize, y: usize, z: usize) -> usize { (y * BRICK + z) * BRICK + x }
 
-/// Builds one 64-bit occupancy mask per 4x4x4 cell. Bit `(y * 4 + z) * 4 + x` of a cell mask is
-/// set when that voxel is not air. Cells are laid out in the same x/z/y order as voxels.
+/// Builds one 64-bit occupancy mask per 4x4x4 cell. Bit `(y * 4 + z) * 4 + x`
+/// of a cell mask is set when that voxel is not air. Cells are laid out in the
+/// same x/z/y order as voxels.
 pub fn build_occupancy(ids: &[u16; BRICK_VOLUME], out: &mut [u64; CELL_COUNT]) {
   out.fill(0);
 

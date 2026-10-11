@@ -1,13 +1,15 @@
-//! JNI entry points for the look mod. Keep this layer thin: marshal arguments, call into the
-//! pure modules, and never let a panic cross the JNI boundary.
+//! JNI entry points for the look mod. Keep this layer thin: marshal arguments,
+//! call into the pure modules, and never let a panic cross the JNI boundary.
 
 mod brick;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use jni::objects::{JByteBuffer, JClass};
-use jni::sys::jstring;
-use jni::JNIEnv;
+use jni::{
+  objects::{JByteBuffer, JClass},
+  sys::jstring,
+  JNIEnv,
+};
 
 /// Runs `f`, converting any panic or error into a Java `RuntimeException`.
 fn guard<T: Default>(env: &mut JNIEnv, f: impl FnOnce(&mut JNIEnv) -> Result<T, String>) -> T {
@@ -37,8 +39,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_version<'l>(
   })
 }
 
-/// Reads a 16^3 brick of u16 block ids (native endian, direct buffer) and writes 64 u64
-/// occupancy masks (direct buffer, native endian).
+/// Reads a 16^3 brick of u16 block ids (native endian, direct buffer) and
+/// writes 64 u64 occupancy masks (direct buffer, native endian).
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_buildOccupancy<'l>(
   mut env: JNIEnv<'l>,
@@ -64,8 +66,9 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_buildOccupancy<'l>(
       return Err("direct buffers must be aligned (use allocateDirect)".into());
     }
 
-    // SAFETY: sizes and alignment were checked above, and Java owns both buffers for the duration
-    // of this call. The two buffers are distinct allocations.
+    // SAFETY: sizes and alignment were checked above, and Java owns both
+    // buffers for the duration of this call. The two buffers are distinct
+    // allocations.
     let ids = unsafe { &*(ids_ptr as *const [u16; brick::BRICK_VOLUME]) };
     let out = unsafe { &mut *(out_ptr as *mut [u64; brick::CELL_COUNT]) };
 
