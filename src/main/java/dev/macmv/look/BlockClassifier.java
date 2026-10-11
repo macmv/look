@@ -14,7 +14,10 @@ import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.EmptyBlockGetter;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -73,6 +76,14 @@ public final class BlockClassifier {
   /** Set in the color table (above the RGB bits) for blocks that cast ambient occlusion. */
   public static final int OCCLUDER_BIT = 1 << 24;
 
+  /**
+   * How much a block wants to represent its cell in a coarse level, 0..{@link #LEAVES}. See
+   * {@link #priorityOf}.
+   */
+  public static final int LEAVES = 7;
+
+  private static final byte[] priorities = new byte[MAX_ID + 1];
+
   private static final int UNKNOWN = -1;
   private static final int FALLBACK_COLOR = 0xA0B8C8;
 
@@ -97,6 +108,7 @@ public final class BlockClassifier {
     nextId = 1;
     warnedFull = false;
     Arrays.fill(colors, 0);
+    Arrays.fill(priorities, (byte) 0);
     Arrays.fill(faces, 0f);
     colorsDirty = true;
     dirtyMin = 0;
@@ -154,6 +166,7 @@ public final class BlockClassifier {
     } catch (RuntimeException e) {
       color = 0;
     }
+    priorities[id] = (byte) priorityOf(state);
     colors[id] = (color == 0 ? FALLBACK_COLOR : color) & 0xFFFFFF;
     if (state.canOcclude()) colors[id] |= OCCLUDER_BIT;
     colorsDirty = true;
@@ -168,6 +181,28 @@ public final class BlockClassifier {
     dirtyMax = Math.max(dirtyMax, id);
 
     return id;
+  }
+
+  /** Priority of a voxel id for {@link LodReduce}; 0 for air. */
+  public static int priority(int id) {
+    return priorities[id];
+  }
+
+  /**
+   * Hardcoded by tag, in order of how much a block dominates the view of a surface from far away:
+   * leaves, snow, grass-like tops, sand and terracotta, everything else, logs, dirt and stone, ores.
+   */
+  private static int priorityOf(BlockState state) {
+    if (state.is(BlockTags.LEAVES)) return LEAVES;
+    if (state.is(Blocks.SNOW_BLOCK) || state.is(Blocks.ICE) || state.is(Blocks.PACKED_ICE)) return 6;
+    if (state.is(Blocks.GRASS_BLOCK) || state.is(Blocks.MYCELIUM) || state.is(Blocks.PODZOL)
+        || state.is(Blocks.CRIMSON_NYLIUM) || state.is(Blocks.WARPED_NYLIUM)) return 5;
+    if (state.is(BlockTags.SAND) || state.is(BlockTags.TERRACOTTA) || state.is(Blocks.GRAVEL)
+        || state.is(Blocks.RED_SAND)) return 4;
+    if (BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath().endsWith("_ore")) return 1;
+    if (state.is(BlockTags.DIRT) || state.is(BlockTags.BASE_STONE_OVERWORLD)) return 2;
+    if (state.is(BlockTags.LOGS)) return 2;
+    return 3;
   }
 
   // --- Face table ------------------------------------------------------------------------------

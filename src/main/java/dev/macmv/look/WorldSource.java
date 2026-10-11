@@ -6,7 +6,10 @@ import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
@@ -215,8 +218,9 @@ public final class WorldSource implements VoxelSource {
   private static int sampledColumns;
 
   /**
-   * One block per voxel, taken from the middle of its cube. Cheap (4096 lookups however coarse the
-   * level) but it aliases: anything thinner than a voxel can vanish. Fine for terrain.
+   * Each voxel is reduced from a 2x2x2 sample of its cube by {@link LodReduce}, so grass, leaves and
+   * snow on the surface win over what is under them. Sampling is cheap however coarse the level (a
+   * fixed 8 blocks per voxel), but anything thinner than the sample spacing can still vanish.
    *
    * <p>Columns whose chunk is not loaded are written as air, or skipped with {@code keepMissing}.
    * Returns the number of non-air voxels written; {@link #sampledColumns} gets the loaded columns.
@@ -225,37 +229,56 @@ public final class WorldSource implements VoxelSource {
       ClientLevel l, int level, int sx, int sy, int sz, ByteBuffer out, boolean keepMissing) {
     int size = 1 << level;
     int half = size >> 1;
+    int lo = size >> 2;
+    int hi = (size * 3) >> 2;
     int x0 = sx << (level + 4);
     int y0 = sy << (level + 4);
     int z0 = sz << (level + 4);
-    int minY = l.getMinBuildHeight();
-    int maxY = l.getMaxBuildHeight();
 
     int solid = 0;
     int columns = 0;
-    LevelChunk chunk = null;
-    int chunkX = Integer.MIN_VALUE;
-    int chunkZ = Integer.MIN_VALUE;
+    BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+    int[] samples = new int[8];
+    boolean[] exposed = new boolean[8];
 
     for (int z = 0; z < 16; z++) {
       for (int x = 0; x < 16; x++) {
-        int bx = x0 + x * size + half;
-        int bz = z0 + z * size + half;
-        if ((bx >> 4) != chunkX || (bz >> 4) != chunkZ) {
-          chunkX = bx >> 4;
-          chunkZ = bz >> 4;
-          chunk = l.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
-          if (chunk != null) TintMap.ensureChunk(l, chunk);
+        int cx = x0 + x * size + half;
+        int cz = z0 + z * size + half;
+        LevelChunk center = l.getChunkSource().getChunk(cx >> 4, cz >> 4, ChunkStatus.FULL, false);
+        if (center != null) {
+          TintMap.ensureChunk(l, center);
+          columns++;
+        } else if (keepMissing) {
+          continue;
         }
-        if (chunk != null) columns++;
-        else if (keepMissing) continue;
 
         for (int y = 0; y < 16; y++) {
-          int by = y0 + y * size + half;
           int id = 0;
-          if (chunk != null && by >= minY && by < maxY) {
-            LevelChunkSection section = chunk.getSection(chunk.getSectionIndex(by));
-            if (!section.hasOnlyAir()) id = BlockClassifier.voxelId(section.getBlockState(bx & 15, by & 15, bz & 15));
+          if (center != null) {
+            int n = 0;
+            for (int dy = 0; dy < 2; dy++) {
+              for (int dz = 0; dz < 2; dz++) {
+                for (int dx = 0; dx < 2; dx++) {
+                  int bx = x0 + x * size + (dx == 0 ? lo : hi);
+                  int by = y0 + y * size + (dy == 0 ? lo : hi);
+                  int bz = z0 + z * size + (dz == 0 ? lo : hi);
+                  LevelChunk c = (bx >> 4) == (cx >> 4) && (bz >> 4) == (cz >> 4)
+                      ? center
+                      : l.getChunkSource().getChunk(bx >> 4, bz >> 4, ChunkStatus.FULL, false);
+                  int i = (dy * 2 + dz) * 2 + dx;
+                  if (c == null) {
+                    samples[i] = 0;
+                    continue;
+                  }
+                  samples[i] = idAt(c, pos.set(bx, by, bz));
+                  // Lower samples are covered by the sample above; upper ones by the next block up.
+                  if (dy == 1) exposed[i] = idAt(c, pos.set(bx, by + 1, bz)) == 0;
+                }
+              }
+            }
+            for (int i = 0; i < 4; i++) exposed[i] = samples[i + 4] == 0;
+            id = LodReduce.reduce(samples, exposed);
           }
           if (id != 0) solid++;
           out.putShort(((y * 16 + z) * 16 + x) << 1, (short) id);
@@ -264,5 +287,14 @@ public final class WorldSource implements VoxelSource {
     }
     sampledColumns = columns;
     return solid;
+  }
+
+  /** Voxel id of the block at {@code pos}, with snow layers counted as snow blocks. */
+  private static int idAt(LevelChunk chunk, BlockPos pos) {
+    BlockState state = chunk.getBlockState(pos);
+    if (state.isAir()) return 0;
+    int id = BlockClassifier.voxelId(state);
+    if (id == 0 && state.is(Blocks.SNOW)) return BlockClassifier.voxelId(Blocks.SNOW_BLOCK.defaultBlockState());
+    return id;
   }
 }
