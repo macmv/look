@@ -9,7 +9,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -39,10 +38,35 @@ import org.lwjgl.system.MemoryUtil;
  *       {@link BlockClassifier}. Textures themselves come from vanilla's block atlas.
  * </ul>
  *
- * <p>All methods run on the render thread (which is also the client main thread). Events only queue
- * work; GL is touched in {@link #update()}.
+ * <p>All methods run on the render thread (which is also the client main thread), so there are no
+ * data races; the hazard is inconsistent bookkeeping. Every tracked section therefore has exactly
+ * one {@link SectionState} in {@link #states}, and every change goes through {@link #setState}:
+ *
+ * <pre>
+ *   (untracked) --event--> WAITING --rebuild--> LOADED | EMPTY | STARVED
+ *   WAITING | LOADED | EMPTY | STARVED --left the view--> OUT_OF_RANGE
+ *   OUT_OF_RANGE --entered the view--> WAITING
+ *   any --chunk dropped--> (untracked)
+ * </pre>
+ *
+ * <p>Events only change state and CPU bookkeeping; GL is touched in {@link #update()}. Decoding is
+ * synchronous, so there is no LOADING state: WAITING is rebuilt within a single call.
  */
 public final class VoxelWorld {
+  /** Where a section is in its life. A slot is owned exactly by LOADED sections (and WAITING ones that were LOADED). */
+  private enum SectionState {
+    /** Needs a (re)build and is queued. May still own a slot, which keeps showing the old data. */
+    WAITING,
+    /** Wants a brick slot but the pool was full. Retried as slots free up. */
+    STARVED,
+    /** Resident and up to date. */
+    LOADED,
+    /** Up to date and all air. Owns no slot. */
+    EMPTY,
+    /** The chunk exists but is outside the view radius. Owns no slot; promoted when the view moves. */
+    OUT_OF_RANGE
+  }
+
   /** Sections per side of the (wrapping) indirection grid. Must be a power of two. */
   public static final int GRID_XZ = 128;
 
@@ -56,17 +80,25 @@ public final class VoxelWorld {
   private static final int BRICK_BYTES = BRICK_VOXELS * 2;
   private static final long NO_OWNER = Long.MIN_VALUE;
   private static final long BUDGET_NANOS = 2_000_000L;
-  /** Frames between sweeps that free the bricks of chunks that left the view or were dropped. */
-  private static final int SWEEP_INTERVAL = 20;
-  /** Chunks the client keeps loaded past the render distance; the sweep keeps the same margin. */
+  /** Chunks the client keeps loaded past the render distance; the view keeps the same margin. */
   private static final int VIEW_MARGIN = 3;
+  /**
+   * Largest view radius in chunks. Sections stay resident up to one chunk past the view radius
+   * (hysteresis), and two sections alias in the wrapping grid at distance {@link #GRID_XZ}, so
+   * 2 * (MAX_RADIUS + 1) + 1 must stay below it.
+   */
+  private static final int MAX_RADIUS = GRID_XZ / 2 - 2;
 
-  private static final LinkedHashSet<Long> dirty = new LinkedHashSet<>();
-  private static final LinkedHashSet<Long> unloads = new LinkedHashSet<>();
+  /** The state of every tracked section, keyed by {@link SectionPos#asLong}. */
+  private static final Map<Long, SectionState> states = new HashMap<>();
+  /** Sections in WAITING, a mirror of {@link #states} so the queue needs no scan. */
+  private static final LinkedHashSet<Long> waiting = new LinkedHashSet<>();
+  /** Sections in STARVED, likewise. */
+  private static final LinkedHashSet<Long> starved = new LinkedHashSet<>();
+  /** Indirection cells whose CPU value differs from the texture, flushed once per update. */
+  private static final LinkedHashSet<Integer> dirtyCells = new LinkedHashSet<>();
   /** Raw packet data per chunk (keyed by {@link ChunkPos#toLong}), consumed as sections rebuild. */
   private static final Map<Long, WireChunk> wire = new HashMap<>();
-  /** Sections that found no free brick slot; retried once a sweep frees some. */
-  private static final LinkedHashSet<Long> starved = new LinkedHashSet<>();
 
   private static ClientLevel level;
   private static int minSection;
@@ -81,16 +113,21 @@ public final class VoxelWorld {
   private static int capacity;
   private static boolean warnedFull;
 
-  // Player position in chunks and the keep radius, refreshed every frame.
+  // Player position in chunks and the view radius.
   private static boolean viewValid;
   private static int viewCx;
   private static int viewCz;
   private static int viewRadius;
-  private static int sweepCountdown;
 
-  // Scratch for ordering the dirty queue nearest-first.
-  private static long[] dirtyKeys = new long[0];
-  private static long[] dirtyOrder = new long[0];
+  /** A reload was requested while there was no player to center it on. */
+  private static boolean refreshPending;
+
+  // Nearest-first snapshot of the waiting queue, rebuilt when exhausted or when the view moves.
+  private static long[] order = new long[0];
+  private static int orderLen;
+  private static int orderPos;
+  private static long[] orderScratch = new long[0];
+
   private static int rebuilt;
 
   private static boolean glReady;
@@ -117,6 +154,7 @@ public final class VoxelWorld {
 
   // --- Accessors for the draw pass -------------------------------------------------------------
 
+
   public static boolean isReady() {
     return level != null && glReady && !indirectionStale;
   }
@@ -138,7 +176,7 @@ public final class VoxelWorld {
 
   /** Sections waiting to be rebuilt. */
   public static int queued() {
-    return dirty.size() + starved.size();
+    return waiting.size() + starved.size();
   }
 
   public static float atlasWidth() {
@@ -163,32 +201,42 @@ public final class VoxelWorld {
 
   // --- Events (cheap, no GL) -------------------------------------------------------------------
 
+  /**
+   * Vanilla's "section needs a re-render" signal. It also fires for neighbor updates, which do not
+   * change voxels, so it only starts tracking sections we have never seen. Real content changes
+   * come in through {@link #ingestWire} and {@link #blockChanged}.
+   */
   public static void markDirty(int sx, int sy, int sz) {
+    if (!trackLevel() || !validY(sy)) return;
+    long key = SectionPos.asLong(sx, sy, sz);
+    if (!states.containsKey(key)) track(key);
+  }
+
+  /** A block changed in section (sx, sy, sz): its packet snapshot is stale and it needs a rebuild. */
+  public static void blockChanged(int sx, int sy, int sz) {
     if (!trackLevel()) return;
-    if (sy < minSection || sy >= minSection + sectionCount) return;
-    dirty.add(SectionPos.asLong(sx, sy, sz));
+    if (!wire.isEmpty()) wire.remove(ChunkPos.asLong(sx, sz));
+    if (validY(sy)) track(SectionPos.asLong(sx, sy, sz));
   }
 
   /**
-   * Remembers the section bytes of a chunk packet so its sections can be decoded without touching
-   * the live chunk. Must be called before vanilla consumes {@code buf}; this only reads a view.
+   * A chunk packet is being applied: remember its section bytes so the sections can be decoded
+   * without touching the live chunk, and rebuild every section of it. Must be called before vanilla
+   * consumes {@code buf}; this only reads a view.
    */
   public static void ingestWire(int cx, int cz, FriendlyByteBuf buf) {
     if (!trackLevel()) return;
     WireChunk chunk = WireChunk.parse(new FriendlyByteBuf(buf.duplicate()), sectionCount);
     if (chunk == null) wire.remove(ChunkPos.asLong(cx, cz));
     else wire.put(ChunkPos.asLong(cx, cz), chunk);
-  }
 
-  /** A block in this chunk changed, so its packet snapshot is stale. */
-  public static void invalidateWire(int cx, int cz) {
-    if (!wire.isEmpty()) wire.remove(ChunkPos.asLong(cx, cz));
+    for (int sy = minSection; sy < minSection + sectionCount; sy++) track(SectionPos.asLong(cx, sy, cz));
   }
 
   public static void unloadChunk(ChunkPos pos) {
     wire.remove(pos.toLong());
     if (!trackLevel()) return;
-    unloads.add(pos.toLong());
+    for (int sy = minSection; sy < minSection + sectionCount; sy++) forget(SectionPos.asLong(pos.x, sy, pos.z));
   }
 
   /**
@@ -198,17 +246,25 @@ public final class VoxelWorld {
   public static void refreshAll() {
     Minecraft mc = Minecraft.getInstance();
     ClientLevel l = mc.level;
-    if (l == null || mc.player == null) return;
+    if (l == null) return;
+    if (mc.player == null) {
+      // Nothing to center on yet; the voxel ids are stale, so try again once there is a player.
+      refreshPending = true;
+      return;
+    }
 
     switchLevel(l);
+    updateView();
 
-    int radius = keepRadius(mc);
+    // Track the whole client-side chunk range, including chunks outside the view, so they can be
+    // promoted later without waiting for another event.
+    int reach = Math.max(2, mc.options.getEffectiveRenderDistance()) + VIEW_MARGIN + 1;
     int cx = mc.player.blockPosition().getX() >> 4;
     int cz = mc.player.blockPosition().getZ() >> 4;
 
     List<int[]> offsets = new ArrayList<>();
-    for (int dx = -radius; dx <= radius; dx++) {
-      for (int dz = -radius; dz <= radius; dz++) offsets.add(new int[] {dx, dz});
+    for (int dx = -reach; dx <= reach; dx++) {
+      for (int dz = -reach; dz <= reach; dz++) offsets.add(new int[] {dx, dz});
     }
     offsets.sort(Comparator.comparingInt(o -> o[0] * o[0] + o[1] * o[1]));
 
@@ -221,30 +277,143 @@ public final class VoxelWorld {
       LevelChunkSection[] sections = chunk.getSections();
       for (int i = 0; i < sections.length; i++) {
         if (sections[i].hasOnlyAir()) continue;
-        dirty.add(SectionPos.asLong(x, chunk.getSectionYFromSectionIndex(i), z));
+        track(SectionPos.asLong(x, chunk.getSectionYFromSectionIndex(i), z));
       }
     }
   }
 
-  /** Chunks around the player that get voxel data. Less than half the grid, so nothing aliases. */
+  private static boolean validY(int sy) {
+    return sy >= minSection && sy < minSection + sectionCount;
+  }
+
+  /** Chunks around the player that get voxel data. */
   private static int keepRadius(Minecraft mc) {
-    return Math.min(GRID_XZ / 2 - 1, mc.options.getEffectiveRenderDistance() + VIEW_MARGIN);
+    return Math.min(MAX_RADIUS, mc.options.getEffectiveRenderDistance() + VIEW_MARGIN);
   }
 
-  private static void updateView() {
+  /** Farthest distance in blocks the shader may march, so it never reads past the loaded range. */
+  public static float maxDistBlocks() {
+    int viewChunks = Minecraft.getInstance().options.getEffectiveRenderDistance() + 1;
+    return Math.min((MAX_RADIUS - 1), viewChunks) * 16f;
+  }
+
+  /** Refreshes the view from the player. Returns true if it moved or changed size. */
+  private static boolean updateView() {
     Minecraft mc = Minecraft.getInstance();
-    if (mc.player == null) {
-      viewValid = false;
-      return;
-    }
-    viewCx = mc.player.blockPosition().getX() >> 4;
-    viewCz = mc.player.blockPosition().getZ() >> 4;
-    viewRadius = keepRadius(mc);
+    if (mc.player == null) return false;
+
+    int cx = mc.player.blockPosition().getX() >> 4;
+    int cz = mc.player.blockPosition().getZ() >> 4;
+    int r = keepRadius(mc);
+    if (viewValid && cx == viewCx && cz == viewCz && r == viewRadius) return false;
+
+    viewCx = cx;
+    viewCz = cz;
+    viewRadius = r;
     viewValid = true;
+    return true;
   }
 
-  private static boolean outOfView(int cx, int cz) {
-    return viewValid && (Math.abs(cx - viewCx) > viewRadius || Math.abs(cz - viewCz) > viewRadius);
+  private static int viewDistance(int cx, int cz) {
+    return Math.max(Math.abs(cx - viewCx), Math.abs(cz - viewCz));
+  }
+
+  /** Whether a chunk column is inside the view (before there is a view, everything is). */
+  private static boolean inView(int cx, int cz, int slack) {
+    return !viewValid || viewDistance(cx, cz) <= viewRadius + slack;
+  }
+
+  // --- State transitions -----------------------------------------------------------------------
+
+  /** Content of a section is new or changed: queue it, or park it if it is outside the view. */
+  private static void track(long key) {
+    int sx = SectionPos.x(key);
+    int sy = SectionPos.y(key);
+    int sz = SectionPos.z(key);
+
+    // Resident sections get one chunk of slack so they do not flicker at the edge.
+    boolean resident = owner[cellIndex(sx, sy, sz)] == key;
+    if (inView(sx, sz, resident ? 1 : 0)) {
+      setState(key, SectionState.WAITING);
+    } else {
+      release(key);
+      setState(key, SectionState.OUT_OF_RANGE);
+    }
+  }
+
+  /** The only place that writes {@link #states}; keeps the queues in step with it. */
+  private static void setState(long key, SectionState state) {
+    states.put(key, state);
+    if (state == SectionState.WAITING) waiting.add(key);
+    else waiting.remove(key);
+    if (state == SectionState.STARVED) starved.add(key);
+    else starved.remove(key);
+  }
+
+  /** The chunk is gone: stop tracking the section and free whatever it held. */
+  private static void forget(long key) {
+    states.remove(key);
+    waiting.remove(key);
+    starved.remove(key);
+    release(key);
+  }
+
+  /** Frees the slot of a section, if it owns one, and queues the cell for upload. */
+  private static void release(long key) {
+    int cell = cellIndex(SectionPos.x(key), SectionPos.y(key), SectionPos.z(key));
+    if (owner[cell] != key) return;
+    if (indirection[cell] != 0) freeSlots[freeCount++] = indirection[cell] - 1;
+    indirection[cell] = 0;
+    owner[cell] = NO_OWNER;
+    dirtyCells.add(cell);
+  }
+
+  /**
+   * Re-evaluates every tracked section against the view after it moved: sections that left it are
+   * parked, parked sections that entered it are queued (nearest first), and sections whose chunk
+   * vanished without a {@code drop} call are forgotten.
+   */
+  private static void sweepView() {
+    List<Long> gone = new ArrayList<>();
+    List<Long> leaving = new ArrayList<>();
+    List<Long> entering = new ArrayList<>();
+
+    for (Map.Entry<Long, SectionState> e : states.entrySet()) {
+      long key = e.getKey();
+      int x = SectionPos.x(key);
+      int z = SectionPos.z(key);
+      if (level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, false) == null) {
+        gone.add(key);
+      } else if (e.getValue() == SectionState.OUT_OF_RANGE) {
+        if (inView(x, z, 0)) entering.add(key);
+      } else if (!inView(x, z, 1)) {
+        leaving.add(key);
+      }
+    }
+
+    for (long key : gone) forget(key);
+    for (long key : leaving) {
+      release(key);
+      setState(key, SectionState.OUT_OF_RANGE);
+    }
+    entering.sort(Comparator.comparingInt(k -> viewDistance(SectionPos.x(k), SectionPos.z(k))));
+    for (long key : entering) setState(key, SectionState.WAITING);
+
+    wire.keySet().removeIf(k -> !inView(ChunkPos.getX(k), ChunkPos.getZ(k), 1));
+    orderLen = 0;
+    orderPos = 0;
+  }
+
+  /** Gives starved sections another chance, as many as there are free slots. */
+  private static void requeueStarved() {
+    if (freeCount == 0 || starved.isEmpty()) return;
+    List<Long> retry = new ArrayList<>();
+    for (long key : starved) {
+      retry.add(key);
+      if (retry.size() >= freeCount) break;
+    }
+    for (long key : retry) setState(key, SectionState.WAITING);
+    warnedFull = false;
   }
 
   /** Switches to the current client level if it changed. Returns false when there is no level. */
@@ -265,12 +434,15 @@ public final class VoxelWorld {
     owner = new long[cells];
     Arrays.fill(owner, NO_OWNER);
 
-    dirty.clear();
-    unloads.clear();
-    wire.clear();
+    states.clear();
+    waiting.clear();
     starved.clear();
+    dirtyCells.clear();
+    wire.clear();
+    orderLen = 0;
+    orderPos = 0;
     viewValid = false;
-    sweepCountdown = 0;
+    refreshPending = false;
     resetSlots();
     indirectionStale = true;
   }
@@ -292,26 +464,19 @@ public final class VoxelWorld {
     try {
       if (!glReady) initGl();
       checkAtlas();
+      if (refreshPending) refreshAll();
       if (indirectionStale) createIndirectionTexture();
+
+      if (updateView()) sweepView();
+      requeueStarved();
 
       // Everything below uploads to the indirection texture on this unit, and bricks via the
       // (unit independent) texture buffer binding point.
       GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_INDIRECTION);
       GL33C.glBindTexture(GL33C.GL_TEXTURE_3D, indirectionTex);
 
-      for (Iterator<Long> it = unloads.iterator(); it.hasNext(); ) {
-        long pos = it.next();
-        it.remove();
-        unloadChunkNow(ChunkPos.getX(pos), ChunkPos.getZ(pos));
-      }
-
-      updateView();
-      if (--sweepCountdown <= 0) {
-        sweepCountdown = SWEEP_INTERVAL;
-        sweep();
-      }
-
-      processDirty();
+      processWaiting();
+      flushCells();
 
       if (BlockClassifier.takeColorsDirty()) uploadColors();
       uploadFaces();
@@ -320,62 +485,56 @@ public final class VoxelWorld {
     }
   }
 
-  /** Rebuilds queued sections nearest-first until the frame budget runs out. */
-  private static void processDirty() {
-    int n = dirty.size();
-    if (n == 0) return;
-
-    if (dirtyKeys.length < n) {
-      dirtyKeys = new long[n * 2];
-      dirtyOrder = new long[n * 2];
-    }
-    int i = 0;
-    for (long key : dirty) {
-      long dx = SectionPos.x(key) - viewCx;
-      long dz = SectionPos.z(key) - viewCz;
-      dirtyKeys[i] = key;
-      dirtyOrder[i] = (viewValid ? dx * dx + dz * dz : 0) << 32 | i;
-      i++;
-    }
-    Arrays.sort(dirtyOrder, 0, n);
-
+  /** Rebuilds waiting sections nearest-first until the frame budget runs out. */
+  private static void processWaiting() {
     long start = System.nanoTime();
-    for (int j = 0; j < n; j++) {
-      long key = dirtyKeys[(int) (dirtyOrder[j] & 0xFFFFFFFFL)];
-      dirty.remove(key);
+    while (true) {
+      if (orderPos >= orderLen) {
+        if (waiting.isEmpty()) return;
+        buildOrder();
+      }
+      long key = order[orderPos++];
+      if (!waiting.remove(key)) continue; // rebuilt, dropped or parked since the snapshot
       rebuildSection(key);
-      if (System.nanoTime() - start > BUDGET_NANOS) break;
+      if (System.nanoTime() - start > BUDGET_NANOS) return;
     }
   }
 
-  /**
-   * Frees the bricks of sections whose chunk is gone or out of view. Vanilla does not always call
-   * {@code drop} (chunks that fall out of the view range are just replaced), so this is what keeps
-   * the slot pool from leaking. Then retries the sections that were starved of slots.
-   */
-  private static void sweep() {
-    for (int cell = 0; cell < owner.length; cell++) {
-      long key = owner[cell];
-      if (key == NO_OWNER) continue;
-
-      int x = SectionPos.x(key);
-      int z = SectionPos.z(key);
-      if (outOfView(x, z) || level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, false) == null) {
-        releaseCell(cell);
-        writeCell(x, SectionPos.y(key), z, 0);
-      }
+  /** Snapshots the waiting queue sorted by distance from the player. */
+  private static void buildOrder() {
+    int n = waiting.size();
+    if (order.length < n) {
+      order = new long[n * 2];
+      orderScratch = new long[n * 2];
     }
-
-    if (viewValid) {
-      wire.keySet().removeIf(k -> outOfView(ChunkPos.getX(k), ChunkPos.getZ(k)));
-      starved.removeIf(k -> outOfView(SectionPos.x(k), SectionPos.z(k)));
+    int i = 0;
+    for (long key : waiting) {
+      long dx = SectionPos.x(key) - viewCx;
+      long dz = SectionPos.z(key) - viewCz;
+      order[i] = key;
+      orderScratch[i] = (viewValid ? dx * dx + dz * dz : 0) << 32 | i;
+      i++;
     }
+    Arrays.sort(orderScratch, 0, n);
 
-    if (freeCount > 0 && !starved.isEmpty()) {
-      dirty.addAll(starved);
-      starved.clear();
-      warnedFull = false;
+    // orderScratch holds (distance, index); reorder keys through a copy of the unsorted ones.
+    long[] unsorted = Arrays.copyOf(order, n);
+    for (int j = 0; j < n; j++) order[j] = unsorted[(int) (orderScratch[j] & 0xFFFFFFFFL)];
+    orderLen = n;
+    orderPos = 0;
+  }
+
+  /** Writes every changed indirection cell to the texture. Expects it bound on its unit. */
+  private static void flushCells() {
+    for (int cell : dirtyCells) {
+      int x = cell % GRID_XZ;
+      int z = (cell / GRID_XZ) % GRID_XZ;
+      int y = cell / (GRID_XZ * GRID_XZ);
+      cellScratch.put(0, indirection[cell]);
+      GL33C.glTexSubImage3D(
+          GL33C.GL_TEXTURE_3D, 0, x, y, z, 1, 1, 1, GL33C.GL_RED_INTEGER, GL33C.GL_UNSIGNED_INT, cellScratch);
     }
+    dirtyCells.clear();
   }
 
   /** Binds the data textures and the block atlas to their fixed units. The caller restores the active unit. */
@@ -444,31 +603,17 @@ public final class VoxelWorld {
     return ((sy - minSection) * GRID_XZ + (sz & (GRID_XZ - 1))) * GRID_XZ + (sx & (GRID_XZ - 1));
   }
 
-  private static void unloadChunkNow(int cx, int cz) {
-    // The chunk may have been dropped and re-received before we got here; its dirty events will
-    // rebuild it, so only clear when it is really gone.
-    if (level.getChunkSource().getChunk(cx, cz, ChunkStatus.FULL, false) != null) return;
-
-    for (int sy = minSection; sy < minSection + sectionCount; sy++) {
-      clearIfOwner(SectionPos.asLong(cx, sy, cz), cx, sy, cz);
-    }
-  }
-
+  /** WAITING -> LOADED, EMPTY or STARVED. The caller has already taken the key off the queue. */
   private static void rebuildSection(long key) {
     rebuilt++;
     int sx = SectionPos.x(key);
     int sy = SectionPos.y(key);
     int sz = SectionPos.z(key);
-    int cell = cellIndex(sx, sy, sz);
-
-    if (outOfView(sx, sz)) {
-      clearIfOwner(key, sx, sy, sz);
-      return;
-    }
 
     LevelChunk chunk = level.getChunkSource().getChunk(sx, sz, ChunkStatus.FULL, false);
     if (chunk == null) {
-      clearIfOwner(key, sx, sy, sz);
+      // Not there (any more). If it shows up, its packet tracks the section again.
+      forget(key);
       return;
     }
 
@@ -478,23 +623,29 @@ public final class VoxelWorld {
       solid = section.hasOnlyAir() ? 0 : convert(section);
     }
     if (solid == 0) {
-      clearIfOwner(key, sx, sy, sz);
+      release(key);
+      setState(key, SectionState.EMPTY);
       return;
     }
 
+    int cell = cellIndex(sx, sy, sz);
     int slot;
     if (owner[cell] == key && indirection[cell] != 0) {
       slot = indirection[cell] - 1;
     } else {
-      // A different section may be aliasing this cell (wrapped grid); evict it first.
-      if (owner[cell] != NO_OWNER) releaseCell(cell);
+      // Cannot happen while the view fits the grid, but never let two sections share a cell.
+      if (owner[cell] != NO_OWNER) {
+        long other = owner[cell];
+        release(other);
+        if (states.containsKey(other)) setState(other, SectionState.OUT_OF_RANGE);
+      }
 
       if (freeCount == 0) {
         if (!warnedFull) {
           LookMod.LOGGER.warn("Out of brick slots ({}); some terrain will be missing", capacity);
           warnedFull = true;
         }
-        starved.add(key);
+        setState(key, SectionState.STARVED);
         return;
       }
       slot = freeSlots[--freeCount];
@@ -502,12 +653,13 @@ public final class VoxelWorld {
 
     owner[cell] = key;
     indirection[cell] = slot + 1;
+    dirtyCells.add(cell);
 
     GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, brickBuf);
     brickScratch.clear();
     GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) slot * BRICK_BYTES, brickScratch);
 
-    writeCell(sx, sy, sz, slot + 1);
+    setState(key, SectionState.LOADED);
   }
 
   /**
@@ -540,29 +692,6 @@ public final class VoxelWorld {
       }
     }
     return solid;
-  }
-
-  private static void clearIfOwner(long key, int sx, int sy, int sz) {
-    int cell = cellIndex(sx, sy, sz);
-    if (owner[cell] != key) return;
-    releaseCell(cell);
-    writeCell(sx, sy, sz, 0);
-  }
-
-  /** Frees the slot and ownership of a cell on the CPU side only. */
-  private static void releaseCell(int cell) {
-    if (indirection[cell] != 0) freeSlots[freeCount++] = indirection[cell] - 1;
-    indirection[cell] = 0;
-    owner[cell] = NO_OWNER;
-  }
-
-  private static void writeCell(int sx, int sy, int sz, int value) {
-    cellScratch.put(0, value);
-    GL33C.glTexSubImage3D(
-        GL33C.GL_TEXTURE_3D, 0,
-        sx & (GRID_XZ - 1), sy - minSection, sz & (GRID_XZ - 1),
-        1, 1, 1,
-        GL33C.GL_RED_INTEGER, GL33C.GL_UNSIGNED_INT, cellScratch);
   }
 
   // --- GL resources ----------------------------------------------------------------------------
@@ -644,3 +773,4 @@ public final class VoxelWorld {
     GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, 0, colorScratch);
   }
 }
+

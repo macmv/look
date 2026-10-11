@@ -25,11 +25,11 @@ public abstract class LevelRendererMixin {
     VoxelWorld.markDirty(x, y, z);
   }
 
-  /** Block changes make the raw packet snapshot of a chunk stale. */
+  /** Block changes are what actually alters voxel data (setSectionDirty also fires for neighbors). */
   @Inject(method = "blockChanged", at = @At("HEAD"))
   private void look$blockChanged(
       BlockGetter level, BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci) {
-    VoxelWorld.invalidateWire(pos.getX() >> 4, pos.getZ() >> 4);
+    VoxelWorld.blockChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
   }
 
   /**

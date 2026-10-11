@@ -73,10 +73,7 @@ public final class VoxelRenderer {
     GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, VoxelWorld.sectionCount(), VoxelWorld.GRID_XZ);
     GL33C.glUniform1i(uMinSection, VoxelWorld.minSection());
 
-    // The wrapping grid can only represent half its width in each direction.
-    float gridLimit = (VoxelWorld.GRID_XZ / 2 - 1) * 16f;
-    float viewLimit = (Minecraft.getInstance().options.getEffectiveRenderDistance() + 1) * 16f;
-    GL33C.glUniform1f(uMaxDist, Math.min(gridLimit, viewLimit));
+    GL33C.glUniform1f(uMaxDist, VoxelWorld.maxDistBlocks());
 
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uIndirection"), VoxelWorld.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uBricks"), VoxelWorld.UNIT_BRICKS);
