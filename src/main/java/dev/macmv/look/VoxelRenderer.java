@@ -6,14 +6,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
+import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL33C;
 import org.lwjgl.system.MemoryStack;
 
 /**
  * Draws one fullscreen triangle and raycasts the world in the fragment shader, writing color and
- * depth into the main framebuffer. Right now the "world" is a debug plane at y=64, which proves the
- * matrix and depth plumbing; the voxel data structure replaces it.
+ * depth into the main framebuffer. The world comes from {@link VoxelWorld}.
  */
 public final class VoxelRenderer {
   private static int program;
@@ -21,13 +21,20 @@ public final class VoxelRenderer {
   private static int uInvViewProj;
   private static int uView;
   private static int uProj;
-  private static int uCamPos;
+  private static int uCamBlock;
+  private static int uCamFrac;
+  private static int uGrid;
+  private static int uMinSection;
+  private static int uMaxDist;
 
   private VoxelRenderer() {}
 
   /** Must be called on the render thread with the main framebuffer bound. */
   public static void render(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ) {
     if (program == 0) init();
+
+    VoxelWorld.update();
+    if (!VoxelWorld.isReady()) return;
 
     // Vanilla caches GL state in GlStateManager, so go through it for anything it tracks.
     RenderSystem.disableBlend();
@@ -51,9 +58,30 @@ public final class VoxelRenderer {
       projection.get(buf);
       GL33C.glUniformMatrix4fv(uProj, false, buf);
     }
-    GL33C.glUniform3f(uCamPos, (float) camX, (float) camY, (float) camZ);
+
+    int bx = (int) Math.floor(camX);
+    int by = (int) Math.floor(camY);
+    int bz = (int) Math.floor(camZ);
+    GL33C.glUniform3i(uCamBlock, bx, by, bz);
+    GL33C.glUniform3f(uCamFrac, (float) (camX - bx), (float) (camY - by), (float) (camZ - bz));
+    GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, VoxelWorld.sectionCount(), VoxelWorld.GRID_XZ);
+    GL33C.glUniform1i(uMinSection, VoxelWorld.minSection());
+
+    // The wrapping grid can only represent half its width in each direction.
+    float gridLimit = (VoxelWorld.GRID_XZ / 2 - 1) * 16f;
+    float viewLimit = (Minecraft.getInstance().options.getEffectiveRenderDistance() + 1) * 16f;
+    GL33C.glUniform1f(uMaxDist, Math.min(gridLimit, viewLimit));
+
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uIndirection"), VoxelWorld.UNIT_INDIRECTION);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uBricks"), VoxelWorld.UNIT_BRICKS);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uColors"), VoxelWorld.UNIT_COLORS);
+
+    int prevUnit = GlStateManager._getActiveTexture();
+    VoxelWorld.bind();
 
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
+
+    GL33C.glActiveTexture(prevUnit);
 
     GlStateManager._glBindVertexArray(0);
     GlStateManager._glUseProgram(0);
@@ -76,7 +104,11 @@ public final class VoxelRenderer {
     uInvViewProj = GL33C.glGetUniformLocation(program, "uInvViewProj");
     uView = GL33C.glGetUniformLocation(program, "uView");
     uProj = GL33C.glGetUniformLocation(program, "uProj");
-    uCamPos = GL33C.glGetUniformLocation(program, "uCamPos");
+    uCamBlock = GL33C.glGetUniformLocation(program, "uCamBlock");
+    uCamFrac = GL33C.glGetUniformLocation(program, "uCamFrac");
+    uGrid = GL33C.glGetUniformLocation(program, "uGrid");
+    uMinSection = GL33C.glGetUniformLocation(program, "uMinSection");
+    uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
     vao = GL33C.glGenVertexArrays();

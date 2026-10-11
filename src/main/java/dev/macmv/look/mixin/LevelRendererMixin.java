@@ -1,6 +1,7 @@
 package dev.macmv.look.mixin;
 
 import dev.macmv.look.VoxelRenderer;
+import dev.macmv.look.VoxelWorld;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.RenderType;
 import org.joml.Matrix4f;
@@ -11,6 +12,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(LevelRenderer.class)
 public abstract class LevelRendererMixin {
+  /**
+   * Every path that marks a section for re-render (chunk load, block change, neighbor updates)
+   * funnels through here, which makes it the single place to learn that voxel data changed.
+   */
+  @Inject(method = "setSectionDirty(IIIZ)V", at = @At("HEAD"))
+  private void look$sectionDirty(int x, int y, int z, boolean reRenderOnMainThread, CallbackInfo ci) {
+    VoxelWorld.markDirty(x, y, z);
+  }
+
   /**
    * Replaces the opaque section layers with the raycast pass. Vanilla draws solid, cutout_mipped
    * and cutout first, then entities and block entities, then translucent, so drawing our pass

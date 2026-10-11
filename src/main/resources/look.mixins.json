@@ -4,6 +4,7 @@
   "package": "dev.macmv.look.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
+    "ClientChunkCacheMixin",
     "LevelRendererMixin"
   ],
   "injectors": {
