@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "look",
+  "version": "${version}",
+  "name": "Look",
+  "description": "Replaces the chunk renderer with a voxel raycaster.",
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.macmv.look.LookMod"]
+  },
+  "mixins": [
+    {
+      "config": "look.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "1.21.1",
+    "java": ">=21"
+  },
+  "breaks": {
+    "sodium": "*",
+    "iris": "*"
+  }
+}

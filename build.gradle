@@ -1,0 +1,81 @@
+plugins {
+  id 'fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+  archivesName = project.archives_base_name
+}
+
+repositories {
+}
+
+dependencies {
+  minecraft "com.mojang:minecraft:${project.minecraft_version}"
+  // Mojang mappings on purpose: they match NeoForge, which keeps a later port (or Connector) simple.
+  mappings loom.officialMojangMappings()
+  modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+  // Deliberately no Fabric API: the mod only needs mixins and raw GL.
+}
+
+// --- Rust native library ---------------------------------------------------------------------
+
+def osName = System.getProperty('os.name').toLowerCase()
+def archName = System.getProperty('os.arch').toLowerCase()
+
+def nativeOs = osName.contains('win') ? 'windows' : osName.contains('mac') ? 'macos' : 'linux'
+def nativeArch = (archName == 'aarch64' || archName == 'arm64') ? 'aarch64' : 'x86_64'
+def nativeFile = nativeOs == 'windows' ? 'look_native.dll'
+    : nativeOs == 'macos' ? 'liblook_native.dylib' : 'liblook_native.so'
+
+def nativeDir = layout.projectDirectory.dir('native')
+def nativeOut = layout.buildDirectory.dir('generated/natives')
+
+// Builds the host platform only. Cross-compiling the other targets is a CI job.
+def cargoBuild = tasks.register('cargoBuild', Exec) {
+  workingDir = nativeDir.asFile
+  commandLine 'cargo', 'build', '--release'
+  inputs.dir(nativeDir.dir('src'))
+  inputs.file(nativeDir.file('Cargo.toml'))
+  inputs.file(nativeDir.file('Cargo.lock'))
+  outputs.file(nativeDir.file("target/release/${nativeFile}"))
+}
+
+def stageNatives = tasks.register('stageNatives', Copy) {
+  dependsOn cargoBuild
+  from(nativeDir.file("target/release/${nativeFile}"))
+  into(nativeOut.map { it.dir("natives/${nativeOs}-${nativeArch}") })
+}
+
+processResources {
+  // Only the built jar carries the binaries; the sources jar must not.
+  dependsOn stageNatives
+  from(nativeOut)
+
+  inputs.property 'version', project.version
+  filesMatching('fabric.mod.json') {
+    expand 'version': project.version
+  }
+}
+
+tasks.withType(JavaCompile).configureEach {
+  options.release = 21
+  options.encoding = 'UTF-8'
+}
+
+java {
+  withSourcesJar()
+  sourceCompatibility = JavaVersion.VERSION_21
+  targetCompatibility = JavaVersion.VERSION_21
+}
+
+loom {
+  runs {
+    client {
+      // Lets us see GL errors from the raycast pass while developing.
+      property 'org.lwjgl.util.Debug', 'true'
+    }
+  }
+}
