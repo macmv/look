@@ -26,4 +26,4 @@ Gradle must run on JDK 21 (Loom 1.11.x; newer Loom needs Java 25):
 Rebindable in Options > Controls > Look:
 
 - F7: toggle voxel / vanilla renderer (vanilla meshes are always kept up to date, so it is instant)
-- F8: toggle debug view (step-count heatmap, plus timing stats in the action bar and log)
+- F8: toggle step-count heatmap (timing stats are always on screen, in both renderers)

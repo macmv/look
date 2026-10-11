@@ -4,14 +4,14 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 
-/** Draws {@link RenderStats} on screen while the debug view is on. */
+/** Draws {@link RenderStats} on screen, always, in both renderer modes. */
 public final class DebugHud {
   private static final int PAD = 3;
 
   private DebugHud() {}
 
   public static void render(GuiGraphics g) {
-    if (!LookState.debugView || !LookState.voxelEnabled) return;
+    RenderStats.tickFrame();
 
     Minecraft mc = Minecraft.getInstance();
     if (mc.options.hideGui) return;

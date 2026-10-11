@@ -8,7 +8,7 @@ import net.minecraft.network.chat.Component;
  *
  * <ul>
  *   <li>Toggle renderer: voxel renderer or vanilla's chunk renderer.
- *   <li>Toggle debug: step-count heatmap plus timing stats in the action bar.
+ *   <li>Toggle heatmap: step-count heatmap of the voxel pass. Timing stats are always on screen.
  * </ul>
  *
  * Vanilla keeps compiling section meshes while the voxel renderer is on, so switching back is
@@ -16,7 +16,7 @@ import net.minecraft.network.chat.Component;
  */
 public final class LookState {
   public static boolean voxelEnabled = true;
-  public static boolean debugView = false;
+  public static boolean heatmap = false;
 
   private LookState() {}
 
@@ -30,8 +30,8 @@ public final class LookState {
     }
 
     while (LookKeys.TOGGLE_DEBUG.consumeClick()) {
-      debugView = !debugView;
-      mc.gui.setOverlayMessage(Component.literal("Look debug view: " + (debugView ? "on" : "off")), false);
+      heatmap = !heatmap;
+      mc.gui.setOverlayMessage(Component.literal("Look heatmap: " + (heatmap ? "on" : "off")), false);
     }
   }
 }

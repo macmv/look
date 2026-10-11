@@ -82,7 +82,7 @@ public final class VoxelRenderer {
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
 
-    GL33C.glUniform1i(uDebug, LookState.debugView ? 1 : 0);
+    GL33C.glUniform1i(uDebug, LookState.heatmap ? 1 : 0);
 
     RenderStats.beginGpu();
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
@@ -93,7 +93,7 @@ public final class VoxelRenderer {
     GlStateManager._glBindVertexArray(0);
     GlStateManager._glUseProgram(0);
 
-    RenderStats.endFrame();
+    RenderStats.endVoxelFrame();
   }
 
   private static void init() {
