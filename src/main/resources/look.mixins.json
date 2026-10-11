@@ -7,7 +7,8 @@
     "ClientChunkCacheMixin",
     "GuiMixin",
     "LevelRendererMixin",
-    "OptionsMixin"
+    "OptionsMixin",
+    "WeightedBakedModelAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -34,6 +34,9 @@ const float EPS = 1e-3;
 const int TINT_BLOCKS = 2048;  // blocks the tint texture covers before wrapping: TintMap.SIZE * CELL
 const int TINT_CELL = 4;       // TintMap.CELL
 const int TINT_SPLIT_UNIT = 2; // TintMap.SPLIT_UNIT
+const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
+const int META_START = (16384 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
+const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
 
 uint readSlot(int lvl, ivec3 sec) {
   ivec3 c = ivec3(sec.x & (uGrid.x - 1), uLevel[lvl].z + sec.y - uLevel[lvl].x, sec.z & (uGrid.z - 1));
@@ -101,16 +104,48 @@ float ambientOcclusion(ivec3 voxel, int axis, vec3 d, vec3 p) {
   return 0.55 + 0.15 * ao;
 }
 
+// PCG3D integer hash (Jarzynski and Olano), for stable per-voxel randomness.
+uint hash3(ivec3 p) {
+  uvec3 v = uvec3(p) * 1664525u + 1013904223u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  v ^= v >> 16u;
+  v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+  return v.x;
+}
+
+// Row of the face table to use for voxel `id` at `cell` (voxel coordinates of its level). Blocks with
+// several weighted variants, like the rotations of grass, get one picked from the position, so the
+// choice is stable and neighbors differ. Variant 0 is row `id`, the others are consecutive extra rows.
+int variantRow(uint id, ivec3 cell) {
+  int meta = META_START + int(id) * META_TEXELS;
+  vec4 m = texelFetch(uFaces, meta);
+  int count = int(m.y);
+  if (count < 2) return int(id);
+
+  float r = float(hash3(cell) >> 8u) / 16777216.0;
+  vec4 lo = texelFetch(uFaces, meta + 1);
+  vec4 hi = texelFetch(uFaces, meta + 2);
+
+  int v = 0;
+  for (int i = 0; i < count - 1; i++) {
+    float cum = i < 4 ? lo[i] : hi[i - 4];
+    if (r < cum) break;
+    v++;
+  }
+  return v == 0 ? int(id) : int(m.x) + v - 1;
+}
+
 // Surface color of voxel `id` where the ray hits face `axis`. `local` is the hit point inside the
 // voxel (0..1) and t the ray distance. Returns false for transparent texels (leaves etc.), so the
-// caller keeps marching. `column` is the world column of the voxel's center, for biome tint.
-bool surface(uint id, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, out vec3 albedo) {
+// caller keeps marching. `column` is the world column of the voxel's center, for biome tint, and
+// `cell` its coordinate in voxels of its level, for picking a variant.
+bool surface(uint id, ivec3 cell, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, out vec3 albedo) {
   // Face order matches Direction: down, up, north, south, west, east.
   int face = axis == 0 ? (d.x > 0.0 ? 4 : 5) : (axis == 1 ? (d.y > 0.0 ? 0 : 1) : (d.z > 0.0 ? 2 : 3));
   vec2 ab = axis == 0 ? local.yz : (axis == 1 ? local.xz : local.xy);
   ab = clamp(ab, 0.001, 0.999);
 
-  int base = (int(id) * 6 + face) * 4;
+  int base = variantRow(id, cell) * FACE_ROW_TEXELS + face * 4;
   vec3 rgb = vec3(0.0);
   float alpha = 0.0;
 
@@ -215,7 +250,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
         // Below the column's split height the second biome applies (layers 2 and 3).
         float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
         float lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
-        if (surface(id, axis, d, local, tc / vs, column, lowLayer, albedo)) {
+        if (surface(id, voxel >> lvl, axis, d, local, tc / vs, column, lowLayer, albedo)) {
           tHit = tc;
           hitId = id;
           hitAxis = axis;

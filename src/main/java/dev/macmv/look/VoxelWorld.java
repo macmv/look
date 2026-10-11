@@ -700,18 +700,15 @@ public final class VoxelWorld {
   }
 
   private static void uploadFaces() {
-    int[] range = BlockClassifier.takeFaceRange();
-    if (range == null) return;
-
-    int from = range[0] * BlockClassifier.ID_FLOATS;
-    int count = (range[1] - range[0] + 1) * BlockClassifier.ID_FLOATS;
-    FloatBuffer buf = MemoryUtil.memAllocFloat(count);
-    try {
-      buf.put(BlockClassifier.faces(), from, count).flip();
-      GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, faceBuf);
-      GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) from * 4, buf);
-    } finally {
-      MemoryUtil.memFree(buf);
+    for (int[] range : BlockClassifier.takeFaceRanges()) {
+      FloatBuffer buf = MemoryUtil.memAllocFloat(range[1]);
+      try {
+        buf.put(BlockClassifier.faces(), range[0], range[1]).flip();
+        GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, faceBuf);
+        GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) range[0] * 4, buf);
+      } finally {
+        MemoryUtil.memFree(buf);
+      }
     }
   }
 
@@ -873,7 +870,7 @@ public final class VoxelWorld {
     faceBuf = GL33C.glGenBuffers();
     GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, faceBuf);
     GL33C.glBufferData(
-        GL33C.GL_TEXTURE_BUFFER, (long) (BlockClassifier.MAX_ID + 1) * BlockClassifier.ID_FLOATS * 4, GL33C.GL_DYNAMIC_DRAW);
+        GL33C.GL_TEXTURE_BUFFER, (long) BlockClassifier.FACE_FLOATS * 4, GL33C.GL_DYNAMIC_DRAW);
     faceTex = GL33C.glGenTextures();
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_FACES);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_BUFFER, faceTex);
