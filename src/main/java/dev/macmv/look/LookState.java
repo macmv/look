@@ -26,6 +26,8 @@ public final class LookState {
 
     while (LookKeys.TOGGLE_RENDERER.consumeClick()) {
       voxelEnabled = !voxelEnabled;
+      // Events are ignored while vanilla renders, so rebuild everything on the way back.
+      if (voxelEnabled) VoxelWorld.refreshAll();
       mc.gui.setOverlayMessage(Component.literal("Look renderer: " + (voxelEnabled ? "voxel" : "vanilla")), false);
     }
 

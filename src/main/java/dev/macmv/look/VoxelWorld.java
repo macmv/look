@@ -4,9 +4,12 @@ import com.mojang.blaze3d.platform.GlStateManager;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.SectionPos;
@@ -112,14 +115,50 @@ public final class VoxelWorld {
   // --- Events (cheap, no GL) -------------------------------------------------------------------
 
   public static void markDirty(int sx, int sy, int sz) {
-    if (!trackLevel()) return;
+    // While vanilla renders nothing drains the queue; refreshAll() rebuilds everything on enable.
+    if (!LookState.voxelEnabled || !trackLevel()) return;
     if (sy < minSection || sy >= minSection + sectionCount) return;
     dirty.add(SectionPos.asLong(sx, sy, sz));
   }
 
   public static void unloadChunk(ChunkPos pos) {
-    if (!trackLevel()) return;
+    if (!LookState.voxelEnabled || !trackLevel()) return;
     unloads.add(pos.toLong());
+  }
+
+  /**
+   * Throws away all voxel data and queues every loaded section for a rebuild, nearest first. Used
+   * when the voxel renderer is switched back on, since events are ignored while it is off.
+   */
+  public static void refreshAll() {
+    Minecraft mc = Minecraft.getInstance();
+    ClientLevel l = mc.level;
+    if (l == null || mc.player == null) return;
+
+    switchLevel(l);
+
+    int radius = Math.min(GRID_XZ / 2 - 1, mc.options.getEffectiveRenderDistance() + 2);
+    int cx = mc.player.blockPosition().getX() >> 4;
+    int cz = mc.player.blockPosition().getZ() >> 4;
+
+    List<int[]> offsets = new ArrayList<>();
+    for (int dx = -radius; dx <= radius; dx++) {
+      for (int dz = -radius; dz <= radius; dz++) offsets.add(new int[] {dx, dz});
+    }
+    offsets.sort(Comparator.comparingInt(o -> o[0] * o[0] + o[1] * o[1]));
+
+    for (int[] o : offsets) {
+      int x = cx + o[0];
+      int z = cz + o[1];
+      LevelChunk chunk = l.getChunkSource().getChunk(x, z, ChunkStatus.FULL, false);
+      if (chunk == null) continue;
+
+      LevelChunkSection[] sections = chunk.getSections();
+      for (int i = 0; i < sections.length; i++) {
+        if (sections[i].hasOnlyAir()) continue;
+        dirty.add(SectionPos.asLong(x, chunk.getSectionYFromSectionIndex(i), z));
+      }
+    }
   }
 
   /** Switches to the current client level if it changed. Returns false when there is no level. */
