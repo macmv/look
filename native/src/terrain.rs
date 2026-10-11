@@ -4,8 +4,10 @@
 //! The surface height comes from the noise router's `initial_density_without_jaggedness`, the
 //! function the game itself uses to estimate the surface before a chunk exists: a smooth 2D shape
 //! (continents, erosion, mountains, rivers) plus a vertical gradient, so the surface is the highest
-//! point where it exceeds a threshold. It does not know about jagged peaks, caves, overhangs,
-//! surface rules, trees or structures. A block is picked from the biome at the surface.
+//! point where it exceeds a threshold. When the config has an `initial_density` root it also includes
+//! the jagged peaks term (see `TerrainExport.java`), otherwise it is the smooth shape only. It does
+//! not know about caves, overhangs, surface rules, trees or structures. A block is picked from the
+//! biome at the surface.
 //!
 //! Calibrated against `NoiseBasedChunkGenerator.getBaseHeight` on two seeds: with a threshold of 0
 //! and +7 blocks the surface is within about 3.5 blocks of vanilla's on average (rms 6). The worst
@@ -185,7 +187,9 @@ impl Terrain {
       compiler.root(v).map_err(|e| format!("{name}: {e}"))
     };
 
-    let initial_density = root("initial_density_without_jaggedness")?;
+    // Older exports only have the smooth density; the jagged one is the better estimate.
+    let initial_density =
+      if roots.contains_key("initial_density") { root("initial_density")? } else { root("initial_density_without_jaggedness")? };
     let temperature = root("temperature")?;
     let humidity = root("vegetation")?;
     let continentalness = root("continents")?;

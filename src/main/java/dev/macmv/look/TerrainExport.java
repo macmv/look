@@ -24,9 +24,11 @@ import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.levelgen.DensityFunction;
+import net.minecraft.world.level.levelgen.DensityFunctions;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.NoiseRouter;
 import net.minecraft.world.level.levelgen.NoiseSettings;
+import net.minecraft.world.level.levelgen.Noises;
 import net.minecraft.world.level.levelgen.synth.NormalNoise;
 
 /**
@@ -35,7 +37,8 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  *
  * <ul>
  *   <li>{@code sea_level}, {@code min_y}, {@code height} from the noise settings;
- *   <li>{@code roots}: the density functions the generator evaluates (surface density and the six
+ *   <li>{@code roots}: the density functions the generator evaluates (surface density, with and
+ *       without jagged peaks, and the six
  *       climate parameters), in the same format as the game's data files;
  *   <li>{@code functions}: the registry density functions those refer to, by name, and
  *       {@code noises}: the noise parameters they use;
@@ -86,6 +89,7 @@ public final class TerrainExport {
     NoiseRouter router = settings.noiseRouter();
     JsonObject roots = new JsonObject();
     root(roots, "initial_density_without_jaggedness", router.initialDensityWithoutJaggedness());
+    root(roots, "initial_density", withJaggedness(router));
     root(roots, "temperature", router.temperature());
     root(roots, "vegetation", router.vegetation());
     root(roots, "continents", router.continents());
@@ -105,6 +109,29 @@ public final class TerrainExport {
 
     cfg.add("biomes", biomes(biomes));
     return cfg;
+  }
+
+  /**
+   * The surface density with the jagged peaks term, as vanilla's sloped cheese has it but without
+   * the 3D noise: {@code 4 * quarter_negative((depth + jaggedness * half_negative(jagged)) * factor)}.
+   * Falls back to the plain density if the registry lacks the pieces (a datapack replaced them).
+   */
+  private DensityFunction withJaggedness(NoiseRouter router) {
+    try {
+      DensityFunction jaggedness = named("minecraft:overworld/jaggedness");
+      DensityFunction factor = named("minecraft:overworld/factor");
+      Holder<NormalNoise.NoiseParameters> jagged = noiseRegistry.getOrThrow(Noises.JAGGED);
+      DensityFunction peaks = DensityFunctions.mul(jaggedness, DensityFunctions.noise(jagged, 1500.0, 0.0).halfNegative());
+      DensityFunction depth = DensityFunctions.add(router.depth(), peaks);
+      return DensityFunctions.mul(DensityFunctions.constant(4.0), DensityFunctions.mul(depth, factor).quarterNegative());
+    } catch (RuntimeException e) {
+      return router.initialDensityWithoutJaggedness();
+    }
+  }
+
+  private DensityFunction named(String name) {
+    var key = ResourceKey.create(Registries.DENSITY_FUNCTION, ResourceLocation.parse(name));
+    return new DensityFunctions.HolderHolder(functionRegistry.getOrThrow(key));
   }
 
   private void root(JsonObject roots, String name, DensityFunction f) {
