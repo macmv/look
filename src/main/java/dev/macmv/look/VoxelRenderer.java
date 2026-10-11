@@ -24,7 +24,9 @@ public final class VoxelRenderer {
   private static int uCamBlock;
   private static int uCamFrac;
   private static int uGrid;
-  private static int uMinSection;
+  private static int uLevels;
+  private static int uBase;
+  private static int uLevel;
   private static int uMaxDist;
   private static int uDebug;
   private static int uAtlasSize;
@@ -70,8 +72,10 @@ public final class VoxelRenderer {
     int bz = (int) Math.floor(camZ);
     GL33C.glUniform3i(uCamBlock, bx, by, bz);
     GL33C.glUniform3f(uCamFrac, (float) (camX - bx), (float) (camY - by), (float) (camZ - bz));
-    GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, VoxelWorld.sectionCount(), VoxelWorld.GRID_XZ);
-    GL33C.glUniform1i(uMinSection, VoxelWorld.minSection());
+    GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, VoxelWorld.totalRows(), VoxelWorld.GRID_XZ);
+    GL33C.glUniform1i(uLevels, Lod.LEVELS);
+    GL33C.glUniform1f(uBase, Lod.BASE_BLOCKS);
+    GL33C.glUniform3iv(uLevel, VoxelWorld.levelParams());
 
     GL33C.glUniform1f(uMaxDist, VoxelWorld.maxDistBlocks());
 
@@ -90,7 +94,7 @@ public final class VoxelRenderer {
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
 
-    GL33C.glUniform1i(uDebug, LookState.heatmap ? 1 : 0);
+    GL33C.glUniform1i(uDebug, LookState.debug);
 
     RenderStats.beginGpu();
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
@@ -124,7 +128,9 @@ public final class VoxelRenderer {
     uCamBlock = GL33C.glGetUniformLocation(program, "uCamBlock");
     uCamFrac = GL33C.glGetUniformLocation(program, "uCamFrac");
     uGrid = GL33C.glGetUniformLocation(program, "uGrid");
-    uMinSection = GL33C.glGetUniformLocation(program, "uMinSection");
+    uLevels = GL33C.glGetUniformLocation(program, "uLevels");
+    uBase = GL33C.glGetUniformLocation(program, "uBase");
+    uLevel = GL33C.glGetUniformLocation(program, "uLevel");
     uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
     uDebug = GL33C.glGetUniformLocation(program, "uDebug");
     uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");

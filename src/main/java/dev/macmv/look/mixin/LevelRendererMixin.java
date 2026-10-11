@@ -2,7 +2,7 @@ package dev.macmv.look.mixin;
 
 import dev.macmv.look.LookState;
 import dev.macmv.look.VoxelRenderer;
-import dev.macmv.look.VoxelWorld;
+import dev.macmv.look.WorldSource;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.BlockGetter;
@@ -22,14 +22,14 @@ public abstract class LevelRendererMixin {
    */
   @Inject(method = "setSectionDirty(IIIZ)V", at = @At("HEAD"))
   private void look$sectionDirty(int x, int y, int z, boolean reRenderOnMainThread, CallbackInfo ci) {
-    VoxelWorld.markDirty(x, y, z);
+    WorldSource.INSTANCE.markDirty(x, y, z);
   }
 
   /** Block changes are what actually alters voxel data (setSectionDirty also fires for neighbors). */
   @Inject(method = "blockChanged", at = @At("HEAD"))
   private void look$blockChanged(
       BlockGetter level, BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci) {
-    VoxelWorld.blockChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
+    WorldSource.INSTANCE.blockChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
   }
 
   /**

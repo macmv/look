@@ -106,7 +106,7 @@ public final class RenderStats {
     List<String> out = new ArrayList<>();
 
     boolean voxel = LookState.voxelEnabled;
-    out.add("renderer: " + (voxel ? "voxel" : "vanilla") + (voxel && LookState.heatmap ? " (heatmap)" : ""));
+    out.add("renderer: " + (voxel ? "voxel" : "vanilla") + (voxel && LookState.debug == 1 ? " (heatmap)" : voxel && LookState.debug == 2 ? " (lod levels)" : ""));
 
     if (frames > 0) {
       out.add(String.format(
@@ -127,6 +127,7 @@ public final class RenderStats {
           "upload: %.2f ms/frame, %d sections rebuilt", updateNanos / 1e6 / voxelFrames, VoxelWorld.takeRebuilt()));
       out.add(String.format(
           "bricks: %d / %d, queued: %d", VoxelWorld.usedSlots(), VoxelWorld.capacity(), VoxelWorld.queued()));
+      out.add("lod bricks: " + java.util.Arrays.toString(VoxelWorld.loadedPerLevel()));
     }
 
     lines = out;

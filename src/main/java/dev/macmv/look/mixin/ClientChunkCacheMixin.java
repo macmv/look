@@ -1,6 +1,6 @@
 package dev.macmv.look.mixin;
 
-import dev.macmv.look.VoxelWorld;
+import dev.macmv.look.WorldSource;
 import java.util.function.Consumer;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.nbt.CompoundTag;
@@ -19,7 +19,7 @@ public abstract class ClientChunkCacheMixin {
   /** Tells the voxel world a chunk is going away, so its bricks can be freed. */
   @Inject(method = "drop", at = @At("HEAD"))
   private void look$drop(ChunkPos pos, CallbackInfo ci) {
-    VoxelWorld.unloadChunk(pos);
+    WorldSource.INSTANCE.unloadChunk(pos);
   }
 
   /** Hands the voxel world the raw section bytes of a chunk packet before vanilla consumes them. */
@@ -31,6 +31,6 @@ public abstract class ClientChunkCacheMixin {
       CompoundTag heightmaps,
       Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> blockEntities,
       CallbackInfoReturnable<LevelChunk> ci) {
-    VoxelWorld.ingestWire(x, z, buf);
+    WorldSource.INSTANCE.ingestWire(x, z, buf);
   }
 }
