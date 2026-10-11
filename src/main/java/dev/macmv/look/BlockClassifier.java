@@ -70,6 +70,9 @@ public final class BlockClassifier {
             return null;
           });
 
+  /** Set in the color table (above the RGB bits) for blocks that cast ambient occlusion. */
+  public static final int OCCLUDER_BIT = 1 << 24;
+
   private static final int UNKNOWN = -1;
   private static final int FALLBACK_COLOR = 0xA0B8C8;
 
@@ -77,7 +80,7 @@ public final class BlockClassifier {
   private static int nextId = 1;
   private static boolean warnedFull;
 
-  /** RGB per voxel id, indexed by voxel id. */
+  /** RGB (plus {@link #OCCLUDER_BIT}) per voxel id, indexed by voxel id. */
   private static final int[] colors = new int[MAX_ID + 1];
   private static boolean colorsDirty = true;
 
@@ -151,7 +154,8 @@ public final class BlockClassifier {
     } catch (RuntimeException e) {
       color = 0;
     }
-    colors[id] = color == 0 ? FALLBACK_COLOR : color;
+    colors[id] = (color == 0 ? FALLBACK_COLOR : color) & 0xFFFFFF;
+    if (state.canOcclude()) colors[id] |= OCCLUDER_BIT;
     colorsDirty = true;
 
     try {

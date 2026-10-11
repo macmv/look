@@ -15,7 +15,6 @@ public final class LookKeys {
 
   public static final KeyMapping RELOAD =
       new KeyMapping("key.look.reload", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F9, CATEGORY);
-
   private LookKeys() {}
 
   public static KeyMapping[] all() {

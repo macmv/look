@@ -49,6 +49,58 @@ int levelAt(vec3 rel) {
   return min(uLevels - 1, 1 + int(floor(log2(h / uBase))));
 }
 
+// True when the level-`lvl` voxel at integer coordinate `vc` (in voxels of that level) occludes light.
+bool occludes(int lvl, ivec3 vc) {
+  ivec3 sec = vc >> 4;
+  ivec3 rows = uLevel[lvl];
+  if (sec.y < rows.x || sec.y >= rows.x + rows.y) return false;
+  uint slot = readSlot(lvl, sec);
+  if (slot == 0u) return false;
+  ivec3 l = vc & 15;
+  uint id = texelFetch(uBricks, int(slot - 1u) * 4096 + (l.y * 16 + l.z) * 16 + l.x).r;
+  if (id == 0u) return false;
+  return (texelFetch(uColors, int(id)).r >> 24) != 0u;
+}
+
+// Vanilla's corner rule: 0 (darkest) to 3 (open).
+float cornerAO(bool side1, bool side2, bool corner) {
+  if (side1 && side2) return 0.0;
+  return 3.0 - float(side1) - float(side2) - float(corner);
+}
+
+// Ambient occlusion brightness for a hit on the level 0 voxel `voxel` (block coords) through face
+// `axis`. `p` is the hit point inside that voxel (0..1). Corner values come from the 8 voxels around
+// the face in the layer in front of it, interpolated like vanilla smooth lighting, with the quad
+// split along the diagonal that keeps the gradient from showing a seam.
+float ambientOcclusion(ivec3 voxel, int axis, vec3 d, vec3 p) {
+  ivec3 n = ivec3(0);
+  n[axis] = d[axis] > 0.0 ? -1 : 1;
+  ivec3 f = voxel + n;
+
+  // In-face axes, matching the (a, b) order used for textures: yz, xz, xy.
+  ivec3 eu = axis == 0 ? ivec3(0, 1, 0) : ivec3(1, 0, 0);
+  ivec3 ev = axis == 2 ? ivec3(0, 1, 0) : ivec3(0, 0, 1);
+  vec2 uv = clamp(vec2(dot(p, vec3(eu)), dot(p, vec3(ev))), 0.0, 1.0);
+
+  bool um = occludes(0, f - eu), up = occludes(0, f + eu);
+  bool vm = occludes(0, f - ev), vp = occludes(0, f + ev);
+  float a00 = cornerAO(um, vm, occludes(0, f - eu - ev));
+  float a10 = cornerAO(up, vm, occludes(0, f + eu - ev));
+  float a01 = cornerAO(um, vp, occludes(0, f - eu + ev));
+  float a11 = cornerAO(up, vp, occludes(0, f + eu + ev));
+
+  float u = uv.x, v = uv.y;
+  float ao;
+  if (a00 + a11 > a01 + a10) {
+    ao = u >= v ? a00 + u * (a10 - a00) + v * (a11 - a10)
+                : a00 + v * (a01 - a00) + u * (a11 - a01);
+  } else {
+    ao = u + v <= 1.0 ? a00 + u * (a10 - a00) + v * (a01 - a00)
+                      : a11 + (1.0 - u) * (a01 - a11) + (1.0 - v) * (a10 - a11);
+  }
+  return 0.55 + 0.15 * ao;
+}
+
 // Surface color of voxel `id` where the ray hits face `axis`. `local` is the hit point inside the
 // voxel (0..1) and t the ray distance. Returns false for transparent texels (leaves etc.), so the
 // caller keeps marching. `column` is the world column of the voxel's center, for biome tint.
@@ -238,6 +290,13 @@ void main() {
 
   // Flat per-face shading, same factors vanilla uses for its directional light.
   float shade = axis == 1 ? (d.y < 0.0 ? 1.0 : 0.5) : (axis == 0 ? 0.6 : 0.8);
+
+  if (level == 0) {
+    // Fade out over the second half of level 0, where the LOD switch happens.
+    float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
+    vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
+    shade *= mix(1.0, ambientOcclusion(voxel, axis, d, p), fade);
+  }
 
   if (uDebug == 2) {
     vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
