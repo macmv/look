@@ -69,7 +69,7 @@ public final class LayeredSource implements VoxelSource {
     if (solid < 0) return solid;
 
     // The seed source wrote the whole brick; loaded columns replace theirs.
-    if (world.overlay(level, sx, sy, sz, out) == 0) return solid;
+    if (!world.mayHaveChunks(level, sx, sz) || world.overlay(level, sx, sy, sz, out) == 0) return solid;
 
     solid = 0;
     for (int i = 0; i < 4096; i++) {

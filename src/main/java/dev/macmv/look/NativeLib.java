@@ -66,4 +66,43 @@ public final class NativeLib {
    * @param out 64 u64 masks, native order, direct buffer (512 bytes)
    */
   public static native void buildOccupancy(ByteBuffer ids, ByteBuffer out);
+
+  // --- Predicted terrain (native/src/engine.rs) ----------------------------------------------
+  //
+  // An engine samples the world's noise generator on a pool of native threads. It is described by
+  // the JSON from TerrainExport and the seed, asked for tiles (one section column of a pyramid
+  // level), and builds bricks out of the finished ones. All calls come from the render thread.
+
+  /**
+   * Starts an engine and returns its handle. Throws if the config cannot be used (an unsupported
+   * density function, for example).
+   *
+   * @param wantSections tiles farther than this from the camera, in sections of their level, are dropped
+   * @param threads worker threads, or 0 for the number of cores minus two
+   */
+  public static native long terrainCreate(long seed, byte[] config, int wantSections, int threads);
+
+  /** Stops the workers and frees the engine; the handle is dead afterwards. */
+  public static native void terrainDestroy(long handle);
+
+  /** Voxel ids for bricks: per surface kind the top and filler id, then stone and water (14 ints). */
+  public static native void terrainSetIds(long handle, int[] ids);
+
+  /** Camera position in blocks, to work on the nearest tiles first. */
+  public static native void terrainCamera(long handle, int x, int z);
+
+  /** Queues a tile unless it is queued or done. Returns whether it was newly queued. */
+  public static native boolean terrainRequest(long handle, int level, int sx, int sz);
+
+  /** Writes up to {@code out.capacity() / 8} keys of finished tiles (a {@link SectionKey} with y = 0, native order) and returns how many. */
+  public static native int terrainPoll(long handle, ByteBuffer out);
+
+  /**
+   * Builds one brick (4096 u16 voxel ids, native order, direct) of a finished tile. Returns how
+   * many voxels are not air, or -1 if the tile is not finished.
+   */
+  public static native int terrainFetch(long handle, int level, int sx, int sy, int sz, ByteBuffer out);
+
+  /** Fills {@code out} with {tiles queued or running, tiles kept, tiles computed so far}. */
+  public static native void terrainStats(long handle, long[] out);
 }

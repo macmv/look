@@ -3,11 +3,18 @@
 
 mod brick;
 
+pub mod biome;
+pub mod density;
+pub mod engine;
+pub mod noise;
+pub mod rng;
+pub mod terrain;
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use jni::{
-  objects::{JByteBuffer, JClass},
-  sys::jstring,
+  objects::{JByteArray, JByteBuffer, JClass, JIntArray, JLongArray},
+  sys::{jboolean, jint, jlong, jstring},
   JNIEnv,
 };
 
@@ -74,5 +81,173 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_buildOccupancy<'l>(
 
     brick::build_occupancy(ids, out);
     Ok(())
+  })
+}
+
+// --- Predicted terrain -------------------------------------------------------------------------
+
+use engine::Engine;
+use terrain::{Ids, Terrain, BRICK_VOXELS};
+
+/// Borrows the engine behind a handle from `terrainCreate`. Java must not use a handle after
+/// `terrainDestroy`, and only calls in from the render thread.
+fn engine<'a>(handle: jlong) -> Result<&'a Engine, String> {
+  if handle == 0 {
+    return Err("terrain engine handle is null".into());
+  }
+  // SAFETY: non-null handles come from Box::into_raw in terrainCreate and live until terrainDestroy.
+  Ok(unsafe { &*(handle as *const Engine) })
+}
+
+/// Direct buffer contents as a typed pointer, checking size and alignment.
+fn buffer_ptr<T>(env: &JNIEnv, buf: &JByteBuffer, min_bytes: usize) -> Result<(*mut T, usize), String> {
+  let cap = env.get_direct_buffer_capacity(buf).map_err(|e| e.to_string())?;
+  if cap < min_bytes {
+    return Err(format!("buffer too small: {cap} < {min_bytes}"));
+  }
+  let ptr = env.get_direct_buffer_address(buf).map_err(|e| e.to_string())?;
+  if ptr as usize % std::mem::align_of::<T>() != 0 {
+    return Err("direct buffers must be aligned (use allocateDirect)".into());
+  }
+  Ok((ptr as *mut T, cap))
+}
+
+/// Builds the generator from the exported world config and starts its worker threads
+/// (`threads <= 0` picks a default that leaves two cores for the game). Returns a handle.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCreate<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  seed: jlong,
+  config: JByteArray<'l>,
+  want_sections: jint,
+  threads: jint,
+) -> jlong {
+  guard(&mut env, |env| {
+    let config = env.convert_byte_array(&config).map_err(|e| e.to_string())?;
+    let terrain = Terrain::from_config(seed, &config)?;
+    let threads = if threads > 0 {
+      threads as usize
+    } else {
+      std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(2).max(1)
+    };
+    Ok(Box::into_raw(Box::new(Engine::new(terrain, want_sections, threads))) as jlong)
+  })
+}
+
+/// Stops the workers and frees the engine.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainDestroy<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+) {
+  guard(&mut env, |_| {
+    if handle != 0 {
+      // SAFETY: see `engine`; this is the one place the box is reclaimed.
+      drop(unsafe { Box::from_raw(handle as *mut Engine) });
+    }
+    Ok(())
+  })
+}
+
+/// Sets the voxel ids bricks are written with: per surface kind the top and filler id, then stone
+/// and the water stand-in (`terrain::Ids::LEN` values).
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainSetIds<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  ids: JIntArray<'l>,
+) {
+  guard(&mut env, |env| {
+    let len = env.get_array_length(&ids).map_err(|e| e.to_string())? as usize;
+    let mut buf = vec![0i32; len];
+    env.get_int_array_region(&ids, 0, &mut buf).map_err(|e| e.to_string())?;
+    let ids = Ids::from_slice(&buf).ok_or_else(|| format!("expected {} ids, got {len}", Ids::LEN))?;
+    engine(handle)?.set_ids(ids);
+    Ok(())
+  })
+}
+
+/// Tells the engine where the camera is, in blocks.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCamera<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  x: jint,
+  z: jint,
+) {
+  guard(&mut env, |_| {
+    engine(handle)?.set_camera(x, z);
+    Ok(())
+  })
+}
+
+/// Queues a tile (a section column of a level). Returns true if it was newly queued.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainRequest<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  level: jint,
+  sx: jint,
+  sz: jint,
+) -> jboolean {
+  guard(&mut env, |_| Ok(engine(handle)?.request(level as u32, sx, sz) as jboolean))
+}
+
+/// Writes the keys of tiles finished since the last call into `out` (u64 each, native order) and
+/// returns how many.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainPoll<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  out: JByteBuffer<'l>,
+) -> jint {
+  guard(&mut env, |env| {
+    let (ptr, cap) = buffer_ptr::<u64>(env, &out, 8)?;
+    // SAFETY: size and alignment were checked, and Java owns the buffer for the duration of the call.
+    let out = unsafe { std::slice::from_raw_parts_mut(ptr, cap / 8) };
+    Ok(engine(handle)?.poll(out) as jint)
+  })
+}
+
+/// Builds one brick (4096 u16 voxel ids, native order) from a finished tile. Returns the number of
+/// non-air voxels, or -1 if the tile is not ready.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFetch<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  level: jint,
+  sx: jint,
+  sy: jint,
+  sz: jint,
+  out: JByteBuffer<'l>,
+) -> jint {
+  guard(&mut env, |env| {
+    let (ptr, _) = buffer_ptr::<[u16; BRICK_VOXELS]>(env, &out, BRICK_VOXELS * 2)?;
+    // SAFETY: as in terrainPoll.
+    let out = unsafe { &mut *ptr };
+    Ok(engine(handle)?.fetch(level as u32, sx, sy, sz, out).map_or(-1, |n| n as jint))
+  })
+}
+
+/// Fills `out` with `{queued or running tiles, finished tiles kept, tiles computed so far}`.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainStats<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  out: JLongArray<'l>,
+) {
+  guard(&mut env, |env| {
+    let (pending, tiles, completed) = engine(handle)?.stats();
+    env
+      .set_long_array_region(&out, 0, &[pending as jlong, tiles as jlong, completed as jlong])
+      .map_err(|e| e.to_string())
   })
 }

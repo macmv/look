@@ -12,3 +12,5 @@ lto = "thin"
 
 [dependencies]
 jni = "0.21"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+md5 = "0.7"

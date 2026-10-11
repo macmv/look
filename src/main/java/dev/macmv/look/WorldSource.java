@@ -106,6 +106,25 @@ public final class WorldSource implements VoxelSource {
     return true;
   }
 
+  /**
+   * Whether any chunk of a coarse section's footprint could be loaded, going by how far the client
+   * keeps chunks around the player. Cheap, so layered sources can skip the real lookups elsewhere.
+   */
+  public boolean mayHaveChunks(int level, int sx, int sz) {
+    Minecraft mc = Minecraft.getInstance();
+    if (mc.player == null) return true;
+
+    int reach = Math.max(2, mc.options.getEffectiveRenderDistance()) + VIEW_MARGIN + 1;
+    int minX = sx << level;
+    int minZ = sz << level;
+    int span = (1 << level) - 1;
+    int px = mc.player.blockPosition().getX() >> 4;
+    int pz = mc.player.blockPosition().getZ() >> 4;
+    int dx = Math.max(0, Math.max(minX - px, px - (minX + span)));
+    int dz = Math.max(0, Math.max(minZ - pz, pz - (minZ + span)));
+    return Math.max(dx, dz) <= reach;
+  }
+
   @Override
   public float reachBlocks() {
     return (Minecraft.getInstance().options.getEffectiveRenderDistance() + 1) * 16f;
