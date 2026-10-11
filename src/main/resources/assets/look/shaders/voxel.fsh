@@ -10,6 +10,7 @@ uniform vec3 uCamFrac;
 uniform ivec3 uGrid;       // indirection size: x sections, y sections, z sections
 uniform int uMinSection;   // lowest section y in the level
 uniform float uMaxDist;
+uniform int uDebug;        // 1: show a step-count heatmap instead of colors
 
 uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
 uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
@@ -27,7 +28,8 @@ uint readSlot(ivec3 sec) {
 
 // Two-level DDA: whole sections are skipped when empty, voxels are stepped inside bricks.
 // o is relative to uCamBlock. d is normalized with no zero components.
-bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel) {
+bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int steps) {
+  steps = 0;
   vec3 invD = 1.0 / d;
   ivec3 stp = ivec3(sign(d));
   vec3 up = vec3(d.x > 0.0 ? 1.0 : 0.0, d.y > 0.0 ? 1.0 : 0.0, d.z > 0.0 ? 1.0 : 0.0);
@@ -37,6 +39,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
 
   for (int i = 0; i < 400; i++) {
     if (t > uMaxDist) return false;
+    steps++;
 
     ivec3 vox = uCamBlock + ivec3(floor(o + d * t));
     ivec3 sec = vox >> 4;
@@ -67,6 +70,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
     float tc = t;
 
     for (int j = 0; j < 48; j++) {
+      steps++;
       uint id = texelFetch(uBricks, base + (v.y * 16 + v.z) * 16 + v.x).r;
       if (id != 0u) {
         tHit = tc;
@@ -93,6 +97,11 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
   return false;
 }
 
+vec3 heat(float x) {
+  x = clamp(x, 0.0, 1.0);
+  return vec3(clamp(4.0 * x - 2.0, 0.0, 1.0), clamp(2.0 - abs(4.0 * x - 2.0), 0.0, 1.0), clamp(2.0 - 4.0 * x, 0.0, 1.0));
+}
+
 void main() {
   vec4 n = uInvViewProj * vec4(vNdc, -1.0, 1.0);
   vec4 f = uInvViewProj * vec4(vNdc, 1.0, 1.0);
@@ -108,14 +117,29 @@ void main() {
   uint id;
   int axis;
   ivec3 voxel;
-  if (!trace(o, d, tHit, id, axis, voxel)) discard;
+  int steps;
+  bool hit = trace(o, d, tHit, id, axis, voxel, steps);
+
+  if (!hit && uDebug == 0) discard;
 
   // Same depth vanilla would have written for this point (camera-relative position).
-  vec3 rel = nearP + d * tHit;
-  vec4 clip = uProj * (uView * vec4(rel, 1.0));
-  float depth = clip.z / clip.w * 0.5 + 0.5;
-  if (depth > 1.0) discard;
+  float depth = 1.0;
+  if (hit) {
+    vec3 rel = nearP + d * tHit;
+    vec4 clip = uProj * (uView * vec4(rel, 1.0));
+    depth = clip.z / clip.w * 0.5 + 0.5;
+    if (depth > 1.0) {
+      if (uDebug == 0) discard;
+      depth = 1.0;
+    }
+  }
   gl_FragDepth = depth;
+
+  if (uDebug == 1) {
+    // Misses are shown too: rays that march the full distance are the expensive ones.
+    fragColor = vec4(heat(float(steps) / 150.0), 1.0);
+    return;
+  }
 
   uint c = texelFetch(uColors, int(id)).r;
   vec3 color = vec3(float((c >> 16) & 255u), float((c >> 8) & 255u), float(c & 255u)) / 255.0;

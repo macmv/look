@@ -59,6 +59,7 @@ public final class VoxelWorld {
   private static int freeCount;
   private static int capacity;
   private static boolean warnedFull;
+  private static int rebuilt;
 
   private static boolean glReady;
   private static boolean indirectionStale;
@@ -78,6 +79,26 @@ public final class VoxelWorld {
 
   public static boolean isReady() {
     return level != null && glReady && !indirectionStale;
+  }
+
+  /** Number of sections rebuilt since the last call. */
+  public static int takeRebuilt() {
+    int n = rebuilt;
+    rebuilt = 0;
+    return n;
+  }
+
+  public static int usedSlots() {
+    return capacity - freeCount;
+  }
+
+  public static int capacity() {
+    return capacity;
+  }
+
+  /** Sections waiting to be rebuilt. */
+  public static int queued() {
+    return dirty.size();
   }
 
   public static int minSection() {
@@ -195,6 +216,7 @@ public final class VoxelWorld {
   }
 
   private static void rebuildSection(long key) {
+    rebuilt++;
     int sx = SectionPos.x(key);
     int sy = SectionPos.y(key);
     int sz = SectionPos.z(key);

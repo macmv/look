@@ -1,5 +1,6 @@
 package dev.macmv.look.mixin;
 
+import dev.macmv.look.LookState;
 import dev.macmv.look.VoxelRenderer;
 import dev.macmv.look.VoxelWorld;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -37,6 +38,11 @@ public abstract class LevelRendererMixin {
       Matrix4f view,
       Matrix4f projection,
       CallbackInfo ci) {
+    if (type == RenderType.solid()) LookState.poll();
+
+    // Vanilla keeps building meshes, so letting it draw again is all "off" takes.
+    if (!LookState.voxelEnabled) return;
+
     if (type == RenderType.solid()) {
       VoxelRenderer.render(view, projection, camX, camY, camZ);
     }

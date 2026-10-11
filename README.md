@@ -20,3 +20,10 @@ Gradle must run on JDK 21 (Loom 1.11.x; newer Loom needs Java 25):
     JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew runClient
 
 `cargoBuild` builds the host platform only; other platforms are a CI job.
+
+## Keys
+
+Rebindable in Options > Controls > Look:
+
+- F7: toggle voxel / vanilla renderer (vanilla meshes are always kept up to date, so it is instant)
+- F8: toggle debug view (step-count heatmap, plus timing stats in the action bar and log)

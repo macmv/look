@@ -26,6 +26,7 @@ public final class VoxelRenderer {
   private static int uGrid;
   private static int uMinSection;
   private static int uMaxDist;
+  private static int uDebug;
 
   private VoxelRenderer() {}
 
@@ -33,7 +34,9 @@ public final class VoxelRenderer {
   public static void render(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ) {
     if (program == 0) init();
 
+    long updateStart = System.nanoTime();
     VoxelWorld.update();
+    RenderStats.addUpdate(System.nanoTime() - updateStart);
     if (!VoxelWorld.isReady()) return;
 
     // Vanilla caches GL state in GlStateManager, so go through it for anything it tracks.
@@ -79,12 +82,18 @@ public final class VoxelRenderer {
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
 
+    GL33C.glUniform1i(uDebug, LookState.debugView ? 1 : 0);
+
+    RenderStats.beginGpu();
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
+    RenderStats.endGpu();
 
     GL33C.glActiveTexture(prevUnit);
 
     GlStateManager._glBindVertexArray(0);
     GlStateManager._glUseProgram(0);
+
+    RenderStats.endFrame();
   }
 
   private static void init() {
@@ -109,6 +118,7 @@ public final class VoxelRenderer {
     uGrid = GL33C.glGetUniformLocation(program, "uGrid");
     uMinSection = GL33C.glGetUniformLocation(program, "uMinSection");
     uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
+    uDebug = GL33C.glGetUniformLocation(program, "uDebug");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
     vao = GL33C.glGenVertexArrays();

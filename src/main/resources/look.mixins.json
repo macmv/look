@@ -5,7 +5,8 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "ClientChunkCacheMixin",
-    "LevelRendererMixin"
+    "LevelRendererMixin",
+    "OptionsMixin"
   ],
   "injectors": {
     "defaultRequire": 1
