@@ -3,6 +3,7 @@ package dev.macmv.look;
 import com.mojang.blaze3d.platform.GlStateManager;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -12,6 +13,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.texture.MissingTextureAtlasSprite;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -29,6 +32,8 @@ import org.lwjgl.system.MemoryUtil;
  *       {@code brickSlot + 1}. X and Z wrap (toroidal), Y is offset by the level's min section.
  *   <li>A texture buffer (R16UI) holding all bricks: 4096 voxel ids per slot.
  *   <li>A texture buffer (R32UI) mapping voxel id to an RGB color.
+ *   <li>A texture buffer (RGBA32F) with the per-face atlas mapping of each voxel id, see
+ *       {@link BlockClassifier}. Textures themselves come from vanilla's block atlas.
  * </ul>
  *
  * <p>All methods run on the render thread (which is also the client main thread). Events only queue
@@ -41,6 +46,8 @@ public final class VoxelWorld {
   public static final int UNIT_INDIRECTION = 10;
   public static final int UNIT_BRICKS = 11;
   public static final int UNIT_COLORS = 12;
+  public static final int UNIT_FACES = 13;
+  public static final int UNIT_ATLAS = 14;
 
   private static final int BRICK_VOXELS = 16 * 16 * 16;
   private static final int BRICK_BYTES = BRICK_VOXELS * 2;
@@ -71,6 +78,14 @@ public final class VoxelWorld {
   private static int brickTex;
   private static int colorBuf;
   private static int colorTex;
+  private static int faceBuf;
+  private static int faceTex;
+
+  // Vanilla's block atlas, re-queried whenever resources reload.
+  private static Object atlasMarker;
+  private static float atlasWidth = 1;
+  private static float atlasHeight = 1;
+  private static int atlasMaxLevel;
 
   private static ByteBuffer brickScratch;
   private static IntBuffer colorScratch;
@@ -102,6 +117,18 @@ public final class VoxelWorld {
   /** Sections waiting to be rebuilt. */
   public static int queued() {
     return dirty.size();
+  }
+
+  public static float atlasWidth() {
+    return atlasWidth;
+  }
+
+  public static float atlasHeight() {
+    return atlasHeight;
+  }
+
+  public static int atlasMaxLevel() {
+    return atlasMaxLevel;
   }
 
   public static int minSection() {
@@ -201,6 +228,7 @@ public final class VoxelWorld {
     int prevUnit = GlStateManager._getActiveTexture();
     try {
       if (!glReady) initGl();
+      checkAtlas();
       if (indirectionStale) createIndirectionTexture();
 
       // Everything below uploads to the indirection texture on this unit, and bricks via the
@@ -223,12 +251,13 @@ public final class VoxelWorld {
       }
 
       if (BlockClassifier.takeColorsDirty()) uploadColors();
+      uploadFaces();
     } finally {
       GL33C.glActiveTexture(prevUnit);
     }
   }
 
-  /** Binds the three data textures to their fixed units. The caller restores the active unit. */
+  /** Binds the data textures and the block atlas to their fixed units. The caller restores the active unit. */
   public static void bind() {
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_INDIRECTION);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_3D, indirectionTex);
@@ -236,6 +265,56 @@ public final class VoxelWorld {
     GL33C.glBindTexture(GL33C.GL_TEXTURE_BUFFER, brickTex);
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_COLORS);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_BUFFER, colorTex);
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_FACES);
+    GL33C.glBindTexture(GL33C.GL_TEXTURE_BUFFER, faceTex);
+    // Units above vanilla's cached range, so binding straight through GL cannot desync its cache.
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_ATLAS);
+    GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, atlasId());
+  }
+
+  private static int atlasId() {
+    return Minecraft.getInstance().getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS).getId();
+  }
+
+  /**
+   * Notices a resource reload (the atlas is re-stitched, which replaces its sprite objects). All
+   * voxel ids and uvs are stale then, so start over.
+   */
+  private static void checkAtlas() {
+    TextureAtlas atlas = (TextureAtlas) Minecraft.getInstance().getTextureManager().getTexture(TextureAtlas.LOCATION_BLOCKS);
+    Object marker = atlas.getSprite(MissingTextureAtlasSprite.getLocation());
+    if (marker == atlasMarker) return;
+
+    boolean first = atlasMarker == null;
+    atlasMarker = marker;
+
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_ATLAS);
+    GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, atlas.getId());
+    atlasWidth = Math.max(1, GL33C.glGetTexLevelParameteri(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_TEXTURE_WIDTH));
+    atlasHeight = Math.max(1, GL33C.glGetTexLevelParameteri(GL33C.GL_TEXTURE_2D, 0, GL33C.GL_TEXTURE_HEIGHT));
+    atlasMaxLevel = GL33C.glGetTexParameteri(GL33C.GL_TEXTURE_2D, GL33C.GL_TEXTURE_MAX_LEVEL);
+
+    BlockClassifier.reset();
+    if (!first) {
+      LookMod.LOGGER.info("Resources reloaded; rebuilding voxel data");
+      refreshAll();
+    }
+  }
+
+  private static void uploadFaces() {
+    int[] range = BlockClassifier.takeFaceRange();
+    if (range == null) return;
+
+    int from = range[0] * BlockClassifier.ID_FLOATS;
+    int count = (range[1] - range[0] + 1) * BlockClassifier.ID_FLOATS;
+    FloatBuffer buf = MemoryUtil.memAllocFloat(count);
+    try {
+      buf.put(BlockClassifier.faces(), from, count).flip();
+      GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, faceBuf);
+      GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) from * 4, buf);
+    } finally {
+      MemoryUtil.memFree(buf);
+    }
   }
 
   // --- Section handling ------------------------------------------------------------------------
@@ -372,6 +451,15 @@ public final class VoxelWorld {
     GL33C.glBindTexture(GL33C.GL_TEXTURE_BUFFER, colorTex);
     GL33C.glTexBuffer(GL33C.GL_TEXTURE_BUFFER, GL33C.GL_R32UI, colorBuf);
     uploadColors();
+
+    faceBuf = GL33C.glGenBuffers();
+    GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, faceBuf);
+    GL33C.glBufferData(
+        GL33C.GL_TEXTURE_BUFFER, (long) (BlockClassifier.MAX_ID + 1) * BlockClassifier.ID_FLOATS * 4, GL33C.GL_DYNAMIC_DRAW);
+    faceTex = GL33C.glGenTextures();
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_FACES);
+    GL33C.glBindTexture(GL33C.GL_TEXTURE_BUFFER, faceTex);
+    GL33C.glTexBuffer(GL33C.GL_TEXTURE_BUFFER, GL33C.GL_RGBA32F, faceBuf);
 
     indirectionTex = GL33C.glGenTextures();
 

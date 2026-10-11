@@ -27,6 +27,9 @@ public final class VoxelRenderer {
   private static int uMinSection;
   private static int uMaxDist;
   private static int uDebug;
+  private static int uAtlasSize;
+  private static int uMaxLod;
+  private static int uPixelAngle;
 
   private VoxelRenderer() {}
 
@@ -78,6 +81,14 @@ public final class VoxelRenderer {
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uIndirection"), VoxelWorld.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uBricks"), VoxelWorld.UNIT_BRICKS);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uColors"), VoxelWorld.UNIT_COLORS);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uFaces"), VoxelWorld.UNIT_FACES);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uAtlas"), VoxelWorld.UNIT_ATLAS);
+
+    // Angle one pixel covers, used to pick a mip level from the distance of a hit.
+    float pixelAngle = 2f / (projection.m11() * Math.max(1, Minecraft.getInstance().getMainRenderTarget().height));
+    GL33C.glUniform2f(uAtlasSize, VoxelWorld.atlasWidth(), VoxelWorld.atlasHeight());
+    GL33C.glUniform1f(uMaxLod, VoxelWorld.atlasMaxLevel());
+    GL33C.glUniform1f(uPixelAngle, pixelAngle);
 
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
@@ -119,6 +130,9 @@ public final class VoxelRenderer {
     uMinSection = GL33C.glGetUniformLocation(program, "uMinSection");
     uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
     uDebug = GL33C.glGetUniformLocation(program, "uDebug");
+    uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");
+    uMaxLod = GL33C.glGetUniformLocation(program, "uMaxLod");
+    uPixelAngle = GL33C.glGetUniformLocation(program, "uPixelAngle");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
     vao = GL33C.glGenVertexArrays();
