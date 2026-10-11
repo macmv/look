@@ -1,5 +1,6 @@
 {
   "key.categories.look": "Look",
   "key.look.toggle_renderer": "Toggle voxel / vanilla renderer",
-  "key.look.toggle_debug": "Toggle voxel step-count heatmap"
+  "key.look.toggle_debug": "Toggle voxel step-count heatmap",
+  "key.look.reload": "Reload voxel chunks"
 }

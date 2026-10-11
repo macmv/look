@@ -13,9 +13,12 @@ public final class LookKeys {
   public static final KeyMapping TOGGLE_DEBUG =
       new KeyMapping("key.look.toggle_debug", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F8, CATEGORY);
 
+  public static final KeyMapping RELOAD =
+      new KeyMapping("key.look.reload", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F9, CATEGORY);
+
   private LookKeys() {}
 
   public static KeyMapping[] all() {
-    return new KeyMapping[] {TOGGLE_RENDERER, TOGGLE_DEBUG};
+    return new KeyMapping[] {TOGGLE_RENDERER, TOGGLE_DEBUG, RELOAD};
   }
 }

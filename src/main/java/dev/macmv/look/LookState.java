@@ -4,11 +4,12 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 
 /**
- * Runtime switches, driven by the rebindable keys in {@link LookKeys} (defaults F7 and F8).
+ * Runtime switches, driven by the rebindable keys in {@link LookKeys} (defaults F7, F8 and F9).
  *
  * <ul>
  *   <li>Toggle renderer: voxel renderer or vanilla's chunk renderer.
  *   <li>Toggle heatmap: step-count heatmap of the voxel pass. Timing stats are always on screen.
+ *   <li>Reload: throw away all voxel data and rebuild it from the loaded chunks.
  * </ul>
  *
  * Vanilla keeps compiling section meshes while the voxel renderer is on, and the voxel world keeps
@@ -32,6 +33,11 @@ public final class LookState {
     while (LookKeys.TOGGLE_DEBUG.consumeClick()) {
       heatmap = !heatmap;
       mc.gui.setOverlayMessage(Component.literal("Look heatmap: " + (heatmap ? "on" : "off")), false);
+    }
+
+    while (LookKeys.RELOAD.consumeClick()) {
+      VoxelWorld.refreshAll();
+      mc.gui.setOverlayMessage(Component.literal("Look: reloading voxel data"), false);
     }
   }
 }

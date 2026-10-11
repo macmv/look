@@ -56,11 +56,17 @@ public final class VoxelWorld {
   private static final int BRICK_BYTES = BRICK_VOXELS * 2;
   private static final long NO_OWNER = Long.MIN_VALUE;
   private static final long BUDGET_NANOS = 2_000_000L;
+  /** Frames between sweeps that free the bricks of chunks that left the view or were dropped. */
+  private static final int SWEEP_INTERVAL = 20;
+  /** Chunks the client keeps loaded past the render distance; the sweep keeps the same margin. */
+  private static final int VIEW_MARGIN = 3;
 
   private static final LinkedHashSet<Long> dirty = new LinkedHashSet<>();
   private static final LinkedHashSet<Long> unloads = new LinkedHashSet<>();
   /** Raw packet data per chunk (keyed by {@link ChunkPos#toLong}), consumed as sections rebuild. */
   private static final Map<Long, WireChunk> wire = new HashMap<>();
+  /** Sections that found no free brick slot; retried once a sweep frees some. */
+  private static final LinkedHashSet<Long> starved = new LinkedHashSet<>();
 
   private static ClientLevel level;
   private static int minSection;
@@ -74,6 +80,17 @@ public final class VoxelWorld {
   private static int freeCount;
   private static int capacity;
   private static boolean warnedFull;
+
+  // Player position in chunks and the keep radius, refreshed every frame.
+  private static boolean viewValid;
+  private static int viewCx;
+  private static int viewCz;
+  private static int viewRadius;
+  private static int sweepCountdown;
+
+  // Scratch for ordering the dirty queue nearest-first.
+  private static long[] dirtyKeys = new long[0];
+  private static long[] dirtyOrder = new long[0];
   private static int rebuilt;
 
   private static boolean glReady;
@@ -121,7 +138,7 @@ public final class VoxelWorld {
 
   /** Sections waiting to be rebuilt. */
   public static int queued() {
-    return dirty.size();
+    return dirty.size() + starved.size();
   }
 
   public static float atlasWidth() {
@@ -185,7 +202,7 @@ public final class VoxelWorld {
 
     switchLevel(l);
 
-    int radius = Math.min(GRID_XZ / 2 - 1, mc.options.getEffectiveRenderDistance() + 2);
+    int radius = keepRadius(mc);
     int cx = mc.player.blockPosition().getX() >> 4;
     int cz = mc.player.blockPosition().getZ() >> 4;
 
@@ -209,6 +226,27 @@ public final class VoxelWorld {
     }
   }
 
+  /** Chunks around the player that get voxel data. Less than half the grid, so nothing aliases. */
+  private static int keepRadius(Minecraft mc) {
+    return Math.min(GRID_XZ / 2 - 1, mc.options.getEffectiveRenderDistance() + VIEW_MARGIN);
+  }
+
+  private static void updateView() {
+    Minecraft mc = Minecraft.getInstance();
+    if (mc.player == null) {
+      viewValid = false;
+      return;
+    }
+    viewCx = mc.player.blockPosition().getX() >> 4;
+    viewCz = mc.player.blockPosition().getZ() >> 4;
+    viewRadius = keepRadius(mc);
+    viewValid = true;
+  }
+
+  private static boolean outOfView(int cx, int cz) {
+    return viewValid && (Math.abs(cx - viewCx) > viewRadius || Math.abs(cz - viewCz) > viewRadius);
+  }
+
   /** Switches to the current client level if it changed. Returns false when there is no level. */
   private static boolean trackLevel() {
     ClientLevel current = Minecraft.getInstance().level;
@@ -230,6 +268,9 @@ public final class VoxelWorld {
     dirty.clear();
     unloads.clear();
     wire.clear();
+    starved.clear();
+    viewValid = false;
+    sweepCountdown = 0;
     resetSlots();
     indirectionStale = true;
   }
@@ -264,18 +305,76 @@ public final class VoxelWorld {
         unloadChunkNow(ChunkPos.getX(pos), ChunkPos.getZ(pos));
       }
 
-      long start = System.nanoTime();
-      for (Iterator<Long> it = dirty.iterator(); it.hasNext(); ) {
-        long key = it.next();
-        it.remove();
-        rebuildSection(key);
-        if (System.nanoTime() - start > BUDGET_NANOS) break;
+      updateView();
+      if (--sweepCountdown <= 0) {
+        sweepCountdown = SWEEP_INTERVAL;
+        sweep();
       }
+
+      processDirty();
 
       if (BlockClassifier.takeColorsDirty()) uploadColors();
       uploadFaces();
     } finally {
       GL33C.glActiveTexture(prevUnit);
+    }
+  }
+
+  /** Rebuilds queued sections nearest-first until the frame budget runs out. */
+  private static void processDirty() {
+    int n = dirty.size();
+    if (n == 0) return;
+
+    if (dirtyKeys.length < n) {
+      dirtyKeys = new long[n * 2];
+      dirtyOrder = new long[n * 2];
+    }
+    int i = 0;
+    for (long key : dirty) {
+      long dx = SectionPos.x(key) - viewCx;
+      long dz = SectionPos.z(key) - viewCz;
+      dirtyKeys[i] = key;
+      dirtyOrder[i] = (viewValid ? dx * dx + dz * dz : 0) << 32 | i;
+      i++;
+    }
+    Arrays.sort(dirtyOrder, 0, n);
+
+    long start = System.nanoTime();
+    for (int j = 0; j < n; j++) {
+      long key = dirtyKeys[(int) (dirtyOrder[j] & 0xFFFFFFFFL)];
+      dirty.remove(key);
+      rebuildSection(key);
+      if (System.nanoTime() - start > BUDGET_NANOS) break;
+    }
+  }
+
+  /**
+   * Frees the bricks of sections whose chunk is gone or out of view. Vanilla does not always call
+   * {@code drop} (chunks that fall out of the view range are just replaced), so this is what keeps
+   * the slot pool from leaking. Then retries the sections that were starved of slots.
+   */
+  private static void sweep() {
+    for (int cell = 0; cell < owner.length; cell++) {
+      long key = owner[cell];
+      if (key == NO_OWNER) continue;
+
+      int x = SectionPos.x(key);
+      int z = SectionPos.z(key);
+      if (outOfView(x, z) || level.getChunkSource().getChunk(x, z, ChunkStatus.FULL, false) == null) {
+        releaseCell(cell);
+        writeCell(x, SectionPos.y(key), z, 0);
+      }
+    }
+
+    if (viewValid) {
+      wire.keySet().removeIf(k -> outOfView(ChunkPos.getX(k), ChunkPos.getZ(k)));
+      starved.removeIf(k -> outOfView(SectionPos.x(k), SectionPos.z(k)));
+    }
+
+    if (freeCount > 0 && !starved.isEmpty()) {
+      dirty.addAll(starved);
+      starved.clear();
+      warnedFull = false;
     }
   }
 
@@ -362,6 +461,11 @@ public final class VoxelWorld {
     int sz = SectionPos.z(key);
     int cell = cellIndex(sx, sy, sz);
 
+    if (outOfView(sx, sz)) {
+      clearIfOwner(key, sx, sy, sz);
+      return;
+    }
+
     LevelChunk chunk = level.getChunkSource().getChunk(sx, sz, ChunkStatus.FULL, false);
     if (chunk == null) {
       clearIfOwner(key, sx, sy, sz);
@@ -390,6 +494,7 @@ public final class VoxelWorld {
           LookMod.LOGGER.warn("Out of brick slots ({}); some terrain will be missing", capacity);
           warnedFull = true;
         }
+        starved.add(key);
         return;
       }
       slot = freeSlots[--freeCount];
@@ -464,7 +569,7 @@ public final class VoxelWorld {
 
   private static void initGl() {
     int maxTexels = GL33C.glGetInteger(GL33C.GL_MAX_TEXTURE_BUFFER_SIZE);
-    int wanted = Integer.getInteger("look.brickCapacity", 16384);
+    int wanted = Integer.getInteger("look.brickCapacity", 32768);
     capacity = Math.max(1, Math.min(wanted, maxTexels / BRICK_VOXELS));
 
     freeSlots = new int[capacity];
