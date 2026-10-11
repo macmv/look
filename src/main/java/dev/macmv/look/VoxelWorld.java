@@ -30,7 +30,9 @@ import org.lwjgl.system.MemoryUtil;
  *       {@code brickSlot + 1}. X and Z wrap (toroidal). The levels of the LOD pyramid ({@link Lod})
  *       are stacked along Y: each has its own rows, and a section of level k is 16 voxels of
  *       2^k blocks, so it covers {@code 16 << k} blocks. All levels share one pool of brick slots.
- *   <li>A texture buffer (R16UI) holding all bricks: 4096 voxel ids per slot.
+ *   <li>A texture buffer (R16UI) holding all bricks: 4096 voxel ids per slot. A section that is
+ *       one solid voxel id throughout (solid stone underground, mostly) does not get a brick of its
+ *       own: all sections of that id point at one shared brick.
  *   <li>A texture buffer (R32UI) mapping voxel id to an RGB color.
  *   <li>A texture buffer (RGBA32F) with the per-face atlas mapping of each voxel id, see
  *       {@link BlockClassifier}. Textures themselves come from vanilla's block atlas.
@@ -41,8 +43,9 @@ import org.lwjgl.system.MemoryUtil;
  * one {@link SectionState} in {@link #states}, and every change goes through {@link #setState}:
  *
  * <pre>
- *   (untracked) --event--> WAITING --rebuild--> LOADED | EMPTY | STARVED
- *   WAITING | LOADED | EMPTY | STARVED --left the view--> OUT_OF_RANGE
+ *   (untracked) --event--> WAITING --rebuild--> LOADED | EMPTY | STARVED | LOADING
+ *   LOADING --source finished (invalidate)--> WAITING
+ *   WAITING | LOADING | LOADED | EMPTY | STARVED --left the view--> OUT_OF_RANGE
  *   OUT_OF_RANGE --entered the view--> WAITING
  *   any --chunk dropped--> (untracked)
  * </pre>
@@ -50,14 +53,17 @@ import org.lwjgl.system.MemoryUtil;
  * <p>Sections are keyed by {@link SectionKey} (level + section coordinates). Where their blocks come
  * from is up to the {@link VoxelSource} assigned to their level; the world source is the default.
  *
- * <p>Events only change state and CPU bookkeeping; GL is touched in {@link #update()}. Decoding is
- * synchronous, so there is no LOADING state: WAITING is rebuilt within a single call.
+ * <p>Events only change state and CPU bookkeeping; GL is touched in {@link #update()}. Sources that
+ * decode synchronously never leave a section LOADING; sources that work in the background answer
+ * {@link VoxelSource#PENDING} and report back with {@link #invalidate}.
  */
 public final class VoxelWorld {
   /** Where a section is in its life. A slot is owned exactly by LOADED sections (and WAITING ones that were LOADED). */
   private enum SectionState {
     /** Needs a (re)build and is queued. May still own a slot, which keeps showing the old data. */
     WAITING,
+    /** The source is producing the data in the background. May still own a slot with the old data. */
+    LOADING,
     /** Wants a brick slot but the pool was full. Retried as slots free up. */
     STARVED,
     /** Resident and up to date. */
@@ -98,15 +104,24 @@ public final class VoxelWorld {
   private static final LinkedHashSet<Long> waiting = new LinkedHashSet<>();
   /** Sections in STARVED, likewise. */
   private static final LinkedHashSet<Long> starved = new LinkedHashSet<>();
+  /** Sections in LOADING, likewise. */
+  private static final LinkedHashSet<Long> loading = new LinkedHashSet<>();
   /** Indirection cells whose CPU value differs from the texture, flushed once per update. */
   private static final LinkedHashSet<Integer> dirtyCells = new LinkedHashSet<>();
 
   static {
     Arrays.fill(sources, WorldSource.INSTANCE);
-    // Stand-in for the far terrain source until there is a real one.
-    if ("hills".equals(System.getProperty("look.farSource"))) {
-      for (int k = 1; k < Lod.LEVELS; k++) sources[k] = new HillsSource();
-    }
+    // Level 0 is always the loaded world. The coarse levels are the loaded world over generated
+    // terrain (singleplayer only; elsewhere that is just the loaded world), unless overridden:
+    // -Dlook.farSource=world (loaded chunks only) or hills (procedural test terrain).
+    String far = System.getProperty("look.farSource", "seed");
+    VoxelSource coarse =
+        switch (far) {
+          case "world" -> WorldSource.INSTANCE;
+          case "hills" -> new HillsSource();
+          default -> new LayeredSource(WorldSource.INSTANCE, SeedSource.INSTANCE);
+        };
+    for (int k = 1; k < Lod.LEVELS; k++) sources[k] = coarse;
   }
 
   private static ClientLevel level;
@@ -126,6 +141,11 @@ public final class VoxelWorld {
 
   private static int[] freeSlots;
   private static int freeCount;
+  // Shared bricks of uniform sections: per slot the voxel id it is filled with (-1 for a private
+  // brick) and how many sections use it, plus the reverse lookup.
+  private static int[] slotUniform;
+  private static int[] slotRefs;
+  private static final Map<Integer, Integer> uniformSlots = new HashMap<>();
   private static int capacity;
   private static boolean warnedFull;
 
@@ -137,6 +157,8 @@ public final class VoxelWorld {
 
   /** A reload was requested while there was no player to center it on. */
   private static boolean refreshPending;
+  /** Something other than the view changed what sweepView would find. */
+  private static boolean sweepRequested;
 
   // Nearest-first snapshot of the waiting queue, rebuilt when exhausted or when the view moves.
   private static long[] order = new long[0];
@@ -193,6 +215,11 @@ public final class VoxelWorld {
   /** Sections waiting to be rebuilt. */
   public static int queued() {
     return waiting.size() + starved.size();
+  }
+
+  /** Sections whose source is still producing them. */
+  public static int loading() {
+    return loading.size();
   }
 
   public static float atlasWidth() {
@@ -273,6 +300,14 @@ public final class VoxelWorld {
   public static void invalidate(int level, int sx, int sy, int sz) {
     if (!trackLevel() || !validY(level, sy)) return;
     track(SectionKey.pack(level, sx, sy, sz));
+  }
+
+  /**
+   * Asks for the next update to re-check the whole view, as if the player had moved. For sources
+   * whose availability changes (enumerated sources are only asked for sections during a sweep).
+   */
+  public static void requestSweep() {
+    sweepRequested = true;
   }
 
   /** Whether the section already has a state (is queued, resident, empty, ...). */
@@ -389,6 +424,8 @@ public final class VoxelWorld {
     else waiting.remove(key);
     if (state == SectionState.STARVED) starved.add(key);
     else starved.remove(key);
+    if (state == SectionState.LOADING) loading.add(key);
+    else loading.remove(key);
   }
 
   /** The chunk is gone: stop tracking the section and free whatever it held. */
@@ -396,6 +433,7 @@ public final class VoxelWorld {
     states.remove(key);
     waiting.remove(key);
     starved.remove(key);
+    loading.remove(key);
     release(key);
   }
 
@@ -403,7 +441,7 @@ public final class VoxelWorld {
   private static void release(long key) {
     int cell = cellIndex(key);
     if (owner[cell] != key) return;
-    if (indirection[cell] != 0) freeSlots[freeCount++] = indirection[cell] - 1;
+    if (indirection[cell] != 0) freeSlot(indirection[cell] - 1);
     indirection[cell] = 0;
     owner[cell] = NO_OWNER;
     dirtyCells.add(cell);
@@ -512,6 +550,7 @@ public final class VoxelWorld {
     states.clear();
     waiting.clear();
     starved.clear();
+    loading.clear();
     dirtyCells.clear();
     TintMap.reset();
     for (VoxelSource source : distinctSources()) source.reset();
@@ -527,6 +566,9 @@ public final class VoxelWorld {
     if (freeSlots == null) return;
     freeCount = 0;
     for (int i = capacity - 1; i >= 0; i--) freeSlots[freeCount++] = i;
+    Arrays.fill(slotUniform, -1);
+    Arrays.fill(slotRefs, 0);
+    uniformSlots.clear();
     warnedFull = false;
   }
 
@@ -543,7 +585,13 @@ public final class VoxelWorld {
       if (refreshPending || TintMap.takeRadiusChanged()) refreshAll();
       if (indirectionStale) createIndirectionTexture();
 
-      if (updateView()) sweepView();
+      for (VoxelSource source : distinctSources()) source.poll();
+
+      boolean moved = updateView();
+      if (moved || sweepRequested) {
+        sweepRequested = false;
+        sweepView();
+      }
       requeueStarved();
 
       // Everything below uploads to the indirection texture on this unit, and bricks via the
@@ -688,6 +736,11 @@ public final class VoxelWorld {
     int lvl = SectionKey.level(key);
 
     int solid = sources[lvl].fill(lvl, SectionKey.x(key), SectionKey.y(key), SectionKey.z(key), brickScratch);
+    if (solid == VoxelSource.PENDING) {
+      // Keeps any slot it owns, so the old data stays on screen until the new data arrives.
+      setState(key, SectionState.LOADING);
+      return;
+    }
     if (solid == VoxelSource.UNAVAILABLE) {
       // Not there (any more). If it shows up, the source announces it again.
       forget(key);
@@ -700,37 +753,94 @@ public final class VoxelWorld {
     }
 
     int cell = cellIndex(key);
-    int slot;
-    if (owner[cell] == key && indirection[cell] != 0) {
-      slot = indirection[cell] - 1;
-    } else {
-      // Cannot happen while the view fits the grid, but never let two sections share a cell.
-      if (owner[cell] != NO_OWNER) {
-        long other = owner[cell];
-        release(other);
-        if (states.containsKey(other)) setState(other, SectionState.OUT_OF_RANGE);
-      }
 
-      if (freeCount == 0) {
-        if (!warnedFull) {
-          LookMod.LOGGER.warn("Out of brick slots ({}); some terrain will be missing", capacity);
-          warnedFull = true;
+    // Cannot happen while the view fits the grid, but never let two sections share a cell.
+    if (owner[cell] != NO_OWNER && owner[cell] != key) {
+      long other = owner[cell];
+      release(other);
+      if (states.containsKey(other)) setState(other, SectionState.OUT_OF_RANGE);
+    }
+
+    int own = owner[cell] == key && indirection[cell] != 0 ? indirection[cell] - 1 : -1;
+    int uniform = solid == BRICK_VOXELS ? uniformId() : -1;
+
+    // The old slot is only given up once the new one is secured, so a starved section keeps
+    // showing what it had.
+    int slot;
+    boolean upload = true;
+    if (uniform >= 0) {
+      Integer shared = uniformSlots.get(uniform);
+      if (shared != null) {
+        slot = shared;
+        upload = false;
+      } else {
+        slot = allocSlot();
+        if (slot < 0) {
+          setState(key, SectionState.STARVED);
+          return;
         }
+        slotUniform[slot] = uniform;
+        slotRefs[slot] = 0;
+        uniformSlots.put(uniform, slot);
+      }
+      if (own != slot) {
+        slotRefs[slot]++;
+        if (own >= 0) freeSlot(own);
+      }
+    } else if (own >= 0 && slotUniform[own] < 0) {
+      slot = own; // a private brick, rewritten in place
+    } else {
+      slot = allocSlot();
+      if (slot < 0) {
         setState(key, SectionState.STARVED);
         return;
       }
-      slot = freeSlots[--freeCount];
+      if (own >= 0) freeSlot(own); // it was shared with other sections
     }
 
     owner[cell] = key;
     indirection[cell] = slot + 1;
     dirtyCells.add(cell);
 
-    GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, brickBuf);
-    brickScratch.clear();
-    GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) slot * BRICK_BYTES, brickScratch);
+    if (upload) {
+      GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, brickBuf);
+      brickScratch.clear();
+      GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) slot * BRICK_BYTES, brickScratch);
+    }
 
     setState(key, SectionState.LOADED);
+  }
+
+  /** The voxel id {@link #brickScratch} is entirely filled with, or -1 if it is mixed. */
+  private static int uniformId() {
+    short first = brickScratch.getShort(0);
+    for (int i = 1; i < BRICK_VOXELS; i++) {
+      if (brickScratch.getShort(i << 1) != first) return -1;
+    }
+    return first & 0xFFFF;
+  }
+
+  /** Takes a free slot, or returns -1 (warning once) if the pool is full. */
+  private static int allocSlot() {
+    if (freeCount == 0) {
+      if (!warnedFull) {
+        LookMod.LOGGER.warn("Out of brick slots ({}); some terrain will be missing", capacity);
+        warnedFull = true;
+      }
+      return -1;
+    }
+    return freeSlots[--freeCount];
+  }
+
+  /** Gives a slot back. A shared brick is only freed when its last section lets go. */
+  private static void freeSlot(int slot) {
+    int id = slotUniform[slot];
+    if (id >= 0) {
+      if (--slotRefs[slot] > 0) return;
+      uniformSlots.remove(id);
+      slotUniform[slot] = -1;
+    }
+    freeSlots[freeCount++] = slot;
   }
 
   // --- GL resources ----------------------------------------------------------------------------
@@ -741,6 +851,8 @@ public final class VoxelWorld {
     capacity = Math.max(1, Math.min(wanted, maxTexels / BRICK_VOXELS));
 
     freeSlots = new int[capacity];
+    slotUniform = new int[capacity];
+    slotRefs = new int[capacity];
     resetSlots();
 
     brickScratch = ByteBuffer.allocateDirect(BRICK_BYTES).order(ByteOrder.nativeOrder());

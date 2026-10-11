@@ -126,7 +126,8 @@ public final class RenderStats {
       out.add(String.format(
           "upload: %.2f ms/frame, %d sections rebuilt", updateNanos / 1e6 / voxelFrames, VoxelWorld.takeRebuilt()));
       out.add(String.format(
-          "bricks: %d / %d, queued: %d", VoxelWorld.usedSlots(), VoxelWorld.capacity(), VoxelWorld.queued()));
+          "bricks: %d / %d, queued: %d, generating: %d",
+          VoxelWorld.usedSlots(), VoxelWorld.capacity(), VoxelWorld.queued(), VoxelWorld.loading()));
       out.add("lod bricks: " + java.util.Arrays.toString(VoxelWorld.loadedPerLevel()));
     }
 

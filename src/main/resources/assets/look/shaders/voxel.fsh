@@ -274,11 +274,9 @@ void main() {
   if (hit) {
     vec3 rel = nearP + d * tHit;
     vec4 clip = uProj * (uView * vec4(rel, 1.0));
-    depth = clip.z / clip.w * 0.5 + 0.5;
-    if (depth > 1.0) {
-      if (uDebug != 1) discard;
-      depth = 1.0;
-    }
+    // Past the projection's far plane (only a few times the render distance) there is no depth
+    // left to write, so keep the farthest value: everything vanilla draws is nearer anyway.
+    depth = min(clip.z / clip.w * 0.5 + 0.5, 1.0);
   }
   gl_FragDepth = depth;
 

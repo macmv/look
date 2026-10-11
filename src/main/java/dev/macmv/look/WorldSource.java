@@ -79,7 +79,7 @@ public final class WorldSource implements VoxelSource {
    */
   private void announceColumn(int cx, int cz, LevelChunk chunk) {
     for (int level = 0; level < Lod.LEVELS; level++) {
-      if (VoxelWorld.sourceAt(level) != this) continue;
+      if (!VoxelWorld.sourceAt(level).usesLoadedChunks()) continue;
 
       if (chunk == null) {
         int min = VoxelWorld.levelMin(level);
@@ -97,6 +97,11 @@ public final class WorldSource implements VoxelSource {
   }
 
   // --- VoxelSource -----------------------------------------------------------------------------
+
+  @Override
+  public boolean usesLoadedChunks() {
+    return true;
+  }
 
   @Override
   public float reachBlocks() {
@@ -145,7 +150,21 @@ public final class WorldSource implements VoxelSource {
   public int fill(int level, int sx, int sy, int sz, ByteBuffer out) {
     ClientLevel l = Minecraft.getInstance().level;
     if (l == null) return UNAVAILABLE;
-    return level == 0 ? fillExact(l, sx, sy, sz, out) : fillSampled(l, level, sx, sy, sz, out);
+    if (level == 0) return fillExact(l, sx, sy, sz, out);
+
+    int solid = sampleColumns(l, level, sx, sy, sz, out, false);
+    return sampledColumns > 0 ? solid : UNAVAILABLE;
+  }
+
+  /**
+   * Writes the loaded columns of a coarse section over whatever is already in {@code out}, leaving
+   * columns without a loaded chunk alone. Returns how many columns were written.
+   */
+  int overlay(int level, int sx, int sy, int sz, ByteBuffer out) {
+    ClientLevel l = Minecraft.getInstance().level;
+    if (l == null || level == 0) return 0;
+    sampleColumns(l, level, sx, sy, sz, out, true);
+    return sampledColumns;
   }
 
   // --- Level 0 ---------------------------------------------------------------------------------
@@ -192,11 +211,18 @@ public final class WorldSource implements VoxelSource {
 
   // --- Coarse levels ---------------------------------------------------------------------------
 
+  /** Columns that had a loaded chunk in the last {@link #sampleColumns} call. */
+  private static int sampledColumns;
+
   /**
    * One block per voxel, taken from the middle of its cube. Cheap (4096 lookups however coarse the
    * level) but it aliases: anything thinner than a voxel can vanish. Fine for terrain.
+   *
+   * <p>Columns whose chunk is not loaded are written as air, or skipped with {@code keepMissing}.
+   * Returns the number of non-air voxels written; {@link #sampledColumns} gets the loaded columns.
    */
-  private static int fillSampled(ClientLevel l, int level, int sx, int sy, int sz, ByteBuffer out) {
+  private static int sampleColumns(
+      ClientLevel l, int level, int sx, int sy, int sz, ByteBuffer out, boolean keepMissing) {
     int size = 1 << level;
     int half = size >> 1;
     int x0 = sx << (level + 4);
@@ -206,7 +232,7 @@ public final class WorldSource implements VoxelSource {
     int maxY = l.getMaxBuildHeight();
 
     int solid = 0;
-    boolean anyChunk = false;
+    int columns = 0;
     LevelChunk chunk = null;
     int chunkX = Integer.MIN_VALUE;
     int chunkZ = Integer.MIN_VALUE;
@@ -221,7 +247,8 @@ public final class WorldSource implements VoxelSource {
           chunk = l.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
           if (chunk != null) TintMap.ensureChunk(l, chunk);
         }
-        if (chunk != null) anyChunk = true;
+        if (chunk != null) columns++;
+        else if (keepMissing) continue;
 
         for (int y = 0; y < 16; y++) {
           int by = y0 + y * size + half;
@@ -235,6 +262,7 @@ public final class WorldSource implements VoxelSource {
         }
       }
     }
-    return anyChunk ? solid : UNAVAILABLE;
+    sampledColumns = columns;
+    return solid;
   }
 }
