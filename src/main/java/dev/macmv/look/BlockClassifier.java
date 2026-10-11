@@ -1,13 +1,18 @@
 package dev.macmv.look;
 
+import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.List;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.color.block.BlockColors;
+import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.BlockAndTintGetter;
+import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
@@ -35,6 +40,35 @@ public final class BlockClassifier {
   private static final int LAYER_FLOATS = 8;
   /** Floats per voxel id in the face table. */
   public static final int ID_FLOATS = 6 * LAYERS * LAYER_FLOATS;
+
+  /** Face table tint values below zero: follow the biome grass / foliage color, see {@link TintMap}. */
+  private static final float TINT_GRASS = -1f;
+  private static final float TINT_FOLIAGE = -2f;
+
+  private static final int GRASS_PROBE = 0x0A1B2C;
+  private static final int FOLIAGE_PROBE = 0x0D2E3F;
+  private static final int WATER_PROBE = 0x10213D;
+
+  /** A level whose only working method is {@code getBlockTint}, returning a marker per resolver. */
+  private static final BlockAndTintGetter PROBE =
+      (BlockAndTintGetter) Proxy.newProxyInstance(
+          BlockClassifier.class.getClassLoader(),
+          new Class<?>[] {BlockAndTintGetter.class},
+          (proxy, method, args) -> {
+            // Matched by shape, since method names differ between dev and production mappings.
+            if (args != null && args.length == 2 && args[1] instanceof ColorResolver r) {
+              if (r == BiomeColors.GRASS_COLOR_RESOLVER) return GRASS_PROBE;
+              if (r == BiomeColors.FOLIAGE_COLOR_RESOLVER) return FOLIAGE_PROBE;
+              return WATER_PROBE;
+            }
+            Class<?> t = method.getReturnType();
+            if (t == float.class) return 1f;
+            if (t == int.class) return 0;
+            if (t == boolean.class) return false;
+            if (t == long.class) return 0L;
+            if (t == double.class) return 0d;
+            return null;
+          });
 
   private static final int UNKNOWN = -1;
   private static final int FALLBACK_COLOR = 0xA0B8C8;
@@ -149,17 +183,32 @@ public final class BlockClassifier {
         if (layerCount[face] >= LAYERS) continue;
         if (!onBoundary(quad.getVertices(), face)) continue;
 
-        int tint = 0xFFFFFF;
-        if (quad.getTintIndex() >= 0) {
-          try {
-            tint = mc.getBlockColors().getColor(state, null, null, quad.getTintIndex()) & 0xFFFFFF;
-          } catch (RuntimeException e) {
-            tint = 0xFFFFFF;
-          }
-        }
+        float tint = quad.getTintIndex() >= 0 ? tintOf(state, quad.getTintIndex()) : 0xFFFFFF;
 
         if (writeLayer(id, face, layerCount[face], quad.getVertices(), tint)) layerCount[face]++;
       }
+    }
+  }
+
+  /**
+   * The tint of a quad: an RGB constant (0..0xFFFFFF), or {@link #TINT_GRASS} / {@link #TINT_FOLIAGE}
+   * when it follows the biome. Which one is found by asking vanilla's {@code BlockColors} with a
+   * level that answers every biome lookup with a marker color, so modded blocks work too.
+   */
+  private static float tintOf(BlockState state, int tintIndex) {
+    BlockColors colors = Minecraft.getInstance().getBlockColors();
+    try {
+      int probe = colors.getColor(state, PROBE, BlockPos.ZERO, tintIndex) & 0xFFFFFF;
+      if (probe == GRASS_PROBE) return TINT_GRASS;
+      if (probe == FOLIAGE_PROBE) return TINT_FOLIAGE;
+    } catch (RuntimeException e) {
+      // Not biome based, or it needs more of a level than the probe has.
+    }
+
+    try {
+      return colors.getColor(state, null, null, tintIndex) & 0xFFFFFF;
+    } catch (RuntimeException e) {
+      return 0xFFFFFF;
     }
   }
 
@@ -185,7 +234,7 @@ public final class BlockClassifier {
    * coordinates in [0, 1]: (x, z) on y faces, (x, y) on z faces and (y, z) on x faces. Each layer
    * is two texels: (u0, v0, du/da, dv/da) and (du/db, dv/db, tint, 1).
    */
-  private static boolean writeLayer(int id, int face, int layer, int[] v, int tint) {
+  private static boolean writeLayer(int id, int face, int layer, int[] v, float tint) {
     int ca;
     int cb;
     switch (face >> 1) {

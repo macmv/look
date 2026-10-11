@@ -58,6 +58,7 @@ public final class WorldSource implements VoxelSource {
    */
   public void ingestWire(int cx, int cz, FriendlyByteBuf buf) {
     if (!VoxelWorld.trackLevel()) return;
+    TintMap.invalidate(cx, cz);
     WireChunk chunk = WireChunk.parse(new FriendlyByteBuf(buf.duplicate()), VoxelWorld.sectionCount());
     if (chunk == null) wire.remove(ChunkPos.asLong(cx, cz));
     else wire.put(ChunkPos.asLong(cx, cz), chunk);
@@ -68,6 +69,7 @@ public final class WorldSource implements VoxelSource {
   /** The exact level goes with the chunk. Coarse levels keep what they have. */
   public void unloadChunk(ChunkPos pos) {
     wire.remove(pos.toLong());
+    TintMap.invalidate(pos.x, pos.z);
     VoxelWorld.dropColumn(0, pos.x, pos.z);
   }
 
@@ -151,6 +153,7 @@ public final class WorldSource implements VoxelSource {
   private int fillExact(ClientLevel l, int sx, int sy, int sz, ByteBuffer out) {
     LevelChunk chunk = l.getChunkSource().getChunk(sx, sz, ChunkStatus.FULL, false);
     if (chunk == null) return UNAVAILABLE;
+    TintMap.ensureChunk(l, chunk);
 
     int solid = fromWire(sx, sy, sz, out);
     if (solid >= 0) return solid;
@@ -216,6 +219,7 @@ public final class WorldSource implements VoxelSource {
           chunkX = bx >> 4;
           chunkZ = bz >> 4;
           chunk = l.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
+          if (chunk != null) TintMap.ensureChunk(l, chunk);
         }
         if (chunk != null) anyChunk = true;
 

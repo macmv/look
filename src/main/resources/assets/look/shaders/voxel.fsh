@@ -21,14 +21,19 @@ uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
 uniform usamplerBuffer uColors;   // voxel id -> 0xRRGGBB, used when a block has no texture
 uniform samplerBuffer uFaces;     // per (id, face, layer): atlas uv mapping, see BlockClassifier
 uniform sampler2D uAtlas;         // vanilla block atlas
+uniform sampler2DArray uTint;     // biome tint per column, see TintMap: grass, foliage, lower grass, lower foliage, split
 uniform vec2 uAtlasSize;          // atlas size in texels
 uniform float uMaxLod;            // highest mip level of the atlas
+uniform int uMinY;               // lowest block y of the level, for the tint's lower biome
 uniform float uPixelAngle;        // radians covered by one pixel
 
 in vec2 vNdc;
 out vec4 fragColor;
 
 const float EPS = 1e-3;
+const int TINT_BLOCKS = 2048;  // blocks the tint texture covers before wrapping: TintMap.SIZE * CELL
+const int TINT_CELL = 4;       // TintMap.CELL
+const int TINT_SPLIT_UNIT = 2; // TintMap.SPLIT_UNIT
 
 uint readSlot(int lvl, ivec3 sec) {
   ivec3 c = ivec3(sec.x & (uGrid.x - 1), uLevel[lvl].z + sec.y - uLevel[lvl].x, sec.z & (uGrid.z - 1));
@@ -46,8 +51,8 @@ int levelAt(vec3 rel) {
 
 // Surface color of voxel `id` where the ray hits face `axis`. `local` is the hit point inside the
 // voxel (0..1) and t the ray distance. Returns false for transparent texels (leaves etc.), so the
-// caller keeps marching.
-bool surface(uint id, int axis, vec3 d, vec3 local, float t, out vec3 albedo) {
+// caller keeps marching. `column` is the world column of the voxel's center, for biome tint.
+bool surface(uint id, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, out vec3 albedo) {
   // Face order matches Direction: down, up, north, south, west, east.
   int face = axis == 0 ? (d.x > 0.0 ? 4 : 5) : (axis == 1 ? (d.y > 0.0 ? 0 : 1) : (d.z > 0.0 ? 2 : 3));
   vec2 ab = axis == 0 ? local.yz : (axis == 1 ? local.xz : local.xy);
@@ -67,8 +72,13 @@ bool surface(uint id, int axis, vec3 d, vec3 local, float t, out vec3 albedo) {
     float lod = clamp(log2(max(t * uPixelAngle * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
     vec4 s = textureLod(uAtlas, uv, lod);
 
-    int tint = int(b.z);
-    s.rgb *= vec3(float((tint >> 16) & 255), float((tint >> 8) & 255), float(tint & 255)) / 255.0;
+    if (b.z < -0.5) {
+      // Biome tint: -1 grass, -2 foliage.
+      s.rgb *= textureLod(uTint, vec3(column, lowLayer + (b.z < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
+    } else {
+      int tint = int(b.z);
+      s.rgb *= vec3(float((tint >> 16) & 255), float((tint >> 8) & 255), float(tint & 255)) / 255.0;
+    }
 
     rgb = layer == 0 ? s.rgb : mix(rgb, s.rgb, s.a);
     alpha = layer == 0 ? s.a : max(alpha, s.a);
@@ -148,7 +158,12 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
         ivec3 voxel = secMin + (v << lvl);   // min corner, block
         vec3 local = (o + d * tc - vec3(voxel - uCamBlock)) / vs;
         // The texture covers the whole voxel, so a pixel spans 1/vs as many texels per ray length.
-        if (surface(id, axis, d, local, tc / vs, albedo)) {
+        ivec3 center = voxel + int(0.5 * vs);
+        vec2 column = (vec2(voxel.xz & (TINT_BLOCKS - 1)) + 0.5 * vs) / float(TINT_BLOCKS);
+        // Below the column's split height the second biome applies (layers 2 and 3).
+        float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
+        float lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
+        if (surface(id, axis, d, local, tc / vs, column, lowLayer, albedo)) {
           tHit = tc;
           hitId = id;
           hitAxis = axis;

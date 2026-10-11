@@ -76,6 +76,7 @@ public final class VoxelWorld {
   public static final int UNIT_COLORS = 12;
   public static final int UNIT_FACES = 13;
   public static final int UNIT_ATLAS = 14;
+  public static final int UNIT_TINT = 15;
 
   private static final int BRICK_VOXELS = 16 * 16 * 16;
   private static final int BRICK_BYTES = BRICK_VOXELS * 2;
@@ -512,6 +513,7 @@ public final class VoxelWorld {
     waiting.clear();
     starved.clear();
     dirtyCells.clear();
+    TintMap.reset();
     for (VoxelSource source : distinctSources()) source.reset();
     orderLen = 0;
     orderPos = 0;
@@ -538,7 +540,7 @@ public final class VoxelWorld {
     try {
       if (!glReady) initGl();
       checkAtlas();
-      if (refreshPending) refreshAll();
+      if (refreshPending || TintMap.takeRadiusChanged()) refreshAll();
       if (indirectionStale) createIndirectionTexture();
 
       if (updateView()) sweepView();
@@ -551,6 +553,7 @@ public final class VoxelWorld {
 
       processWaiting();
       flushCells();
+      TintMap.flush(UNIT_TINT);
 
       if (BlockClassifier.takeColorsDirty()) uploadColors();
       uploadFaces();
@@ -622,6 +625,8 @@ public final class VoxelWorld {
     // Units above vanilla's cached range, so binding straight through GL cannot desync its cache.
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_ATLAS);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, atlasId());
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TINT);
+    GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, TintMap.texture());
   }
 
   private static int atlasId() {
