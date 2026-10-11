@@ -11,8 +11,8 @@ import net.minecraft.network.chat.Component;
  *   <li>Toggle heatmap: step-count heatmap of the voxel pass. Timing stats are always on screen.
  * </ul>
  *
- * Vanilla keeps compiling section meshes while the voxel renderer is on, so switching back is
- * instant.
+ * Vanilla keeps compiling section meshes while the voxel renderer is on, and the voxel world keeps
+ * queueing changes while vanilla renders, so switching either way is instant.
  */
 public final class LookState {
   public static boolean voxelEnabled = true;
@@ -26,8 +26,6 @@ public final class LookState {
 
     while (LookKeys.TOGGLE_RENDERER.consumeClick()) {
       voxelEnabled = !voxelEnabled;
-      // Events are ignored while vanilla renders, so rebuild everything on the way back.
-      if (voxelEnabled) VoxelWorld.refreshAll();
       mc.gui.setOverlayMessage(Component.literal("Look renderer: " + (voxelEnabled ? "voxel" : "vanilla")), false);
     }
 
