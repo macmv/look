@@ -1,13 +1,13 @@
 package dev.macmv.look;
 
+import java.util.List;
 import net.minecraft.client.Minecraft;
-import net.minecraft.network.chat.Component;
 import org.lwjgl.opengl.GL33C;
 
 /**
  * Cheap profiling for the voxel pass. GPU time comes from timer queries read a few frames late (so
- * nothing stalls); the rest is CPU-side. Reported once a second to the action bar while the debug
- * view is on.
+ * nothing stalls); the rest is CPU-side. Refreshed once a second while the debug view is on and drawn
+ * by {@link DebugHud}.
  */
 public final class RenderStats {
   private static final int RING = 4;
@@ -23,6 +23,7 @@ public final class RenderStats {
   private static long updateNanos;
   private static int frames;
   private static long lastReport = System.nanoTime();
+  private static List<String> lines = List.of();
 
   private RenderStats() {}
 
@@ -57,6 +58,11 @@ public final class RenderStats {
     }
   }
 
+  /** Lines for the debug HUD, refreshed about once a second. */
+  public static List<String> lines() {
+    return lines;
+  }
+
   /** Call once per voxel frame. */
   public static void endFrame() {
     frames++;
@@ -71,12 +77,11 @@ public final class RenderStats {
       int h = mc.getWindow().getHeight();
       double nsPerPixel = gpuSamples > 0 ? (gpuNanos / (double) gpuSamples) / ((double) w * h) : 0;
 
-      String text = String.format(
-          "look: %d fps | raycast %.2f ms (%.1f ns/px, %dx%d) | upload %.2f ms/frame | rebuilt %d | bricks %d/%d | queued %d",
-          mc.getFps(), gpuMs, nsPerPixel, w, h, updMs,
-          VoxelWorld.takeRebuilt(), VoxelWorld.usedSlots(), VoxelWorld.capacity(), VoxelWorld.queued());
-      mc.gui.setOverlayMessage(Component.literal(text), false);
-      LookMod.LOGGER.info(text);
+      lines = List.of(
+          String.format("look: %d fps", mc.getFps()),
+          String.format("raycast: %.2f ms (%.1f ns/px at %dx%d)", gpuMs, nsPerPixel, w, h),
+          String.format("upload: %.2f ms/frame, %d sections rebuilt/s", updMs, VoxelWorld.takeRebuilt()),
+          String.format("bricks: %d / %d, queued: %d", VoxelWorld.usedSlots(), VoxelWorld.capacity(), VoxelWorld.queued()));
     }
 
     gpuNanos = 0;
