@@ -15,15 +15,13 @@ package dev.macmv.look;
  * sections around the camera (level 0 has no hole). So every level costs about the same memory, and
  * the total reach doubles with each added level: 8 levels at the default base of 16 chunks reach
  * 2048 chunks.
- *
- * <p>Configurable with {@code -Dlook.lod.levels=N} and {@code -Dlook.lod.baseChunks=N}.
  */
 public final class Lod {
   public static final int MAX_LEVELS = 8;
 
-  public static final int LEVELS = clamp(Integer.getInteger("look.lod.levels", MAX_LEVELS), 1, MAX_LEVELS);
+  public static final int LEVELS = MAX_LEVELS;
   /** Radius of level 0 in chunks. The wrapping grid limits it, see {@link VoxelWorld#GRID_XZ}. */
-  public static final int BASE_CHUNKS = clamp(Integer.getInteger("look.lod.baseChunks", 16), 4, 56);
+  public static final int BASE_CHUNKS = 16;
   public static final float BASE_BLOCKS = BASE_CHUNKS * 16f;
 
   private Lod() {}
@@ -49,9 +47,5 @@ public final class Lod {
   /** Farthest distance in blocks the pyramid can represent. */
   public static float maxDist() {
     return BASE_BLOCKS * (1 << (LEVELS - 1));
-  }
-
-  private static int clamp(int v, int lo, int hi) {
-    return Math.max(lo, Math.min(hi, v));
   }
 }

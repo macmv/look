@@ -112,15 +112,8 @@ public final class VoxelWorld {
   static {
     Arrays.fill(sources, WorldSource.INSTANCE);
     // Level 0 is always the loaded world. The coarse levels are the loaded world over generated
-    // terrain (singleplayer only; elsewhere that is just the loaded world), unless overridden:
-    // -Dlook.farSource=world (loaded chunks only) or hills (procedural test terrain).
-    String far = System.getProperty("look.farSource", "seed");
-    VoxelSource coarse =
-        switch (far) {
-          case "world" -> WorldSource.INSTANCE;
-          case "hills" -> new HillsSource();
-          default -> new LayeredSource(WorldSource.INSTANCE, SeedSource.INSTANCE);
-        };
+    // terrain (singleplayer only; elsewhere that is just the loaded world).
+    VoxelSource coarse = new LayeredSource(WorldSource.INSTANCE, SeedSource.INSTANCE);
     for (int k = 1; k < Lod.LEVELS; k++) sources[k] = coarse;
   }
 
@@ -847,7 +840,7 @@ public final class VoxelWorld {
 
   private static void initGl() {
     int maxTexels = GL33C.glGetInteger(GL33C.GL_MAX_TEXTURE_BUFFER_SIZE);
-    int wanted = Integer.getInteger("look.brickCapacity", 32768);
+    int wanted = 32768;
     capacity = Math.max(1, Math.min(wanted, maxTexels / BRICK_VOXELS));
 
     freeSlots = new int[capacity];

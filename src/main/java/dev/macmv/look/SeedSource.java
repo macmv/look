@@ -122,7 +122,7 @@ public final class SeedSource implements VoxelSource {
   private long lastEvict = System.nanoTime();
 
   private SeedSource() {
-    int threads = Integer.getInteger("look.seed.threads", Math.max(1, Math.min(6, Runtime.getRuntime().availableProcessors() / 2)));
+    int threads = Math.max(1, Math.min(6, Runtime.getRuntime().availableProcessors() / 2));
     int[] n = {0};
     pool = new ThreadPoolExecutor(threads, threads, 30, TimeUnit.SECONDS, new PriorityBlockingQueue<>(), r -> {
       Thread t = new Thread(r, "look-seed-" + n[0]++);

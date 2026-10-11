@@ -8,8 +8,8 @@ import net.minecraft.world.level.block.Blocks;
 /**
  * A procedural heightmap, to exercise the pyramid beyond the chunks the server sends. It needs no
  * world data and can produce any section at any level, so it is {@link #enumerated}. It is a
- * stand-in for the seed-based terrain source: enable it for the coarse levels with
- * {@code -Dlook.farSource=hills}.
+ * stand-in for the seed-based terrain source: enable it for the coarse levels by changing the
+ * source selection in {@link VoxelWorld}.
  */
 public final class HillsSource implements VoxelSource {
   @Override
