@@ -43,7 +43,7 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  *   <li>{@code functions}: the registry density functions those refer to, by name, and
  *       {@code noises}: the noise parameters they use;
  *   <li>{@code biomes}: the climate parameter points of the biome source, with per biome flags
- *       (see {@code native/src/biome.rs}) and temperature.
+ *       (see {@code native/src/biome.rs}), temperature and grass color.
  * </ul>
  *
  * The world seed is not part of it; it goes to the native side separately.
@@ -200,6 +200,7 @@ public final class TerrainExport {
 
     JsonArray flags = new JsonArray();
     JsonArray temperatures = new JsonArray();
+    JsonArray grass = new JsonArray();
     for (Holder<Biome> biome : index.keySet()) {
       int f = 0;
       if (biome.is(BiomeTags.IS_OCEAN)) f |= OCEAN;
@@ -210,11 +211,13 @@ public final class TerrainExport {
       if (biome.is(Biomes.DESERT)) f |= DESERT;
       flags.add(f);
       temperatures.add(biome.value().getBaseTemperature());
+      grass.add(biome.value().getGrassColor(0, 0) & 0xFFFFFF);
     }
 
     JsonObject out = new JsonObject();
     out.add("flags", flags);
     out.add("temperatures", temperatures);
+    out.add("grass_colors", grass);
     out.add("points", points);
     return out;
   }

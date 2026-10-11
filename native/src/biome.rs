@@ -18,7 +18,12 @@ pub mod flags {
 pub struct BiomeInfo {
   pub flags: u32,
   pub temperature: f32,
+  /// Grass color (0xRRGGBB) of the biome, for tinting grass blocks.
+  pub grass: u32,
 }
+
+/// Used for biomes the export gave no grass color for (plains).
+const DEFAULT_GRASS: u32 = 0x91BD59;
 
 struct Point {
   min: [i64; 6],
@@ -67,19 +72,22 @@ fn distance(min: i64, max: i64, target: i64) -> i64 {
 }
 
 impl BiomeIndex {
-  /// Reads `{ "flags": [..], "temperatures": [..], "points": [[12 range bounds, offset, biome]..] }`.
+  /// Reads `{ "flags": [..], "temperatures": [..], "grass_colors": [..] (optional), "points": [[12 range bounds, offset, biome]..] }`.
   pub fn from_json(v: &Value) -> Result<BiomeIndex, String> {
     let flags = v.get("flags").and_then(Value::as_array).ok_or("biomes without flags")?;
     let temps = v.get("temperatures").and_then(Value::as_array).ok_or("biomes without temperatures")?;
     if flags.len() != temps.len() {
       return Err("biome flags and temperatures differ in length".into());
     }
+    let grass = v.get("grass_colors").and_then(Value::as_array);
     let biomes: Vec<BiomeInfo> = flags
       .iter()
       .zip(temps)
-      .map(|(f, t)| BiomeInfo {
+      .enumerate()
+      .map(|(i, (f, t))| BiomeInfo {
         flags: f.as_u64().unwrap_or(0) as u32,
         temperature: t.as_f64().unwrap_or(0.5) as f32,
+        grass: grass.and_then(|g| g.get(i)).and_then(Value::as_u64).map_or(DEFAULT_GRASS, |c| c as u32 & 0xFFFFFF),
       })
       .collect();
 

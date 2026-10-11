@@ -236,6 +236,26 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFetch<'l>(
   })
 }
 
+/// Writes the grass colors of a finished tile as RGBA texels (row major, at most 8 x 8) and returns
+/// the texels per side, or -1 if the tile is not ready.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFarTint<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  level: jint,
+  sx: jint,
+  sz: jint,
+  out: JByteBuffer<'l>,
+) -> jint {
+  guard(&mut env, |env| {
+    let (ptr, _) = buffer_ptr::<[u8; 256]>(env, &out, 256)?;
+    // SAFETY: as in terrainPoll.
+    let out = unsafe { &mut *ptr };
+    Ok(engine(handle)?.far_tint(level as u32, sx, sz, out).map_or(-1, |n| n as jint))
+  })
+}
+
 /// Fills `out` with `{queued or running tiles, finished tiles kept, tiles computed so far}`.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainStats<'l>(

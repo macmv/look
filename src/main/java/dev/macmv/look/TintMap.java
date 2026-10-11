@@ -3,6 +3,7 @@ package dev.macmv.look;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -27,6 +28,9 @@ import org.lwjgl.system.MemoryUtil;
  *   <li>0, 1: grass and foliage color at the surface of the column;
  *   <li>2, 3: the same for the biome underneath, when the column has a second one (caves);
  *   <li>4: R is where the lower biome ends, see {@link #SPLIT_UNIT}. Read with texelFetch.
+ *   <li>{@link #FAR_FIRST} + level: grass color of predicted terrain (see {@link SeedSource}), for
+ *       columns without a loaded chunk. Texels are {@link #farCell} blocks wide and alpha says
+ *       whether one is filled.
  * </ul>
  * Columns with one biome have the lower layers equal to the upper ones. The shader samples the
  * color layers with bilinear filtering.
@@ -48,7 +52,10 @@ public final class TintMap {
   public static final int CELL = 4;
   /** The split layer stores the lower biome's top as this many blocks above the level floor. */
   public static final int SPLIT_UNIT = 2;
-  public static final int LAYERS = 5;
+  /** Layers filled from loaded chunks. */
+  private static final int NEAR_LAYERS = 5;
+  public static final int FAR_FIRST = NEAR_LAYERS;
+  public static final int LAYERS = NEAR_LAYERS + Lod.LEVELS;
   private static final int CHUNK_TEXELS = 16 / CELL;
   /** Neighbor refills per {@link #flush}. */
   private static final int REFILLS_PER_FLUSH = 6;
@@ -57,6 +64,9 @@ public final class TintMap {
   private static final Set<Long> stale = new LinkedHashSet<>();
   private static final List<int[]> pendingPos = new ArrayList<>();
   private static final List<byte[]> pendingData = new ArrayList<>();
+  /** Far uploads: (layer, texel x, texel z, texels per side) and the RGBA texels. */
+  private static final List<int[]> pendingFarPos = new ArrayList<>();
+  private static final List<byte[]> pendingFarData = new ArrayList<>();
 
   private static ClientLevel lastLevel;
   private static int radius = -1;
@@ -72,8 +82,24 @@ public final class TintMap {
     stale.clear();
     pendingPos.clear();
     pendingData.clear();
+    pendingFarPos.clear();
+    pendingFarData.clear();
     lastLevel = null;
     needsClear = true;
+  }
+
+  /** Blocks per texel side of the far layer of {@code level}; keep in sync with the shader. */
+  public static int farCell(int level) {
+    return Math.max(8, 2 << level);
+  }
+
+  /**
+   * Queues grass colors of predicted terrain: {@code side} x {@code side} RGBA texels with their
+   * corner at texel ({@code x}, {@code z}) of the far layer of {@code level} (wrapping).
+   */
+  public static void queueFar(int level, int x, int z, int side, byte[] rgba) {
+    pendingFarPos.add(new int[] {FAR_FIRST + level, x & (SIZE - 1), z & (SIZE - 1), side});
+    pendingFarData.add(rgba);
   }
 
   /** True once when the biome blend option changed, after which everything must be rebuilt. */
@@ -122,7 +148,7 @@ public final class TintMap {
       }
     }
 
-    byte[] data = new byte[LAYERS * CHUNK_TEXELS * CHUNK_TEXELS * 4];
+    byte[] data = new byte[NEAR_LAYERS * CHUNK_TEXELS * CHUNK_TEXELS * 4];
     int[] colors = new int[2];
 
     for (int tz = 0; tz < CHUNK_TEXELS; tz++) {
@@ -232,9 +258,9 @@ public final class TintMap {
       needsClear = false;
     }
     refillStale();
-    if (pendingPos.isEmpty()) return;
+    if (pendingPos.isEmpty() && pendingFarPos.isEmpty()) return;
 
-    if (scratch == null) scratch = ByteBuffer.allocateDirect(CHUNK_TEXELS * CHUNK_TEXELS * LAYERS * 4).order(ByteOrder.nativeOrder());
+    if (scratch == null) scratch = ByteBuffer.allocateDirect(CHUNK_TEXELS * CHUNK_TEXELS * NEAR_LAYERS * 4).order(ByteOrder.nativeOrder());
     GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);
     GL33C.glPixelStorei(GL33C.GL_UNPACK_ROW_LENGTH, 0);
     for (int i = 0; i < pendingPos.size(); i++) {
@@ -242,11 +268,22 @@ public final class TintMap {
       scratch.clear();
       scratch.put(pendingData.get(i)).flip();
       GL33C.glTexSubImage3D(
-          GL33C.GL_TEXTURE_2D_ARRAY, 0, p[0], p[1], 0, CHUNK_TEXELS, CHUNK_TEXELS, LAYERS,
+          GL33C.GL_TEXTURE_2D_ARRAY, 0, p[0], p[1], 0, CHUNK_TEXELS, CHUNK_TEXELS, NEAR_LAYERS,
           GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, scratch);
     }
     pendingPos.clear();
     pendingData.clear();
+
+    for (int i = 0; i < pendingFarPos.size(); i++) {
+      int[] p = pendingFarPos.get(i);
+      scratch.clear();
+      scratch.put(pendingFarData.get(i)).flip();
+      GL33C.glTexSubImage3D(
+          GL33C.GL_TEXTURE_2D_ARRAY, 0, p[1], p[2], p[0], p[3], p[3], 1,
+          GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, scratch);
+    }
+    pendingFarPos.clear();
+    pendingFarData.clear();
   }
 
   private static void refillStale() {
@@ -261,9 +298,15 @@ public final class TintMap {
     }
   }
 
-  /** Unfilled texels show the same colors vanilla uses for a null level. */
+  /**
+   * Unfilled texels show the same colors vanilla uses for a null level. Alpha of the first layer is
+   * 0 there and 255 once a chunk filled it, and the far layers are 0 until predicted terrain does.
+   */
   private static void clearToDefaults() {
-    int[] colors = {GrassColor.getDefaultColor(), FoliageColor.getDefaultColor(), GrassColor.getDefaultColor(), FoliageColor.getDefaultColor(), 0};
+    int[] colors = new int[LAYERS];
+    Arrays.fill(colors, GrassColor.getDefaultColor());
+    colors[1] = colors[3] = FoliageColor.getDefaultColor();
+    colors[4] = 0;
     ByteBuffer buf = MemoryUtil.memAlloc(SIZE * SIZE * 4);
     try {
       GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);
@@ -272,7 +315,7 @@ public final class TintMap {
         int c = colors[layer];
         buf.clear();
         for (int i = 0; i < SIZE * SIZE; i++) {
-          buf.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (layer == 4 ? 0 : 0xFF));
+          buf.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (layer == 0 || layer == 4 || layer >= FAR_FIRST ? 0 : 0xFF));
         }
         buf.flip();
         GL33C.glTexSubImage3D(

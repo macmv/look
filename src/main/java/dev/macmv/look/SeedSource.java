@@ -55,6 +55,7 @@ public final class SeedSource implements VoxelSource {
   private int[] ids = new int[0];
 
   private final ByteBuffer keys = NativeLib.allocate(KEYS_PER_POLL * 8);
+  private final ByteBuffer tint = NativeLib.allocate(256);
   private final long[] stats = new long[3];
 
   private SeedSource() {}
@@ -107,6 +108,12 @@ public final class SeedSource implements VoxelSource {
       int level = SectionKey.level(key);
       int sx = SectionKey.x(key);
       int sz = SectionKey.z(key);
+      int side = NativeLib.terrainFarTint(handle, level, sx, sz, tint);
+      if (side > 0) {
+        byte[] texels = new byte[side * side * 4];
+        tint.get(0, texels);
+        TintMap.queueFar(level, sx * side, sz * side, side, texels);
+      }
       int min = VoxelWorld.levelMin(level);
       for (int sy = min; sy < min + VoxelWorld.levelRows(level); sy++) VoxelWorld.invalidate(level, sx, sy, sz);
     }

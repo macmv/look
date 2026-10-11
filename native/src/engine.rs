@@ -202,6 +202,12 @@ impl Engine {
     Some(tile.fill_brick(level, sy, &self.shared.terrain.params, &ids, out))
   }
 
+  /// Writes a finished tile's grass colors as far tint texels, returning the texels per side.
+  pub fn far_tint(&self, level: u32, sx: i32, sz: i32, out: &mut [u8]) -> Option<usize> {
+    let tile = self.shared.tiles.lock().unwrap().get(&pack_key(level, sx, sz)).cloned()?;
+    Some(tile.write_far_tint(level, out))
+  }
+
   /// (queued or running, finished tiles kept, tiles computed since start)
   pub fn stats(&self) -> (usize, usize, u64) {
     let pending = self.shared.queue.lock().unwrap().pending.len();

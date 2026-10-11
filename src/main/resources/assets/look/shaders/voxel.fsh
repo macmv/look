@@ -21,7 +21,7 @@ uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
 uniform usamplerBuffer uColors;   // voxel id -> 0xRRGGBB, used when a block has no texture
 uniform samplerBuffer uFaces;     // per (id, face, layer): atlas uv mapping, see BlockClassifier
 uniform sampler2D uAtlas;         // vanilla block atlas
-uniform sampler2DArray uTint;     // biome tint per column, see TintMap: grass, foliage, lower grass, lower foliage, split
+uniform sampler2DArray uTint;     // biome tint per column, see TintMap: grass, foliage, lower grass, lower foliage, split, far grass per level
 uniform vec2 uAtlasSize;          // atlas size in texels
 uniform float uMaxLod;            // highest mip level of the atlas
 uniform int uMinY;               // lowest block y of the level, for the tint's lower biome
@@ -34,6 +34,8 @@ const float EPS = 1e-3;
 const int TINT_BLOCKS = 2048;  // blocks the tint texture covers before wrapping: TintMap.SIZE * CELL
 const int TINT_CELL = 4;       // TintMap.CELL
 const int TINT_SPLIT_UNIT = 2; // TintMap.SPLIT_UNIT
+const int TINT_SIZE = 512;     // TintMap.SIZE
+const int TINT_FAR_FIRST = 5;  // TintMap.FAR_FIRST
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
 const int META_START = (16384 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
@@ -139,7 +141,7 @@ int variantRow(uint id, ivec3 cell) {
 // voxel (0..1) and t the ray distance. Returns false for transparent texels (leaves etc.), so the
 // caller keeps marching. `column` is the world column of the voxel's center, for biome tint, and
 // `cell` its coordinate in voxels of its level, for picking a variant.
-bool surface(uint id, ivec3 cell, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, out vec3 albedo) {
+bool surface(uint id, ivec3 cell, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, vec3 farTint, out vec3 albedo) {
   // Face order matches Direction: down, up, north, south, west, east.
   int face = axis == 0 ? (d.x > 0.0 ? 4 : 5) : (axis == 1 ? (d.y > 0.0 ? 0 : 1) : (d.z > 0.0 ? 2 : 3));
   vec2 ab = axis == 0 ? local.yz : (axis == 1 ? local.xz : local.xy);
@@ -161,7 +163,12 @@ bool surface(uint id, ivec3 cell, int axis, vec3 d, vec3 local, float t, vec2 co
 
     if (b.z < -0.5) {
       // Biome tint: -1 grass, -2 foliage.
-      s.rgb *= textureLod(uTint, vec3(column, lowLayer + (b.z < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
+      // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
+      if (farTint.z >= 0.0 && b.z > -1.5) {
+        s.rgb *= textureLod(uTint, farTint, 0.0).rgb;
+      } else {
+        s.rgb *= textureLod(uTint, vec3(column, lowLayer + (b.z < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
+      }
     } else {
       int tint = int(b.z);
       s.rgb *= vec3(float((tint >> 16) & 255), float((tint >> 8) & 255), float(tint & 255)) / 255.0;
@@ -250,7 +257,18 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
         // Below the column's split height the second biome applies (layers 2 and 3).
         float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
         float lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
-        if (surface(id, voxel >> lvl, axis, d, local, tc / vs, column, lowLayer, albedo)) {
+
+        // No loaded chunk filled this column: use the predicted grass color, if there is one.
+        vec3 farTint = vec3(0.0, 0.0, -1.0);
+        if (texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 0), 0).a < 0.5) {
+          int farShift = max(3, lvl + 1);   // TintMap.farCell
+          ivec3 farTexel = ivec3((center.xz >> farShift) & (TINT_SIZE - 1), TINT_FAR_FIRST + lvl);
+          if (texelFetch(uTint, farTexel, 0).a > 0.5) {
+            farTint = vec3((vec2(voxel.xz) + 0.5 * vs) / float(TINT_SIZE << farShift), float(farTexel.z));
+          }
+        }
+
+        if (surface(id, voxel >> lvl, axis, d, local, tc / vs, column, lowLayer, farTint, albedo)) {
           tHit = tc;
           hitId = id;
           hitAxis = axis;

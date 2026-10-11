@@ -103,6 +103,12 @@ public final class NativeLib {
    */
   public static native int terrainFetch(long handle, int level, int sx, int sy, int sz, ByteBuffer out);
 
+  /**
+   * Writes the grass colors of a finished tile as RGBA texels (row major, direct buffer of at least
+   * 256 bytes) and returns the texels per side, or -1 if the tile is not finished.
+   */
+  public static native int terrainFarTint(long handle, int level, int sx, int sz, ByteBuffer out);
+
   /** Fills {@code out} with {tiles queued or running, tiles kept, tiles computed so far}. */
   public static native void terrainStats(long handle, long[] out);
 }

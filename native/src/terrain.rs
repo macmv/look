@@ -90,11 +90,52 @@ impl Ids {
 pub struct Tile {
   pub top: [i16; 256],
   pub surface: [u8; 256],
+  /// Grass color (0xRRGGBB) of the biome of each column.
+  pub grass: [u32; 256],
+}
+
+/// Layout of a tile's grass colors as texels of the far tint texture (see `TintMap.java`): a texel
+/// is `max(8, 2 << level)` blocks wide, so the wrapping texture always spans a whole level. Returns
+/// `(texels per side, columns per texel side)`.
+pub fn far_tint_layout(level: u32) -> (usize, usize) {
+  let cell = 8usize.max(2usize << level);
+  let cols = cell >> level;
+  (16 / cols, cols)
 }
 
 impl Tile {
   pub fn empty() -> Tile {
-    Tile { top: [NO_TERRAIN; 256], surface: [0; 256] }
+    Tile { top: [NO_TERRAIN; 256], surface: [0; 256], grass: [0; 256] }
+  }
+
+  /// Writes the tile as RGBA texels of the far tint texture, row major, and returns the texels per
+  /// side. A texel takes the color of the first grass column of its group (so a coast does not tint
+  /// its grass with the sea's biome), else of the group's middle column. Texels with no terrain
+  /// have alpha 0.
+  pub fn write_far_tint(&self, level: u32, out: &mut [u8]) -> usize {
+    let (side, cols) = far_tint_layout(level);
+    for tz in 0..side {
+      for tx in 0..side {
+        let col = |dz: usize, dx: usize| (tz * cols + dz) * 16 + tx * cols + dx;
+        let mut pick = col(cols / 2, cols / 2);
+        'search: for dz in 0..cols {
+          for dx in 0..cols {
+            let c = col(dz, dx);
+            if self.top[c] != NO_TERRAIN && self.surface[c] == Surface::Grass as u8 {
+              pick = c;
+              break 'search;
+            }
+          }
+        }
+        let rgb = self.grass[pick];
+        let o = (tz * side + tx) * 4;
+        out[o] = (rgb >> 16) as u8;
+        out[o + 1] = (rgb >> 8) as u8;
+        out[o + 2] = rgb as u8;
+        out[o + 3] = if self.top[pick] == NO_TERRAIN { 0 } else { 0xFF };
+      }
+    }
+    side
   }
 
   /// Writes the 4096 voxels of section row `sy` of this column into `out` and returns how many are
@@ -320,6 +361,7 @@ impl Terrain {
         let col = z * 16 + x;
         tile.top[col] = top as i16;
         tile.surface[col] = surface_of(biome, top, sea_level) as u8;
+        tile.grass[col] = biome.grass;
       }
     }
     tile
