@@ -114,6 +114,8 @@ pub struct Tile {
   pub surface: [u8; 256],
   /// Grass color (0xRRGGBB) of the biome of each column.
   pub grass:   [u32; 256],
+  /// Water color (0xRRGGBB) of the biome of each column.
+  pub water:   [u32; 256],
 }
 
 /// Layout of a tile's grass colors as texels of the far tint texture (see
@@ -127,7 +129,9 @@ pub fn far_tint_layout(level: u32) -> (usize, usize) {
 }
 
 impl Tile {
-  pub fn empty() -> Tile { Tile { top: [NO_TERRAIN; 256], surface: [0; 256], grass: [0; 256] } }
+  pub fn empty() -> Tile {
+    Tile { top: [NO_TERRAIN; 256], surface: [0; 256], grass: [0; 256], water: [0; 256] }
+  }
 
   /// Writes the tile as RGBA texels of the far tint texture, row major, and
   /// returns the texels per side. A texel takes the color of the first grass
@@ -236,8 +240,8 @@ impl Tile {
   /// Writes the tile as heightfield texels, for ray marching terrain that is
   /// too far for voxels: per column the height of the surface (the sea level
   /// over water, `NO_HEIGHT` without terrain), then per column RGBA where rgb
-  /// is the biome's grass color and alpha the kind (0 none, `1 + Surface`,
-  /// `HF_WATER`).
+  /// is the biome's grass color (water color over water) and alpha the kind (0
+  /// none, `1 + Surface`, `HF_WATER`).
   pub fn write_heightfield(&self, sea_level: i32, out: &mut [u8; HF_BYTES]) {
     for col in 0..256 {
       let top = self.top[col];
@@ -250,7 +254,7 @@ impl Tile {
       };
       out[col * 2..col * 2 + 2].copy_from_slice(&height.to_ne_bytes());
 
-      let rgb = self.grass[col];
+      let rgb = if kind == HF_WATER { self.water[col] } else { self.grass[col] };
       let o = 512 + col * 4;
       out[o] = (rgb >> 16) as u8;
       out[o + 1] = (rgb >> 8) as u8;
@@ -618,6 +622,7 @@ impl Terrain {
         tile.top[col] = top as i16;
         tile.surface[col] = surface_of(biome, top, sea_level) as u8;
         tile.grass[col] = biome.grass;
+        tile.water[col] = biome.water;
         steep_biome[col] = biome.flags & flags::STEEP_ROCK != 0;
       }
     }
@@ -751,6 +756,7 @@ mod tests {
     tile.top[0] = 100;
     tile.surface[0] = Surface::Snow as u8;
     tile.grass[0] = 0x112233;
+    tile.water[1] = 0x445566;
     tile.top[1] = 40; // under the sea
     let mut out = [0u8; HF_BYTES];
     tile.write_heightfield(63, &mut out);
@@ -758,7 +764,7 @@ mod tests {
     assert_eq!(i16::from_ne_bytes([out[0], out[1]]), 100);
     assert_eq!(&out[512..516], &[0x11, 0x22, 0x33, 1 + Surface::Snow as u8]);
     assert_eq!(i16::from_ne_bytes([out[2], out[3]]), 63);
-    assert_eq!(out[512 + 4 + 3], HF_WATER);
+    assert_eq!(&out[516..520], &[0x44, 0x55, 0x66, HF_WATER]);
     assert_eq!(i16::from_ne_bytes([out[4], out[5]]), NO_HEIGHT);
     assert_eq!(out[512 + 8 + 3], 0);
   }

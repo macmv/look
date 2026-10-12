@@ -213,6 +213,7 @@ public final class TerrainExport {
     JsonArray flags = new JsonArray();
     JsonArray temperatures = new JsonArray();
     JsonArray grass = new JsonArray();
+    JsonArray water = new JsonArray();
     for (Holder<Biome> biome : index.keySet()) {
       int f = 0;
       if (biome.is(BiomeTags.IS_OCEAN)) f |= OCEAN;
@@ -226,12 +227,14 @@ public final class TerrainExport {
       flags.add(f);
       temperatures.add(biome.value().getBaseTemperature());
       grass.add(biome.value().getGrassColor(0, 0) & 0xFFFFFF);
+      water.add(biome.value().getWaterColor() & 0xFFFFFF);
     }
 
     JsonObject out = new JsonObject();
     out.add("flags", flags);
     out.add("temperatures", temperatures);
     out.add("grass_colors", grass);
+    out.add("water_colors", water);
     out.add("points", points);
     return out;
   }

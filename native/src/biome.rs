@@ -25,10 +25,14 @@ pub struct BiomeInfo {
   pub temperature: f32,
   /// Grass color (0xRRGGBB) of the biome, for tinting grass blocks.
   pub grass:       u32,
+  /// Water color (0xRRGGBB) of the biome.
+  pub water:       u32,
 }
 
 /// Used for biomes the export gave no grass color for (plains).
 const DEFAULT_GRASS: u32 = 0x91BD59;
+/// Used for biomes the export gave no water color for.
+const DEFAULT_WATER: u32 = 0x3F76E4;
 
 struct Point {
   min:    [i64; 6],
@@ -88,6 +92,7 @@ impl BiomeIndex {
       return Err("biome flags and temperatures differ in length".into());
     }
     let grass = v.get("grass_colors").and_then(Value::as_array);
+    let water = v.get("water_colors").and_then(Value::as_array);
     let biomes: Vec<BiomeInfo> = flags
       .iter()
       .zip(temps)
@@ -99,6 +104,10 @@ impl BiomeIndex {
           .and_then(|g| g.get(i))
           .and_then(Value::as_u64)
           .map_or(DEFAULT_GRASS, |c| c as u32 & 0xFFFFFF),
+        water:       water
+          .and_then(|g| g.get(i))
+          .and_then(Value::as_u64)
+          .map_or(DEFAULT_WATER, |c| c as u32 & 0xFFFFFF),
       })
       .collect();
 

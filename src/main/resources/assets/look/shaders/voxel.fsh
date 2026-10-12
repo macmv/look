@@ -18,7 +18,7 @@ uniform float uMaxDist;
 uniform int uHfEnabled;    // 1: levels past uLevels are drawn from the heightfield
 uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and filler id, then stone and water
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
-uniform sampler2DArray uHfAttr;     // rgb: biome grass color, a: kind (0 none, 1 + surface, 7 water)
+uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water), a: kind (0 none, 1 + surface, 7 water)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
 uniform int uSubVoxel;     // 1: surface voxels are drawn at their fill height, 0: whole or not at all
 uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
@@ -469,6 +469,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
             gHfTint = attr.rgb;
             gHfTintOn = true;
             bool ok = surface(id, corner, T, hax, d, local, th, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
+            if (ok && kind == 7) albedo = attr.rgb;   // water: the biome water color, not the stand-in block
             gHfTintOn = false;
             if (ok) {
               tHit = th;
