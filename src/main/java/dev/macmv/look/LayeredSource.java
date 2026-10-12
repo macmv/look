@@ -37,7 +37,7 @@ public final class LayeredSource implements VoxelSource {
 
   @Override
   public boolean has(int level, int sx, int sz) {
-    return world.has(level, sx, sz);
+    return seed.available() || world.has(level, sx, sz);
   }
 
   @Override
@@ -64,6 +64,13 @@ public final class LayeredSource implements VoxelSource {
   @Override
   public int fill(int level, int sx, int sy, int sz, ByteBuffer out) {
     if (!seed.available()) return world.fill(level, sx, sy, sz, out);
+
+    // Level 0 is exact: a loaded chunk is used as is, and where there is none (outside the render
+    // distance, or not received yet) the generated terrain stands in.
+    if (level == 0) {
+      int solid = world.fill(level, sx, sy, sz, out);
+      return solid == UNAVAILABLE ? seed.fill(level, sx, sy, sz, out) : solid;
+    }
 
     int solid = seed.fill(level, sx, sy, sz, out);
     if (solid < 0) return solid;

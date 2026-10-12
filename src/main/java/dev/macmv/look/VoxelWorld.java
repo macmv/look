@@ -111,10 +111,10 @@ public final class VoxelWorld {
 
   static {
     Arrays.fill(sources, WorldSource.INSTANCE);
-    // Level 0 is always the loaded world. The coarse levels are the loaded world over generated
-    // terrain (singleplayer only; elsewhere that is just the loaded world).
-    VoxelSource coarse = new LayeredSource(WorldSource.INSTANCE, SeedSource.INSTANCE);
-    for (int k = 1; k < Lod.LEVELS; k++) sources[k] = coarse;
+    // The loaded world, with generated terrain beneath it where there are no chunks (singleplayer
+    // only; elsewhere that is just the loaded world).
+    VoxelSource layered = new LayeredSource(WorldSource.INSTANCE, SeedSource.INSTANCE);
+    for (int k = 0; k < Lod.LEVELS; k++) sources[k] = layered;
   }
 
   private static ClientLevel level;
