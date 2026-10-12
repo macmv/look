@@ -142,6 +142,11 @@ impl Blocks {
 
   pub fn is_leaves(&self, b: Block) -> bool { self.has(b, class::LEAVES) }
 
+  /// The `jungle_logs` tag, which cocoa grows on.
+  pub fn is_jungle_log(&self, b: Block) -> bool {
+    self.has(b, class::LOG) && self.name(b.id).contains("jungle_")
+  }
+
   pub fn is_vine(&self, b: Block) -> bool { self.has(b, class::VINE) }
 
   pub fn blocks_motion(&self, b: Block) -> bool { self.has(b, class::SOLID) }

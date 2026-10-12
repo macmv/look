@@ -32,6 +32,13 @@ pub enum Heightmap {
   OceanFloor,
   /// The highest block that is not air.
   WorldSurface,
+  /// The highest block that blocks motion, or is a fluid.
+  MotionBlocking,
+  /// `MotionBlocking`, but leaves do not count.
+  MotionBlockingNoLeaves,
+  /// The terrain's own ocean floor and surface, which features do not change.
+  OceanFloorWg,
+  WorldSurfaceWg,
 }
 
 /// A level that features write into. Writes outside the chunks around `center`
@@ -101,10 +108,13 @@ impl<'a> Level<'a> {
     let base = match self.ground.top(x, z) {
       None => min_y,
       Some(top) => match kind {
-        Heightmap::OceanFloor => top,
-        Heightmap::WorldSurface => top.max(self.ground.sea_level()),
+        Heightmap::OceanFloor | Heightmap::OceanFloorWg => top,
+        _ => top.max(self.ground.sea_level()),
       },
     };
+    if matches!(kind, Heightmap::OceanFloorWg | Heightmap::WorldSurfaceWg) {
+      return base;
+    }
 
     let mut best = base;
     if let Some(col) = self.overlay.get(&(x, z)) {
@@ -115,6 +125,11 @@ impl<'a> Level<'a> {
         let counts = match kind {
           Heightmap::OceanFloor => self.blocks.blocks_motion(b),
           Heightmap::WorldSurface => !self.blocks.is_air(b),
+          Heightmap::MotionBlocking => self.blocks.blocks_motion(b) || self.blocks.is_fluid(b),
+          Heightmap::MotionBlockingNoLeaves => {
+            (self.blocks.blocks_motion(b) || self.blocks.is_fluid(b)) && !self.blocks.is_leaves(b)
+          }
+          Heightmap::OceanFloorWg | Heightmap::WorldSurfaceWg => unreachable!(),
         };
         if counts {
           best = y + 1;

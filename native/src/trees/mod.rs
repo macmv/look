@@ -21,6 +21,7 @@ pub mod block;
 pub mod config;
 pub mod feature;
 pub mod javaset;
+pub mod shape;
 pub mod tree;
 pub mod world;
 
@@ -32,7 +33,7 @@ use block::Blocks;
 use config::PlacedFeature;
 use world::Level;
 
-use crate::rng::Xoroshiro;
+use crate::rng::WorldgenRandom;
 
 struct Slot {
   step:   i32,
@@ -117,7 +118,7 @@ impl Decoration {
     level.set_center(cx, cz);
     let origin = (cx * 16, level.min_y(), cz * 16);
 
-    let mut rng = Xoroshiro::from_seed(0);
+    let mut rng = WorldgenRandom::new();
     let decoration_seed = rng.set_decoration_seed(seed, origin.0, origin.2);
 
     for (slot_index, slot) in self.slots.iter().enumerate() {

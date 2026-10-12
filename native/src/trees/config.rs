@@ -9,7 +9,7 @@ use super::{
   block::{mushroom, Block, Blocks},
   world::Heightmap,
 };
-use crate::rng::Xoroshiro;
+use crate::rng::WorldgenRandom;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -72,7 +72,7 @@ impl IntProvider {
     })
   }
 
-  pub fn sample(&self, rng: &mut Xoroshiro) -> i32 {
+  pub fn sample(&self, rng: &mut WorldgenRandom) -> i32 {
     match self {
       IntProvider::Constant(n) => *n,
       IntProvider::Uniform(lo, hi) => rng.between(*lo, *hi),
@@ -106,7 +106,11 @@ fn block_state(blocks: &mut Blocks, v: &Value) -> Result<Block> {
   let mut state = 0u8;
   if let Some(props) = v.get("Properties").and_then(Value::as_object) {
     let on = |k: &str| props.get(k).and_then(Value::as_str) == Some("true");
-    if let Some(axis) = props.get("axis").and_then(Value::as_str) {
+    if name.ends_with("_leaves") {
+      // Leaves keep their distance to a log in their state.
+      state =
+        props.get("distance").and_then(Value::as_str).and_then(|d| d.parse().ok()).unwrap_or(7);
+    } else if let Some(axis) = props.get("axis").and_then(Value::as_str) {
       state = match axis {
         "x" => 1,
         "z" => 2,
@@ -126,6 +130,9 @@ fn block_state(blocks: &mut Blocks, v: &Value) -> Result<Block> {
         }
       }
     }
+  }
+  if name.ends_with("_leaves") && state == 0 {
+    state = 7;
   }
   Ok(Block::with(id, state))
 }
@@ -320,6 +327,10 @@ fn parse_modifier(m: &Value) -> Result<Modifier> {
     "minecraft:heightmap" => Modifier::Heightmap(match field(m, "heightmap")?.as_str() {
       Some("OCEAN_FLOOR") => Heightmap::OceanFloor,
       Some("WORLD_SURFACE") => Heightmap::WorldSurface,
+      Some("MOTION_BLOCKING") => Heightmap::MotionBlocking,
+      Some("MOTION_BLOCKING_NO_LEAVES") => Heightmap::MotionBlockingNoLeaves,
+      Some("OCEAN_FLOOR_WG") => Heightmap::OceanFloorWg,
+      Some("WORLD_SURFACE_WG") => Heightmap::WorldSurfaceWg,
       other => return Err(format!("unsupported heightmap {other:?}")),
     }),
     "minecraft:biome" => Modifier::Biome,

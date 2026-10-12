@@ -71,36 +71,6 @@ impl Xoroshiro {
     (self.next_long() >> 11) as f64 * 1.110_223_024_625_156_5e-16
   }
 
-  /// `nextFloat`: 24 random bits scaled into `[0, 1)`.
-  pub fn next_float(&mut self) -> f32 { (self.next_long() >> 40) as f32 * 5.960_464_5e-8_f32 }
-
-  /// `nextBoolean`: the lowest bit of the next long.
-  pub fn next_bool(&mut self) -> bool { self.next_long() & 1 != 0 }
-
-  /// `Mth.randomBetweenInclusive`.
-  pub fn between(&mut self, min: i32, max: i32) -> i32 { self.next_int_bound(max - min + 1) + min }
-
-  /// `setSeed`: starts over from a 64 bit seed, widened like `from_seed`.
-  pub fn set_seed(&mut self, seed: i64) { *self = Self::from_seed(seed); }
-
-  /// `WorldgenRandom.setDecorationSeed`: the per chunk seed that every
-  /// feature's seed derives from. `x` and `z` are the chunk's lowest block
-  /// coordinates.
-  pub fn set_decoration_seed(&mut self, world_seed: i64, x: i32, z: i32) -> i64 {
-    self.set_seed(world_seed);
-    let m = (self.next_long() | 1) as i64;
-    let n = (self.next_long() | 1) as i64;
-    let seed = (x as i64).wrapping_mul(m).wrapping_add((z as i64).wrapping_mul(n)) ^ world_seed;
-    self.set_seed(seed);
-    seed
-  }
-
-  /// `WorldgenRandom.setFeatureSeed`: `index` is the feature's place in its
-  /// decoration step's list.
-  pub fn set_feature_seed(&mut self, decoration_seed: i64, index: i32, step: i32) {
-    self.set_seed(decoration_seed.wrapping_add(index as i64).wrapping_add((10000 * step) as i64));
-  }
-
   /// `forkPositional`: a factory that derives independent sources from names.
   pub fn fork_positional(&mut self) -> PositionalFactory {
     let lo = self.next_long();
@@ -124,5 +94,86 @@ impl PositionalFactory {
     let lo = u64::from_be_bytes(digest[0..8].try_into().unwrap());
     let hi = u64::from_be_bytes(digest[8..16].try_into().unwrap());
     Xoroshiro::from_128(lo ^ self.lo, hi ^ self.hi)
+  }
+}
+
+/// `WorldgenRandom` over a Xoroshiro source: what the game seeds per chunk and
+/// per feature when it decorates. It is not the Xoroshiro's own `nextInt` and
+/// friends: `WorldgenRandom` is a `BitRandomSource`, which builds every method
+/// out of `next(bits)` (here the top bits of the next long) the way
+/// `java.util.Random` does, so `nextInt(bound)`, `nextBoolean`, `nextLong` and
+/// `nextDouble` all draw differently from `Xoroshiro`'s.
+#[derive(Clone)]
+pub struct WorldgenRandom {
+  inner: Xoroshiro,
+}
+
+impl Default for WorldgenRandom {
+  fn default() -> Self { Self::new() }
+}
+
+impl WorldgenRandom {
+  pub fn new() -> Self { WorldgenRandom { inner: Xoroshiro::from_seed(0) } }
+
+  /// `setSeed`: starts over from a 64 bit seed, widened like
+  /// `Xoroshiro::from_seed`.
+  pub fn set_seed(&mut self, seed: i64) { self.inner = Xoroshiro::from_seed(seed); }
+
+  /// `next(bits)`: the top `bits` bits of the next long, as an int.
+  fn next(&mut self, bits: u32) -> i32 { (self.inner.next_long() >> (64 - bits)) as i32 }
+
+  pub fn next_int(&mut self) -> i32 { self.next(32) }
+
+  /// `BitRandomSource.nextInt(bound)` for `bound > 0`.
+  pub fn next_int_bound(&mut self, bound: i32) -> i32 {
+    debug_assert!(bound > 0);
+    if bound & (bound - 1) == 0 {
+      return ((bound as i64 * self.next(31) as i64) >> 31) as i32;
+    }
+    loop {
+      let j = self.next(31);
+      let k = j % bound;
+      if j.wrapping_sub(k).wrapping_add(bound - 1) >= 0 {
+        return k;
+      }
+    }
+  }
+
+  /// `BitRandomSource.nextLong`: two ints, the second added with its sign.
+  pub fn next_long(&mut self) -> i64 {
+    let i = self.next(32);
+    let j = self.next(32);
+    ((i as i64) << 32).wrapping_add(j as i64)
+  }
+
+  pub fn next_bool(&mut self) -> bool { self.next(1) != 0 }
+
+  pub fn next_float(&mut self) -> f32 { self.next(24) as f32 * 5.960_464_5e-8_f32 }
+
+  pub fn next_double(&mut self) -> f64 {
+    let i = self.next(26) as i64;
+    let j = self.next(27) as i64;
+    (((i << 27) + j) as f64) * (1.110_223e-16_f32 as f64)
+  }
+
+  /// `Mth.randomBetweenInclusive`.
+  pub fn between(&mut self, min: i32, max: i32) -> i32 { self.next_int_bound(max - min + 1) + min }
+
+  /// `WorldgenRandom.setDecorationSeed`: the per chunk seed that every
+  /// feature's seed derives from. `x` and `z` are the chunk's lowest block
+  /// coordinates.
+  pub fn set_decoration_seed(&mut self, world_seed: i64, x: i32, z: i32) -> i64 {
+    self.set_seed(world_seed);
+    let m = self.next_long() | 1;
+    let n = self.next_long() | 1;
+    let seed = (x as i64).wrapping_mul(m).wrapping_add((z as i64).wrapping_mul(n)) ^ world_seed;
+    self.set_seed(seed);
+    seed
+  }
+
+  /// `WorldgenRandom.setFeatureSeed`: `index` is the feature's place in its
+  /// decoration step's list.
+  pub fn set_feature_seed(&mut self, decoration_seed: i64, index: i32, step: i32) {
+    self.set_seed(decoration_seed.wrapping_add(index as i64).wrapping_add((10000 * step) as i64));
   }
 }

@@ -12,10 +12,10 @@ use std::{collections::HashSet, f32::consts::TAU, f64::consts::PI, sync::OnceLoc
 use super::{
   block::{vine, Block, COCOA, VINE},
   config::{Decorator, FoliagePlacer, IntProvider, TreeConfig, TrunkPlacer},
-  javaset,
+  javaset, shape,
   world::Level,
 };
-use crate::rng::Xoroshiro;
+use crate::rng::WorldgenRandom;
 
 pub type P = (i32, i32, i32);
 
@@ -95,7 +95,7 @@ fn rel(p: P, d: Dir, n: i32) -> P {
   (p.0 + sx * n, p.1, p.2 + sz * n)
 }
 
-fn random_dir(rng: &mut Xoroshiro) -> Dir { HORIZONTAL[rng.next_int_bound(4) as usize] }
+fn random_dir(rng: &mut WorldgenRandom) -> Dir { HORIZONTAL[rng.next_int_bound(4) as usize] }
 
 fn manhattan(a: P, b: P) -> i32 { (a.0 - b.0).abs() + (a.1 - b.1).abs() + (a.2 - b.2).abs() }
 
@@ -176,18 +176,32 @@ fn attach(pos: P, radius_offset: i32, double_trunk: bool) -> Attachment {
 
 pub struct TreePlacer<'a, 'b, 'c> {
   level:  &'a mut Level<'b>,
-  rng:    &'a mut Xoroshiro,
+  rng:    &'a mut WorldgenRandom,
   cfg:    &'c TreeConfig,
   /// What the trunk placer wrote (logs, and the dirt under them): vanilla's
   /// `set2`.
   logs:   PosSet,
   /// What the foliage placer wrote: `set3`.
   leaves: PosSet,
+  /// What the decorators wrote: `set4`.
+  decor:  Vec<P>,
 }
 
 /// `TreeFeature.place`. Returns whether a tree was placed.
-pub fn place_tree(level: &mut Level, rng: &mut Xoroshiro, cfg: &TreeConfig, origin: P) -> bool {
-  let mut t = TreePlacer { level, rng, cfg, logs: PosSet::default(), leaves: PosSet::default() };
+pub fn place_tree(
+  level: &mut Level,
+  rng: &mut WorldgenRandom,
+  cfg: &TreeConfig,
+  origin: P,
+) -> bool {
+  let mut t = TreePlacer {
+    level,
+    rng,
+    cfg,
+    logs: PosSet::default(),
+    leaves: PosSet::default(),
+    decor: Vec::new(),
+  };
   let placed = t.do_place(origin);
   if placed && (!t.logs.is_empty() || !t.leaves.is_empty()) {
     if !cfg.decorators.is_empty() {
@@ -197,6 +211,7 @@ pub fn place_tree(level: &mut Level, rng: &mut Xoroshiro, cfg: &TreeConfig, orig
         t.decorate(d, &logs, &leaves);
       }
     }
+    shape::update_after_tree(t.level, &t.logs.order, &t.leaves.order, &t.decor);
     true
   } else {
     false
@@ -954,7 +969,10 @@ impl<'a, 'b, 'c> TreePlacer<'a, 'b, 'c> {
   // --- decorators
   // ------------------------------------------------------------------------------
 
-  fn set_decoration(&mut self, p: P, b: Block) { self.level.set(p.0, p.1, p.2, b); }
+  fn set_decoration(&mut self, p: P, b: Block) {
+    self.decor.push(p);
+    self.level.set(p.0, p.1, p.2, b);
+  }
 
   fn place_vine(&mut self, p: P, face: u8) { self.set_decoration(p, Block::with(VINE, face)); }
 

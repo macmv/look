@@ -9,7 +9,7 @@ use super::{
   tree::{place_tree, P},
   world::{Heightmap, Level},
 };
-use crate::rng::Xoroshiro;
+use crate::rng::WorldgenRandom;
 
 /// What a `Biome` placement modifier asks: whether the feature is one of the
 /// biome's at a spot.
@@ -19,7 +19,7 @@ pub type BiomeCheck<'a> = &'a dyn Fn(usize) -> bool;
 /// latter).
 pub fn place(
   level: &mut Level,
-  rng: &mut Xoroshiro,
+  rng: &mut WorldgenRandom,
   feature: &PlacedFeature,
   origin: P,
   biome: Option<BiomeCheck>,
@@ -29,7 +29,7 @@ pub fn place(
 
 fn run(
   level: &mut Level,
-  rng: &mut Xoroshiro,
+  rng: &mut WorldgenRandom,
   pf: &PlacedFeature,
   i: usize,
   pos: P,
@@ -79,7 +79,7 @@ fn run(
   }
 }
 
-fn place_feature(level: &mut Level, rng: &mut Xoroshiro, feature: &Feature, pos: P) -> bool {
+fn place_feature(level: &mut Level, rng: &mut WorldgenRandom, feature: &Feature, pos: P) -> bool {
   // `Feature.place` does nothing for an origin it cannot write to.
   if !level.can_write(pos.0, pos.2) {
     return false;
@@ -107,7 +107,12 @@ fn place_feature(level: &mut Level, rng: &mut Xoroshiro, feature: &Feature, pos:
 }
 
 /// `AbstractHugeMushroomFeature` and its two caps.
-fn place_mushroom(level: &mut Level, rng: &mut Xoroshiro, cfg: &MushroomConfig, pos: P) -> bool {
+fn place_mushroom(
+  level: &mut Level,
+  rng: &mut WorldgenRandom,
+  cfg: &MushroomConfig,
+  pos: P,
+) -> bool {
   let mut i = rng.next_int_bound(3) + 4;
   if rng.next_int_bound(12) == 0 {
     i *= 2;
