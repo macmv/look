@@ -56,6 +56,8 @@ public final class TerrainExport {
   private static final int BADLANDS = 8;
   private static final int MOUNTAIN = 16;
   private static final int DESERT = 32;
+  private static final int STEEP_ROCK = 64;
+  private static final int STONE = 128;
 
   private final RegistryOps<JsonElement> ops;
   private final HolderLookup.RegistryLookup<DensityFunction> functionRegistry;
@@ -219,6 +221,8 @@ public final class TerrainExport {
       if (biome.is(BiomeTags.IS_BADLANDS)) f |= BADLANDS;
       if (biome.is(BiomeTags.IS_MOUNTAIN)) f |= MOUNTAIN;
       if (biome.is(Biomes.DESERT)) f |= DESERT;
+      if (biome.is(Biomes.JAGGED_PEAKS) || biome.is(Biomes.FROZEN_PEAKS) || biome.is(Biomes.SNOWY_SLOPES)) f |= STEEP_ROCK;
+      if (biome.is(Biomes.STONY_PEAKS) || biome.is(Biomes.STONY_SHORE)) f |= STONE;
       flags.add(f);
       temperatures.add(biome.value().getBaseTemperature());
       grass.add(biome.value().getGrassColor(0, 0) & 0xFFFFFF);

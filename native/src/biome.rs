@@ -12,6 +12,10 @@ pub mod flags {
   pub const BADLANDS: u32 = 8;
   pub const MOUNTAIN: u32 = 16;
   pub const DESERT: u32 = 32;
+  /// Bare rock on steep ground (jagged and frozen peaks, snowy slopes).
+  pub const STEEP_ROCK: u32 = 64;
+  /// Bare rock everywhere (stony peaks and shores).
+  pub const STONE: u32 = 128;
 }
 
 #[derive(Clone, Copy, Debug)]

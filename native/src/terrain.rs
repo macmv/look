@@ -32,9 +32,9 @@ const CELL_H: i32 = 8;
 /// How far above the 2D estimate the search for the surface starts, in blocks. The 3D noise moves
 /// the surface by up to roughly this much.
 const SEARCH_MARGIN: i32 = 48;
-/// Rise per block of run (between neighboring columns) above which grass and snow cannot hold on and
-/// the bare rock shows.
-const STEEP_SLOPE: f32 = 1.2;
+/// Height difference between the columns on either side of one, per block of run, from which
+/// vanilla's `steep` surface rule holds: 4 blocks over 2.
+const STEEP_SLOPE: i32 = 2;
 /// Vanilla cools a biome by this much per block above y 80, and snows below a temperature of 0.15.
 const LAPSE_PER_BLOCK: f32 = 0.05 / 40.0;
 
@@ -467,6 +467,7 @@ impl Terrain {
   pub fn sample_tile(&self, s: &mut Scratch, level: u32, sx: i32, sz: i32) -> Tile {
     let mut tile = Tile::empty();
     let mut cache = CornerCache::default();
+    let mut steep_biome = [false; 256];
     let size = 1i64 << level;
     let half = size >> 1;
     let x0 = (sx as i64) << (level + 4);
@@ -486,44 +487,32 @@ impl Terrain {
         tile.top[col] = top as i16;
         tile.surface[col] = surface_of(biome, top, sea_level) as u8;
         tile.grass[col] = biome.grass;
+        steep_biome[col] = biome.flags & flags::STEEP_ROCK != 0;
       }
     }
-    tile.expose_cliffs(level, sea_level);
+    tile.expose_cliffs(level, &steep_biome);
     tile
   }
 }
 
 impl Tile {
-  /// Turns grass and snow on steep ground into stone, judged from the neighboring columns of the
-  /// tile (the edge columns only see the neighbors they have). A voxel is `2^level` blocks wide, so
-  /// the same terrain reads as steeper the coarser the level.
-  fn expose_cliffs(&mut self, level: u32, sea_level: i32) {
-    let run = (1i32 << level) as f32;
+  /// Turns the surface of steep ground into stone in the biomes whose surface rules ask for it, like
+  /// vanilla's `steep` condition: the columns on either side of one (clamped to the tile, as vanilla
+  /// clamps to the chunk) differ by 4 blocks over 2 blocks of run, along either axis.
+  fn expose_cliffs(&mut self, level: u32, steep_biome: &[bool; 256]) {
+    let limit = STEEP_SLOPE * 2 * (1i32 << level);
     let mut out = self.surface;
     for z in 0..16usize {
       for x in 0..16usize {
         let col = z * 16 + x;
-        let top = self.top[col];
-        let kind = self.surface[col];
-        if top == NO_TERRAIN || (top as i32) <= sea_level {
-          continue;
-        }
-        if kind != Surface::Grass as u8 && kind != Surface::Snow as u8 {
+        if self.top[col] == NO_TERRAIN || !steep_biome[col] {
           continue;
         }
 
-        let mut rise = 0i32;
-        for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
-          let (nx, nz) = (x as i32 + dx, z as i32 + dz);
-          if !(0..16).contains(&nx) || !(0..16).contains(&nz) {
-            continue;
-          }
-          let n = self.top[nz as usize * 16 + nx as usize];
-          if n != NO_TERRAIN {
-            rise = rise.max((n as i32 - top as i32).abs());
-          }
-        }
-        if rise as f32 / run >= STEEP_SLOPE {
+        let height = |x: usize, z: usize| self.top[z * 16 + x];
+        let pairs = [(height(x.saturating_sub(1), z), height((x + 1).min(15), z)), (height(x, z.saturating_sub(1)), height(x, (z + 1).min(15)))];
+        let steep = pairs.iter().any(|&(a, b)| a != NO_TERRAIN && b != NO_TERRAIN && (a as i32 - b as i32).abs() >= limit);
+        if steep {
           out[col] = Surface::Stone as u8;
         }
       }
@@ -548,7 +537,7 @@ pub fn surface_of(biome: BiomeInfo, top: i32, sea_level: i32) -> Surface {
   if f & flags::BADLANDS != 0 {
     return Surface::RedSand;
   }
-  if top >= 200 || (top >= 110 && f & flags::MOUNTAIN != 0) {
+  if f & flags::STONE != 0 {
     return Surface::Stone;
   }
   Surface::Grass
