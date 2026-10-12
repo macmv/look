@@ -183,7 +183,7 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
   vec2 ab = axis == 0 ? local.yz : (axis == 1 ? local.xz : local.xy);
   // The block inside the voxel that was hit, for picking variants and jittering color.
   ivec3 cell = corner + clamp(ivec3(floor(local * vs)), ivec3(0), ivec3(int(vs) - 1));
-  ab = clamp(fract(ab * vs), 0.001, 0.999);
+  ab = fract(ab * vs);
 
   int base = variantRow(id, cell) * FACE_ROW_TEXELS + face * 4;
   vec3 rgb = vec3(0.0);
@@ -194,9 +194,13 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     vec4 b = texelFetch(uFaces, base + layer * 2 + 1);
     if (b.w < 0.5) break;
 
-    vec2 uv = a.xy + ab.x * a.zw + ab.y * b.xy;
     float texelsPerBlock = max(length(a.zw * uAtlasSize), length(b.xy * uAtlasSize));
     float lod = clamp(log2(max(t * uPixelAngle * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
+    // Stay half a texel of the chosen mip inside the sprite, or the bilinear filter at a block's edge
+    // pulls in the neighboring sprite of the atlas. The tiling puts an edge every block, so it shows.
+    float margin = clamp(0.5 * exp2(lod) / texelsPerBlock, 0.001, 0.5);
+    vec2 abc = clamp(ab, margin, 1.0 - margin);
+    vec2 uv = a.xy + abc.x * a.zw + abc.y * b.xy;
     vec4 s = textureLod(uAtlas, uv, lod);
 
     if (b.z < -0.5) {
@@ -227,11 +231,6 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
   }
 
   albedo = rgb;
-  if (vs > 1.5) {
-    // Every block a little different, fading out once a pixel spans a block or more (it would only shimmer).
-    float r = float(hash3(cell + ivec3(7, 13, 29)) >> 8u) / 16777216.0;
-    albedo *= 1.0 + (r - 0.5) * 0.16 * clamp(1.0 - t * uPixelAngle, 0.0, 1.0);
-  }
   return true;
 }
 
