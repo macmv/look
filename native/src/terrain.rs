@@ -163,6 +163,10 @@ impl Tile {
   /// Writes the 4096 voxels of section row `sy` of this column into `out` and
   /// returns how many are not air. Always writes the whole brick, since
   /// callers may layer other data over it.
+  ///
+  /// The voxel that holds the surface, and the topmost water voxel, are only
+  /// filled up to the real height (see `with_fill`), so a coarse level's
+  /// terraces are not a whole voxel tall.
   pub fn fill_brick(
     &self,
     level: u32,
@@ -171,10 +175,11 @@ impl Tile {
     ids: &Ids,
     out: &mut [u16; BRICK_VOXELS],
   ) -> u32 {
-    let size = 1i32 << level;
+    let size = 1i64 << level;
     let half = size >> 1;
     let y0 = (sy as i64) << (level + 4);
     let filler_depth = 4.max(2 * size);
+    let sea = t.sea_level as i64;
 
     let mut solid = 0;
     for z in 0..16 {
@@ -185,33 +190,57 @@ impl Tile {
         let (top_id, filler_id) = (ids.top[surface], ids.filler[surface]);
 
         for y in 0..16 {
-          let by = y0 + (y as i64) * size as i64 + half as i64;
-          let mut id = 0;
-          if top != NO_TERRAIN && by >= t.min_y as i64 && by < t.max_y as i64 {
-            let by = by as i32;
-            let top = top as i32;
-            if by < top {
-              // The one voxel holding the surface is the surface block; a few
-              // below it are filler.
-              id = if by + size >= top {
-                top_id
-              } else if top - by <= filler_depth {
-                filler_id
+          let vy = y0 + (y as i64) * size;
+          let mut voxel = 0;
+          if top != NO_TERRAIN && vy >= t.min_y as i64 && vy < t.max_y as i64 {
+            let top = top as i64;
+            if vy >= top {
+              if vy < sea {
+                voxel = with_fill(ids.water, sea - vy, size);
+              }
+            } else if vy + size >= top {
+              // The voxel holding the surface. When that is under water this
+              // voxel is the water, and the seabed is hidden by
+              // it anyway.
+              voxel = if top < sea {
+                with_fill(ids.water, sea - vy, size)
               } else {
-                ids.stone
+                with_fill(top_id, top - vy, size)
               };
-            } else if by < t.sea_level {
-              id = ids.water;
+            } else {
+              let id = if top - (vy + half) <= filler_depth { filler_id } else { ids.stone };
+              voxel = id;
             }
           }
-          if id != 0 {
+          if voxel != 0 {
             solid += 1;
           }
-          out[(y * 16 + z) * 16 + x] = id;
+          out[(y * 16 + z) * 16 + x] = voxel;
         }
       }
     }
     solid
+  }
+}
+
+/// Bit position of the fill height in a brick's u16 texels, above the voxel id.
+/// Shared with `BlockClassifier.FILL_SHIFT` and the shader.
+pub const FILL_SHIFT: u32 = 13;
+/// Fill heights are multiples of 1 / FILL_STEPS of a voxel.
+pub const FILL_STEPS: i64 = 8;
+
+/// The voxel `id` filled up to `fill` blocks of its `size` blocks of height. A
+/// fill field of 0 means the whole voxel, 1..7 that many eighths. A voxel is
+/// never rounded away entirely.
+pub fn with_fill(id: u16, fill: i64, size: i64) -> u16 {
+  if fill >= size {
+    return id;
+  }
+  let steps = ((fill * FILL_STEPS + size / 2) / size).clamp(1, FILL_STEPS);
+  if steps >= FILL_STEPS {
+    id
+  } else {
+    id | ((steps as u16) << FILL_SHIFT)
   }
 }
 
@@ -612,4 +641,80 @@ pub fn surface_of(biome: BiomeInfo, top: i32, sea_level: i32) -> Surface {
     return Surface::Stone;
   }
   Surface::Grass
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn ids() -> Ids {
+    let mut ids = Ids::default();
+    ids.top = [10; SURFACES];
+    ids.filler = [11; SURFACES];
+    ids.stone = 12;
+    ids.water = 13;
+    ids
+  }
+
+  fn params() -> TerrainParams { TerrainParams { sea_level: 63, min_y: -64, max_y: 320 } }
+
+  fn brick(tile: &Tile, level: u32, sy: i32) -> Box<[u16; BRICK_VOXELS]> {
+    let mut out = Box::new([0u16; BRICK_VOXELS]);
+    tile.fill_brick(level, sy, &params(), &ids(), &mut out);
+    out
+  }
+
+  fn column(out: &[u16; BRICK_VOXELS]) -> Vec<u16> { (0..16).map(|y| out[(y * 16) * 16]).collect() }
+
+  #[test]
+  fn surface_voxel_is_partly_filled() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 100;
+    // Level 3: voxels of 8 blocks, so the section row starts at y 0 and voxel
+    // 12 spans 96..104.
+    let col = column(&brick(&tile, 3, 0));
+    assert_eq!(col[12], 10 | (4 << FILL_SHIFT)); // 4 of 8 blocks
+    assert_eq!(col[13], 0);
+    assert_eq!(col[11], 11); // filler, full
+    assert_eq!(col[0], 12); // stone
+  }
+
+  #[test]
+  fn aligned_surface_is_a_full_voxel() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 104;
+    let col = column(&brick(&tile, 3, 0));
+    assert_eq!(col[12], 10);
+    assert_eq!(col[13], 0);
+  }
+
+  #[test]
+  fn thin_surface_keeps_one_eighth() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 97; // 1 block into a voxel of 32 would round to nothing
+    let col = column(&brick(&tile, 5, 0));
+    assert_eq!(col[3], 10 | (1 << FILL_SHIFT));
+  }
+
+  #[test]
+  fn water_surface_is_flat_at_sea_level() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 20;
+    // Level 3, voxel 7 spans 56..64: water up to 63 is 7 of 8 blocks. Voxel 2
+    // (16..24) holds the seabed, which is under water, so it is water too.
+    let col = column(&brick(&tile, 3, 0));
+    assert_eq!(col[7], 13 | (7 << FILL_SHIFT));
+    assert_eq!(col[8], 0);
+    assert_eq!(col[2], 13);
+  }
+
+  #[test]
+  fn level_zero_has_no_partial_voxels() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 70;
+    let col = column(&brick(&tile, 0, 4)); // y 64..80
+    assert!(col.iter().all(|&v| v >> FILL_SHIFT == 0));
+    assert_eq!(col[5], 10);
+    assert_eq!(col[6], 0);
+  }
 }

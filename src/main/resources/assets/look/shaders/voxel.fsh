@@ -42,13 +42,15 @@ const int TINT_SPLIT_UNIT = 2; // TintMap.SPLIT_UNIT
 const int TINT_SIZE = 512;     // TintMap.SIZE
 const int TINT_FAR_FIRST = 5;  // TintMap.FAR_FIRST
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
-const int META_START = (16384 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
+const int META_START = (8192 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
-const int QUAD_HDR_START = META_START + 16384 * META_TEXELS;  // BlockClassifier.HDR_START / 4
-const int QUAD_POOL_START = QUAD_HDR_START + 16384 * 3;       // BlockClassifier.POOL_START / 4
+const int QUAD_HDR_START = META_START + 8192 * META_TEXELS;  // BlockClassifier.HDR_START / 4
+const int QUAD_POOL_START = QUAD_HDR_START + 8192 * 3;       // BlockClassifier.POOL_START / 4
 const int QUAD_TEXELS = 5;       // BlockClassifier.QUAD_FLOATS / 4
 const int MAX_QUADS = 48;        // BlockClassifier.MAX_QUADS
 const float SWAY_OMEGA = 0.0490874;  // 2 pi / 128 ticks, so wrapping uTime at a multiple of 128 is seamless
+const uint ID_MASK = 0x1FFFu;    // BlockClassifier.MAX_ID: a brick texel is the voxel id, then the fill height
+const uint FILL_SHIFT = 13u;     // BlockClassifier.FILL_SHIFT, in eighths of a voxel, 0 for a whole one
 
 uint readSlot(int lvl, ivec3 sec) {
   ivec3 c = ivec3(sec.x & (uGrid.x - 1), uLevel[lvl].z + sec.y - uLevel[lvl].x, sec.z & (uGrid.z - 1));
@@ -72,7 +74,7 @@ bool occludes(int lvl, ivec3 vc) {
   uint slot = readSlot(lvl, sec);
   if (slot == 0u) return false;
   ivec3 l = vc & 15;
-  uint id = texelFetch(uBricks, int(slot - 1u) * 4096 + (l.y * 16 + l.z) * 16 + l.x).r;
+  uint id = texelFetch(uBricks, int(slot - 1u) * 4096 + (l.y * 16 + l.z) * 16 + l.x).r & ID_MASK;
   if (id == 0u) return false;
   return ((texelFetch(uColors, int(id)).r >> 24) & 1u) != 0u;
 }
@@ -406,56 +408,83 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
 
     for (int j = 0; j < 48; j++) {
       steps++;
-      uint id = texelFetch(uBricks, base + (v.y * 16 + v.z) * 16 + v.x).r;
+      uint raw = texelFetch(uBricks, base + (v.y * 16 + v.z) * 16 + v.x).r;
+      uint id = raw & ID_MASK;
       if (id != 0u) {
         ivec3 voxel = secMin + (v << lvl);   // min corner, block
-        vec3 local = (o + d * tc - vec3(voxel - uCamBlock)) / vs;
-        // The texture covers the whole voxel, so a pixel spans 1/vs as many texels per ray length.
-        ivec3 center = voxel + int(0.5 * vs);
-        vec2 column = (vec2(voxel.xz & (TINT_BLOCKS - 1)) + 0.5 * vs) / float(TINT_BLOCKS);
-        // Below the column's split height the second biome applies (layers 2 and 3).
-        float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
-        float lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
+        float th = tc;                       // where the ray meets the voxel
+        int hax = axis;
+        vec3 local = (o + d * th - vec3(voxel - uCamBlock)) / vs;
 
-        // No loaded chunk filled this column: use the predicted grass color, if there is one.
-        vec3 farTint = vec3(0.0, 0.0, -1.0);
-        if (texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 0), 0).a < 0.5) {
-          int farShift = max(3, lvl + 1);   // TintMap.farCell
-          ivec3 farTexel = ivec3((center.xz >> farShift) & (TINT_SIZE - 1), TINT_FAR_FIRST + lvl);
-          if (texelFetch(uTint, farTexel, 0).a > 0.5) {
-            farTint = vec3((vec2(voxel.xz) + 0.5 * vs) / float(TINT_SIZE << farShift), float(farTexel.z));
+        // A voxel that is only filled part of the way up (the surface of predicted terrain). A ray
+        // that enters above the filled part has to come down onto its top face inside the voxel,
+        // otherwise it passes over and on.
+        bool inside = true;
+        uint fill = raw >> FILL_SHIFT;
+        if (fill != 0u) {
+          float h = float(fill) / 8.0;
+          if (local.y > h) {
+            inside = false;
+            if (d.y < 0.0) {
+              float tTop = tc + (h - local.y) * vs / d.y;
+              if (tTop < min(tMax.x, min(tMax.y, tMax.z))) {
+                inside = true;
+                th = tTop;
+                hax = 1;
+                local = (o + d * th - vec3(voxel - uCamBlock)) / vs;
+              }
+            }
           }
         }
 
-        int kind = int((texelFetch(uColors, int(id)).r >> 25) & 3u);
-        if (kind == 0) {
-          if (surface(id, voxel, vs, axis, d, local, tc, column, lowLayer, farTint, albedo)) {
-            tHit = tc;
-            hitId = id;
-            hitAxis = axis;
-            hitVoxel = voxel;
-            hitLevel = lvl;
-            hitKind = 0;
-            hitNormal = vec3(0.0);
-            hitNormal[axis] = d[axis] > 0.0 ? -1.0 : 1.0;
-            return true;
+        if (inside) {
+          // The texture covers the whole voxel, so a pixel spans 1/vs as many texels per ray length.
+          ivec3 center = voxel + int(0.5 * vs);
+          vec2 column = (vec2(voxel.xz & (TINT_BLOCKS - 1)) + 0.5 * vs) / float(TINT_BLOCKS);
+          // Below the column's split height the second biome applies (layers 2 and 3).
+          float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
+          float lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
+
+          // No loaded chunk filled this column: use the predicted grass color, if there is one.
+          vec3 farTint = vec3(0.0, 0.0, -1.0);
+          if (texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 0), 0).a < 0.5) {
+            int farShift = max(3, lvl + 1);   // TintMap.farCell
+            ivec3 farTexel = ivec3((center.xz >> farShift) & (TINT_SIZE - 1), TINT_FAR_FIRST + lvl);
+            if (texelFetch(uTint, farTexel, 0).a > 0.5) {
+              farTint = vec3((vec2(voxel.xz) + 0.5 * vs) / float(TINT_SIZE << farShift), float(farTexel.z));
+            }
           }
-        } else {
-          // Model quads: intersect them inside this voxel, up to where the ray leaves it (tMax).
-          vec3 ol = (o - vec3(voxel - uCamBlock)) / vs;
-          float exitT = min(tMax.x, min(tMax.y, tMax.z));
-          float th;
-          vec3 qn;
-          bool unshaded;
-          if (quadSurface(id, voxel >> lvl, ol, d, (tc - eps) / vs, (exitT + eps) / vs, column, lowLayer, farTint, th, qn, albedo, unshaded)) {
-            tHit = th * vs;
-            hitId = id;
-            hitAxis = axis;
-            hitVoxel = voxel;
-            hitLevel = lvl;
-            hitKind = kind | (unshaded ? 4 : 0);
-            hitNormal = qn;
-            return true;
+
+          int kind = int((texelFetch(uColors, int(id)).r >> 25) & 3u);
+          if (kind == 0) {
+            if (surface(id, voxel, vs, hax, d, local, th, column, lowLayer, farTint, albedo)) {
+              tHit = th;
+              hitId = id;
+              hitAxis = hax;
+              hitVoxel = voxel;
+              hitLevel = lvl;
+              hitKind = 0;
+              hitNormal = vec3(0.0);
+              hitNormal[hax] = d[hax] > 0.0 ? -1.0 : 1.0;
+              return true;
+            }
+          } else {
+            // Model quads: intersect them inside this voxel, up to where the ray leaves it (tMax).
+            vec3 ol = (o - vec3(voxel - uCamBlock)) / vs;
+            float exitT = min(tMax.x, min(tMax.y, tMax.z));
+            float qt;
+            vec3 qn;
+            bool unshaded;
+            if (quadSurface(id, voxel >> lvl, ol, d, (tc - eps) / vs, (exitT + eps) / vs, column, lowLayer, farTint, qt, qn, albedo, unshaded)) {
+              tHit = qt * vs;
+              hitId = id;
+              hitAxis = axis;
+              hitVoxel = voxel;
+              hitLevel = lvl;
+              hitKind = kind | (unshaded ? 4 : 0);
+              hitNormal = qn;
+              return true;
+            }
           }
         }
       }

@@ -42,8 +42,18 @@ import net.minecraft.world.phys.Vec3;
  * seen. They are invalidated by {@link #reset()} when resources reload.
  */
 public final class BlockClassifier {
-  /** Voxel ids are u16 on the GPU; the face table caps them lower to stay small. */
-  public static final int MAX_ID = 0x3FFF;
+  /**
+   * Voxel ids are 13 bits of a brick's u16 texel; the face table caps them there to stay small. The
+   * top bits are the voxel's fill height, see {@link #FILL_SHIFT}.
+   */
+  public static final int MAX_ID = 0x1FFF;
+  /**
+   * Bit position of the fill height in a brick texel: 0 is a whole voxel, 1..7 that many eighths of its
+   * height, measured from the bottom. Only the voxel that holds a surface of predicted terrain has
+   * one; everything else (and every loaded block) leaves it 0. Shared with {@code terrain.rs} and the
+   * shader.
+   */
+  public static final int FILL_SHIFT = 13;
 
   /** Textured layers per face: the base, and an overlay (grass side). */
   public static final int LAYERS = 2;
