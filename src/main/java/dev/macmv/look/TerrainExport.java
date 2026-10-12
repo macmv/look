@@ -43,7 +43,8 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  *   <li>{@code functions}: the registry density functions those refer to, by name, and
  *       {@code noises}: the noise parameters they use;
  *   <li>{@code biomes}: the climate parameter points of the biome source, with per biome flags
- *       (see {@code native/src/biome.rs}), temperature and grass color.
+ *       (see {@code native/src/biome.rs}), temperature and grass color;
+ *   <li>{@code decoration}: the features that grow trees (see {@link TreeExport}).
  * </ul>
  *
  * The world seed is not part of it; it goes to the native side separately.
@@ -115,6 +116,13 @@ public final class TerrainExport {
     cfg.add("noises", noises);
 
     cfg.add("biomes", biomes(biomes));
+    // Where trees grow. Optional: without it the terrain is just treeless.
+    try {
+      List<Holder<Biome>> order = biomes.values().stream().map(Pair::getSecond).distinct().toList();
+      cfg.add("decoration", TreeExport.export(order));
+    } catch (RuntimeException e) {
+      LookMod.LOGGER.warn("Tree decoration is unavailable: {}", e.toString());
+    }
     return cfg;
   }
 
