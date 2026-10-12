@@ -261,38 +261,53 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
 // direction in voxel units (the voxel is [0, 1]^3, a unit is one voxel of the level), and [t0, t1] the
 // part of the ray inside the voxel. Plants are moved by a per-voxel offset and sheared by the wind;
 // both keep a quad a parallelogram, so the intersection stays the same. `nrm` points back at the ray.
-bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 column, float lowLayer, vec3 farTint, out float tHit, out vec3 nrm, out vec3 albedo) {
+bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 column, float lowLayer, vec3 farTint, out float tHit, out vec3 nrm, out vec3 albedo, out bool unshaded) {
   int hdr = QUAD_HDR_START + int(id) * 3;
   vec4 h0 = texelFetch(uFaces, hdr);
   int count = min(int(h0.y), MAX_QUADS);
   if (h0.x < 0.0 || count == 0) return false;
 
+  bool plant = h0.z > 0.5;
+  vec4 h1 = texelFetch(uFaces, hdr + 1);
+  vec3 bmin = h1.xyz;
+  vec3 bmax = texelFetch(uFaces, hdr + 2).xyz;
+
+  vec3 shift = vec3(0.0);
+  vec3 lean = vec3(0.0);   // shift per unit of height
+  vec3 pad = vec3(0.0);
+  if (plant) {
+    // Vanilla's offset (Mth.getSeed with y = 0, then BlockBehaviour.getOffset). Only the low 28 bits of
+    // the 64 bit seed matter, and the low bits of a product only depend on the low bits of its factors,
+    // so 32 bit arithmetic gives the same nibbles.
+    uint sd = (uint(cell.x) * 3129871u) ^ (uint(cell.z) * 116129781u);
+    sd = sd * sd * 42317861u + sd * 11u;
+    vec3 off = vec3(float((sd >> 16u) & 15u) / 15.0 - 0.5, float((sd >> 20u) & 15u) / 15.0 - 1.0, float((sd >> 24u) & 15u) / 15.0 - 0.5);
+    shift = vec3(clamp(off.x * 0.5, -h0.w, h0.w), off.y * h1.w, clamp(off.z * 0.5, -h0.w, h0.w));
+    // The ray only tests the voxel it is in, so keep the quads inside it.
+    shift.xz = clamp(shift.xz, -bmin.xz, 1.0 - bmax.xz);
+
+    uint hh = hash3(cell);
+    float ph = uTime * SWAY_OMEGA + float(cell.x) * 0.31 + float(cell.z) * 0.23 + float(hh & 255u) * 0.01;
+    lean = vec3(1.0, 0.0, 0.4) * (0.03 * (sin(ph) + 0.5 * sin(2.0 * ph + 1.7)));
+    pad = vec3(0.1, 0.25, 0.1);
+  }
+
   // Skip the quads when the ray misses the bounds of the model.
   vec3 invD = 1.0 / d;
-  vec3 ta = (texelFetch(uFaces, hdr + 1).xyz - ol) * invD;
-  vec3 tb = (texelFetch(uFaces, hdr + 2).xyz - ol) * invD;
+  vec3 ta = (bmin - pad - ol) * invD;
+  vec3 tb = (bmax + pad - ol) * invD;
   vec3 tn = min(ta, tb), tf = max(ta, tb);
   float te = max(max(tn.x, tn.y), max(tn.z, t0));
   float tl = min(min(tf.x, tf.y), min(tf.z, t1));
   if (te > tl) return false;
-
-  bool plant = h0.z > 0.5;
-  vec3 shift = vec3(0.0);
-  vec3 lean = vec3(0.0);   // shift per unit of height
-  if (plant) {
-    uint hh = hash3(cell);
-    vec2 off = vec2(float(hh & 255u), float((hh >> 8u) & 255u)) / 127.5 - 1.0;
-    shift = vec3(off.x * h0.w, 0.0, off.y * h0.w);
-    float ph = uTime * SWAY_OMEGA + float(cell.x) * 0.31 + float(cell.z) * 0.23 + float((hh >> 16u) & 255u) * 0.01;
-    lean = vec3(1.0, 0.0, 0.4) * (0.045 * (sin(ph) + 0.5 * sin(2.0 * ph + 1.7)));
-  }
 
   float best = tl + 1e-4;
   bool found = false;
   int first = int(h0.x);
   for (int i = 0; i < count; i++) {
     int q = QUAD_POOL_START + (first + i) * QUAD_TEXELS;
-    vec3 P = texelFetch(uFaces, q).xyz;
+    vec4 p0 = texelFetch(uFaces, q);
+    vec3 P = p0.xyz;
     vec3 E1 = texelFetch(uFaces, q + 1).xyz;
     vec3 E2 = texelFetch(uFaces, q + 2).xyz;
     if (plant) {
@@ -303,7 +318,9 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
 
     vec3 n = cross(E1, E2);
     float dn = dot(d, n);
-    if (abs(dn) < 1e-9) continue;
+    // Back faces are culled like vanilla does: n points out of the front of the quad. Models that show
+    // from both sides (plants) have a second quad per side, so keeping both would z-fight and mirror.
+    if (dn > -1e-9) continue;
     float T = dot(P - ol, n) / dn;
     if (T < te - 1e-4 || T >= best) continue;
 
@@ -323,12 +340,12 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
 
     best = T;
     found = true;
+    unshaded = p0.w < 0.5;
     tHit = T;
     nrm = normalize(n);
     albedo = s.rgb * tintColor(m1.z, column, lowLayer, farTint);
   }
 
-  if (found && dot(nrm, d) > 0.0) nrm = -nrm;
   return found;
 }
 
@@ -336,7 +353,8 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
 // inside bricks. At level k every voxel is 2^k blocks wide and a section is 16 voxels, but the
 // stepping is the same, so all the lengths below are just scaled by the voxel size.
 // o is relative to uCamBlock. d is normalized with no zero components. hitNormal is the surface normal
-// facing the ray, hitKind the BlockClassifier kind of the voxel that was hit.
+// facing the ray, hitKind the BlockClassifier kind of the voxel that was hit, plus 4 for a surface that
+// is not shaded by its direction (plants).
 bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, out int steps, out vec3 hitNormal, out int hitKind) {
   steps = 0;
   vec3 invD = 1.0 / d;
@@ -428,13 +446,14 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
           float exitT = min(tMax.x, min(tMax.y, tMax.z));
           float th;
           vec3 qn;
-          if (quadSurface(id, voxel >> lvl, ol, d, (tc - eps) / vs, (exitT + eps) / vs, column, lowLayer, farTint, th, qn, albedo)) {
+          bool unshaded;
+          if (quadSurface(id, voxel >> lvl, ol, d, (tc - eps) / vs, (exitT + eps) / vs, column, lowLayer, farTint, th, qn, albedo, unshaded)) {
             tHit = th * vs;
             hitId = id;
             hitAxis = axis;
             hitVoxel = voxel;
             hitLevel = lvl;
-            hitKind = kind;
+            hitKind = kind | (unshaded ? 4 : 0);
             hitNormal = qn;
             return true;
           }
@@ -505,7 +524,7 @@ void main() {
   }
 
   // Flat per-face shading, same factors vanilla uses for its directional light.
-  float shade = dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
+  float shade = (hitKind & 4) != 0 ? 1.0 : dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
 
   // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
   vec2 light = vec2(1.0, 0.0);
@@ -514,18 +533,19 @@ void main() {
     // Fade out over the second half of level 0, where the LOD switch happens.
     float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
     vec2 l;
-    if (hitKind == 0) {
-      vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
-      float a = ambientOcclusion(voxel, axis, d, p, l);
-      ao = mix(1.0, a, fade);
+    if ((hitKind & 4) != 0) {
+      // Plants (unshaded models) get no AO and the light of their own cell, like in vanilla.
+      l = lightAt(voxel);
     } else {
-      // The cell of a slab is dark like a solid block, so take the better of it and the cell in front.
+      vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
       vec3 an = abs(hitNormal);
-      ivec3 stp = ivec3(0);
-      if (an.x >= an.y && an.x >= an.z) stp.x = hitNormal.x > 0.0 ? 1 : -1;
-      else if (an.y >= an.z) stp.y = hitNormal.y > 0.0 ? 1 : -1;
-      else stp.z = hitNormal.z > 0.0 ? 1 : -1;
-      l = max(lightAt(voxel), lightAt(voxel + stp));
+      int a = an.x >= an.y && an.x >= an.z ? 0 : (an.y >= an.z ? 1 : 2);
+      ivec3 cell = voxel;
+      // A face inside the cell (the top of a candle or a slab) is lit from the cell itself; a face on
+      // the cell boundary from the cell in front, which is what the AO looks at.
+      if ((hitKind & 3) != 0 && (hitNormal[a] > 0.0 ? p[a] < 0.999 : p[a] > 0.001)) cell[a] -= hitNormal[a] > 0.0 ? 1 : -1;
+      float occ = ambientOcclusion(cell, a, -hitNormal, p, l);
+      ao = mix(1.0, occ, fade);
     }
     light = mix(vec2(1.0, 0.0), l / 15.0, fade);
   }

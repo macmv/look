@@ -80,7 +80,7 @@ public final class BlockClassifier {
   public static final int QUAD_POOL = 65536;
   /** Most quads kept for one id; the rest are dropped. */
   public static final int MAX_QUADS = 48;
-  /** Floats of quad header per voxel id, three RGBA texels: (first quad, count, plant, offset), bounds min, bounds max. */
+  /** Floats of quad header per voxel id, three RGBA texels: (first quad, count, plant, max horizontal offset), (bounds min, max vertical offset), bounds max. */
   public static final int HDR_FLOATS = 12;
   /** Where the quad headers start in the face table, after the variant metadata. */
   public static final int HDR_START = META_START + (MAX_ID + 1) * META_FLOATS;
@@ -306,7 +306,7 @@ public final class BlockClassifier {
     for (int i = -1; i < 6; i++) {
       Direction cull = i < 0 ? null : Direction.from3DDataValue(i);
       for (BakedQuad quad : model.getQuads(state, cull, RandomSource.create(42L))) {
-        float[] r = quadRecord(state, quad.getVertices(), quad.getTintIndex());
+        float[] r = quadRecord(state, quad.getVertices(), quad.getTintIndex(), quad.isShade());
         if (r != null) recs.add(r);
       }
     }
@@ -337,9 +337,9 @@ public final class BlockClassifier {
 
   /**
    * One quad as a parallelogram {@code p + a * e1 + b * e2} with {@code uv = uv0 + a * du1 + b * du2}
-   * (a, b in [0, 1]), laid out as five texels: (p), (e1), (e2), (uv0, du1), (du2, tint).
+   * (a, b in [0, 1]), laid out as five texels: (p, shaded), (e1), (e2), (uv0, du1), (du2, tint). Quads of unshaded models (plants) skip the per-face brightness.
    */
-  private static float[] quadRecord(BlockState state, int[] v, int tintIndex) {
+  private static float[] quadRecord(BlockState state, int[] v, int tintIndex, boolean shade) {
     float e1x = vx(v, 1, 0) - vx(v, 0, 0), e1y = vx(v, 1, 1) - vx(v, 0, 1), e1z = vx(v, 1, 2) - vx(v, 0, 2);
     float e2x = vx(v, 3, 0) - vx(v, 0, 0), e2y = vx(v, 3, 1) - vx(v, 0, 1), e2z = vx(v, 3, 2) - vx(v, 0, 2);
     float cx = e1y * e2z - e1z * e2y, cy = e1z * e2x - e1x * e2z, cz = e1x * e2y - e1y * e2x;
@@ -348,7 +348,7 @@ public final class BlockClassifier {
     float tint = tintIndex >= 0 ? tintOf(state, tintIndex) : 0xFFFFFF;
     float u0 = vx(v, 0, 4), v0 = vx(v, 0, 5);
     return new float[] {
-      vx(v, 0, 0), vx(v, 0, 1), vx(v, 0, 2), 0f,
+      vx(v, 0, 0), vx(v, 0, 1), vx(v, 0, 2), shade ? 1f : 0f,
       e1x, e1y, e1z, 0f,
       e2x, e2y, e2z, 0f,
       u0, v0, vx(v, 1, 4) - u0, vx(v, 1, 5) - v0,
@@ -361,15 +361,22 @@ public final class BlockClassifier {
         && state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO).isEmpty();
   }
 
-  /** Largest horizontal position offset vanilla gives this state, over a few positions. */
-  private static float offsetAmplitude(BlockState state) {
-    float amp = 0f;
-    for (int i = 0; i < 16; i++) {
-      Vec3 off = state.getOffset(EmptyBlockGetter.INSTANCE, new BlockPos(i * 7, 0, i * 13));
-      amp = Math.max(amp, (float) Math.max(Math.abs(off.x), Math.abs(off.z)));
+  /**
+   * Vanilla's position offset of a state, as {largest horizontal, largest vertical}; 0 where it has
+   * none. The shader redoes vanilla's per-position formula with these. The limits are protected on
+   * the block, so they are measured: over enough positions the extreme offsets all show up.
+   */
+  private static float[] offsetRange(BlockState state) {
+    float horizontal = 0f;
+    float vertical = 0f;
+    for (int x = 0; x < 32; x++) {
+      for (int z = 0; z < 32; z++) {
+        Vec3 off = state.getOffset(EmptyBlockGetter.INSTANCE, new BlockPos(x, 0, z));
+        horizontal = Math.max(horizontal, (float) Math.max(Math.abs(off.x), Math.abs(off.z)));
+        vertical = Math.max(vertical, (float) Math.abs(off.y));
+      }
     }
-    // Cross quads stay 0.18 inside their voxel and the wind adds up to 0.07; more offset would be cut off.
-    return Math.min(amp, 0.1f);
+    return new float[] {horizontal, vertical};
   }
 
   private static void bakeQuads(BlockState state, int id, QuadModel quads) {
@@ -380,20 +387,18 @@ public final class BlockClassifier {
     priorities[id] = (byte) (plant ? 0 : 1);
 
     int first = addQuads(quads);
-    float amp = plant ? offsetAmplitude(state) : 0f;
-    // Sway and offset move a plant out of its own voxel a little, so grow the bounds to match.
-    float pad = plant ? amp + 0.2f : 0f;
+    float[] range = plant ? offsetRange(state) : new float[2];
 
     int o = HDR_START + id * HDR_FLOATS;
     faces[o] = first;
     faces[o + 1] = first < 0 ? 0 : quads.count();
     faces[o + 2] = plant ? 1f : 0f;
-    faces[o + 3] = amp;
+    faces[o + 3] = range[0];
     for (int a = 0; a < 3; a++) {
-      float p = a == 1 ? 0f : pad;
-      faces[o + 4 + a] = quads.min()[a] - p;
-      faces[o + 8 + a] = quads.max()[a] + p;
+      faces[o + 4 + a] = quads.min()[a];
+      faces[o + 8 + a] = quads.max()[a];
     }
+    faces[o + 7] = range[1];
     dirtyHdr.mark(o, o + HDR_FLOATS - 1);
 
     if (plant) {
