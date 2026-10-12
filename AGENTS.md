@@ -8,8 +8,13 @@ After finishing a chunk of work:
 1. Build with `JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew build` (Loom 1.11.x needs JDK 21 for
    Gradle). Run `cargo test` in `native/` too if the Rust crate changed.
 2. Fix any build failures before continuing. Additionally, format native code with `cargo fmt`.
-3. Tell the user to run the game and say what to look for, since you cannot see the result.
-4. Commit the changes when asked, or once the build passes if the user has asked you to commit.
+3. Render tests (`src/test/java/dev/macmv/look/gl`) draw fixed scenes through the real shader on
+   Mesa software GL and compare them to `src/test/resources/golden`. Run them with
+   `LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a ./gradlew test`; they skip without a display or on a
+   hardware GPU. After an intended visual change, rerun with `-PupdateGolden`, look at the images,
+   and commit them. Failures leave `-actual`/`-diff` PNGs in `build/render-tests`.
+4. Tell the user to run the game and say what to look for, since you cannot see the result.
+5. Commit the changes when asked, or once the build passes if the user has asked you to commit.
 
 # Rules
 

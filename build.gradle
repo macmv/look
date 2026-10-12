@@ -66,6 +66,16 @@ processResources {
 
 test {
   useJUnitPlatform()
+
+  // The render tests need a GL context: `xvfb-run -a ./gradlew test` on a machine without a display.
+  // -PupdateGolden rewrites the checked-in images instead of comparing against them.
+  systemProperty 'look.goldenDir', layout.projectDirectory.dir('src/test/resources/golden').asFile.path
+  systemProperty 'look.renderOut', layout.buildDirectory.dir('render-tests').get().asFile.path
+  if (project.hasProperty('updateGolden')) systemProperty 'look.updateGolden', 'true'
+  testLogging {
+    showStandardStreams = true
+    exceptionFormat = 'full'
+  }
 }
 
 tasks.withType(JavaCompile).configureEach {

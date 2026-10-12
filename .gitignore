@@ -4,3 +4,4 @@ run/
 .idea/
 *.iml
 native/target/
+logs/

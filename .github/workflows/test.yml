@@ -1,0 +1,43 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Xvfb for a display, Mesa's llvmpipe for software GL 4.x.
+      - name: Install a headless GL stack
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 libegl1
+
+      - name: Rust tests
+        run: cargo test
+        working-directory: native
+
+      - name: Java and render tests
+        run: xvfb-run -a ./gradlew build
+        env:
+          LOOK_REQUIRE_GL: "1"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+
+      - name: Render test output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: render-tests
+          path: build/render-tests

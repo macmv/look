@@ -519,14 +519,11 @@ public final class VoxelWorld {
     minSection = l.getMinSection();
     sectionCount = l.getSectionsCount();
 
-    int row = 0;
-    for (int k = 0; k < Lod.LEVELS; k++) {
-      levelMin[k] = minSection >> k;
-      levelRows[k] = ((minSection + sectionCount - 1) >> k) - levelMin[k] + 1;
-      levelRow0[k] = row;
-      row += levelRows[k];
-    }
-    totalRows = row;
+    SectionLayout layout = new SectionLayout(minSection, sectionCount);
+    System.arraycopy(layout.levelMin, 0, levelMin, 0, Lod.LEVELS);
+    System.arraycopy(layout.levelRows, 0, levelRows, 0, Lod.LEVELS);
+    System.arraycopy(layout.levelRow0, 0, levelRow0, 0, Lod.LEVELS);
+    totalRows = layout.totalRows;
 
     int cells = GRID_XZ * totalRows * GRID_XZ;
     table.resetCells(cells);

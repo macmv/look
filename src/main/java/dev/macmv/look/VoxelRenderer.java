@@ -42,6 +42,34 @@ public final class VoxelRenderer {
 
   private VoxelRenderer() {}
 
+  /**
+   * Everything the raycast pass needs besides the textures on their units, so the pass can run
+   * without a Minecraft instance (see the render tests).
+   *
+   * @param levelParams per pyramid level (lowest section y, rows, first row), see {@link SectionLayout}
+   * @param hfIds {@code SeedSource.voxelIds()} when the heightfield is drawn, else null
+   * @param viewportHeight pixels, to size the mip level picked for a hit
+   */
+  public record Frame(
+      Matrix4f view,
+      Matrix4f projection,
+      double camX,
+      double camY,
+      double camZ,
+      int gridRows,
+      int[] levelParams,
+      float maxDist,
+      int minY,
+      float atlasWidth,
+      float atlasHeight,
+      float atlasMaxLevel,
+      int viewportHeight,
+      int debug,
+      int[] hfIds,
+      float time,
+      float skyDarken,
+      float ambientLight) {}
+
   /** Must be called on the render thread with the main framebuffer bound. */
   public static void render(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ) {
     if (program == 0) init();
@@ -50,6 +78,42 @@ public final class VoxelRenderer {
     VoxelWorld.update();
     RenderStats.addUpdate(System.nanoTime() - updateStart);
     if (!VoxelWorld.isReady()) return;
+
+    int[] hfIds = SeedSource.INSTANCE.voxelIds();
+    boolean hf = SeedSource.INSTANCE.available() && HeightField.active() && hfIds.length == 14;
+    float[] sky = skyAndTime();
+
+    Frame frame = new Frame(
+        view, projection, camX, camY, camZ,
+        VoxelWorld.totalRows(),
+        VoxelWorld.levelParams(),
+        VoxelWorld.maxDistBlocks(),
+        VoxelWorld.minSection() * 16,
+        VoxelWorld.atlasWidth(),
+        VoxelWorld.atlasHeight(),
+        VoxelWorld.atlasMaxLevel(),
+        Minecraft.getInstance().getMainRenderTarget().height,
+        LookState.debug,
+        hf ? hfIds : null,
+        sky[0], sky[1], sky[2]);
+
+    int prevUnit = GlStateManager._getActiveTexture();
+    VoxelWorld.bind();
+
+    RenderStats.beginGpu();
+    draw(frame);
+    RenderStats.endGpu();
+
+    GL33C.glActiveTexture(prevUnit);
+    RenderStats.endVoxelFrame();
+  }
+
+  /**
+   * Draws the raycast pass into the bound framebuffer. The data textures must already be bound to
+   * their units ({@link VoxelWorld#bind} does that in game).
+   */
+  public static void draw(Frame f) {
+    if (program == 0) init();
 
     // Vanilla caches GL state in GlStateManager, so go through it for anything it tracks.
     RenderSystem.disableBlend();
@@ -64,27 +128,27 @@ public final class VoxelRenderer {
     try (MemoryStack stack = MemoryStack.stackPush()) {
       FloatBuffer buf = stack.mallocFloat(16);
 
-      Matrix4f invViewProj = new Matrix4f(projection).mul(view).invert();
+      Matrix4f invViewProj = new Matrix4f(f.projection()).mul(f.view()).invert();
 
       invViewProj.get(buf);
       GL33C.glUniformMatrix4fv(uInvViewProj, false, buf);
-      view.get(buf);
+      f.view().get(buf);
       GL33C.glUniformMatrix4fv(uView, false, buf);
-      projection.get(buf);
+      f.projection().get(buf);
       GL33C.glUniformMatrix4fv(uProj, false, buf);
     }
 
-    int bx = (int) Math.floor(camX);
-    int by = (int) Math.floor(camY);
-    int bz = (int) Math.floor(camZ);
+    int bx = (int) Math.floor(f.camX());
+    int by = (int) Math.floor(f.camY());
+    int bz = (int) Math.floor(f.camZ());
     GL33C.glUniform3i(uCamBlock, bx, by, bz);
-    GL33C.glUniform3f(uCamFrac, (float) (camX - bx), (float) (camY - by), (float) (camZ - bz));
-    GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, VoxelWorld.totalRows(), VoxelWorld.GRID_XZ);
+    GL33C.glUniform3f(uCamFrac, (float) (f.camX() - bx), (float) (f.camY() - by), (float) (f.camZ() - bz));
+    GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, f.gridRows(), VoxelWorld.GRID_XZ);
     GL33C.glUniform1i(uLevels, Lod.LEVELS);
     GL33C.glUniform1f(uBase, Lod.BASE_BLOCKS);
-    GL33C.glUniform3iv(uLevel, VoxelWorld.levelParams());
+    GL33C.glUniform3iv(uLevel, f.levelParams());
 
-    GL33C.glUniform1f(uMaxDist, VoxelWorld.maxDistBlocks());
+    GL33C.glUniform1f(uMaxDist, f.maxDist());
 
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uIndirection"), VoxelWorld.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uBricks"), VoxelWorld.UNIT_BRICKS);
@@ -94,48 +158,38 @@ public final class VoxelRenderer {
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uTint"), VoxelWorld.UNIT_TINT);
 
     // Angle one pixel covers, used to pick a mip level from the distance of a hit.
-    float pixelAngle = 2f / (projection.m11() * Math.max(1, Minecraft.getInstance().getMainRenderTarget().height));
-    GL33C.glUniform2f(uAtlasSize, VoxelWorld.atlasWidth(), VoxelWorld.atlasHeight());
-    GL33C.glUniform1f(uMaxLod, VoxelWorld.atlasMaxLevel());
+    float pixelAngle = 2f / (f.projection().m11() * Math.max(1, f.viewportHeight()));
+    GL33C.glUniform2f(uAtlasSize, f.atlasWidth(), f.atlasHeight());
+    GL33C.glUniform1f(uMaxLod, f.atlasMaxLevel());
     GL33C.glUniform1f(uPixelAngle, pixelAngle);
-    GL33C.glUniform1i(uMinY, VoxelWorld.minSection() * 16);
+    GL33C.glUniform1i(uMinY, f.minY());
 
-    int prevUnit = GlStateManager._getActiveTexture();
-    VoxelWorld.bind();
-
-    GL33C.glUniform1i(uDebug, LookState.debug);
-    int[] hfIds = SeedSource.INSTANCE.voxelIds();
-    boolean hf = SeedSource.INSTANCE.available() && HeightField.active() && hfIds.length == 14;
-    GL33C.glUniform1i(uHfEnabled, hf ? 1 : 0);
-    if (hf) GL33C.glUniform1iv(uHfIds, hfIds);
+    GL33C.glUniform1i(uDebug, f.debug());
+    GL33C.glUniform1i(uHfEnabled, f.hfIds() != null ? 1 : 0);
+    if (f.hfIds() != null) GL33C.glUniform1iv(uHfIds, f.hfIds());
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfHeight"), HeightField.UNIT_HEIGHT);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfAttr"), HeightField.UNIT_ATTR);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfTiles"), HeightField.UNIT_TILES);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLightIndirection"), LightMap.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLight"), LightMap.UNIT_LIGHT);
-    uploadLighting();
+    GL33C.glUniform1f(uTime, f.time());
+    GL33C.glUniform1f(uSkyDarken, f.skyDarken());
+    GL33C.glUniform1f(uAmbientLight, f.ambientLight());
 
-    RenderStats.beginGpu();
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
-    RenderStats.endGpu();
-
-    GL33C.glActiveTexture(prevUnit);
 
     GlStateManager._glBindVertexArray(0);
     GlStateManager._glUseProgram(0);
-
-    RenderStats.endVoxelFrame();
   }
 
-  /** Sky darkening for the time of day and weather, and the dimension's ambient light. */
-  private static void uploadLighting() {
+  /** Game time for the wind, sky darkening for the time of day and weather, and the dimension's ambient light. */
+  private static float[] skyAndTime() {
     ClientLevel level = Minecraft.getInstance().level;
     float partial = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
 
     // Wraps at a multiple of the 128 tick sway period, so the wind has no visible jump.
     float time = 0f;
     if (level != null) time = (float) (level.getGameTime() % 12800L) + partial;
-    GL33C.glUniform1f(uTime, time);
 
     float skyDarken = 1f;
     float ambient = 0f;
@@ -145,9 +199,7 @@ public final class VoxelRenderer {
         skyDarken = level.getSkyDarken(partial);
       }
     }
-
-    GL33C.glUniform1f(uSkyDarken, skyDarken);
-    GL33C.glUniform1f(uAmbientLight, ambient);
+    return new float[] {time, skyDarken, ambient};
   }
 
   private static void init() {
@@ -189,7 +241,7 @@ public final class VoxelRenderer {
     vao = GL33C.glGenVertexArrays();
   }
 
-  private static int compile(int type, String name) {
+  static int compile(int type, String name) {
     int shader = GL33C.glCreateShader(type);
     GL33C.glShaderSource(shader, readShader(name));
     GL33C.glCompileShader(shader);
