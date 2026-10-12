@@ -25,6 +25,11 @@ public final class LookState {
 
   private LookState() {}
 
+  /** Name of the current debug view. */
+  public static String debugName() {
+    return DEBUG_NAMES[debug];
+  }
+
   /** Call once per frame on the render thread. Key presses are only delivered with no screen open. */
   public static void poll() {
     Minecraft mc = Minecraft.getInstance();

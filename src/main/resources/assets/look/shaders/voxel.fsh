@@ -181,9 +181,20 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
   // Face order matches Direction: down, up, north, south, west, east.
   int face = axis == 0 ? (d.x > 0.0 ? 4 : 5) : (axis == 1 ? (d.y > 0.0 ? 0 : 1) : (d.z > 0.0 ? 2 : 3));
   vec2 ab = axis == 0 ? local.yz : (axis == 1 ? local.xz : local.xy);
-  // The block inside the voxel that was hit, for picking variants and jittering color.
+  // The block inside the voxel that was hit, for picking variants.
   ivec3 cell = corner + clamp(ivec3(floor(local * vs)), ivec3(0), ivec3(int(vs) - 1));
-  ab = fract(ab * vs);
+  vec2 abBlocks = ab * vs;   // position in blocks, the texture repeats every block
+
+  // A pixel covers a disk of radius r (blocks) across the ray. On a surface seen at a shallow angle that
+  // is a strip r / cos long along the ray's direction in the surface, so the texture is sampled at a
+  // few points along it, each at the mip level of the narrow side. One mip level for the whole strip
+  // would either blur the texture across it or alias along it.
+  float r = t * uPixelAngle;
+  float cosine = max(abs(d[axis]), 0.05);
+  vec2 along = axis == 0 ? d.yz : (axis == 1 ? d.xz : d.xy);
+  along = normalize(along + vec2(1e-6));
+  int taps = uDebug == 3 ? 1 : int(clamp(ceil(1.0 / cosine), 1.0, 8.0));
+  float spread = r * (1.0 / cosine - 1.0);
 
   int base = variantRow(id, cell) * FACE_ROW_TEXELS + face * 4;
   vec3 rgb = vec3(0.0);
@@ -195,13 +206,19 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     if (b.w < 0.5) break;
 
     float texelsPerBlock = max(length(a.zw * uAtlasSize), length(b.xy * uAtlasSize));
-    float lod = uDebug == 3 ? 0.0 : clamp(log2(max(t * uPixelAngle * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
+    float lod = uDebug == 3 ? 0.0 : clamp(log2(max(r * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
     // Stay half a texel of the chosen mip inside the sprite, or the bilinear filter at a block's edge
     // pulls in the neighboring sprite of the atlas. The tiling puts an edge every block, so it shows.
     float margin = clamp(0.5 * exp2(lod) / texelsPerBlock, 0.001, 0.5);
-    vec2 abc = clamp(ab, margin, 1.0 - margin);
-    vec2 uv = a.xy + abc.x * a.zw + abc.y * b.xy;
-    vec4 s = textureLod(uAtlas, uv, lod);
+
+    vec4 s = vec4(0.0);
+    for (int i = 0; i < taps; i++) {
+      float off = ((float(i) + 0.5) / float(taps) - 0.5) * spread;
+      vec2 abc = clamp(fract(abBlocks + along * off), margin, 1.0 - margin);
+      vec2 uv = a.xy + abc.x * a.zw + abc.y * b.xy;
+      s += textureLod(uAtlas, uv, lod);
+    }
+    s /= float(taps);
 
     if (b.z < -0.5) {
       // Biome tint: -1 grass, -2 foliage.

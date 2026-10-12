@@ -61,6 +61,7 @@ public final class LightMap {
   private static final int[] slotRefs = new int[CAPACITY];
   private static final Map<Integer, Integer> uniformSlots = new HashMap<>();
   private static boolean warnedFull;
+  private static int rebuilt;
 
   private static boolean glReady;
   private static boolean texStale = true;
@@ -168,7 +169,15 @@ public final class LightMap {
     warnedFull = false;
   }
 
+  /** Light sections rebuilt since the last call, for the debug HUD. */
+  public static int takeRebuilt() {
+    int n = rebuilt;
+    rebuilt = 0;
+    return n;
+  }
+
   private static void rebuild(long key) {
+    rebuilt++;
     int sx = SectionKey.x(key);
     int sy = SectionKey.y(key);
     int sz = SectionKey.z(key);
