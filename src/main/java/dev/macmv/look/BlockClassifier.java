@@ -4,7 +4,9 @@ import dev.macmv.look.mixin.WeightedBakedModelAccessor;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.renderer.BiomeColors;
@@ -21,18 +23,20 @@ import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.BushBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Maps block states to voxel ids (0 is air) and keeps the per-id data the shader needs: a map color
  * (fallback) and, for each of the six faces, up to {@link #LAYERS} textured layers taken from the
  * baked model.
  *
- * <p>Only full opaque-ish cubes become voxels. Fluids and non-cube blocks are air for now, so
- * vanilla's translucent layer still draws water, and plants/stairs/etc. are simply missing until
- * non-cube support exists.
+ * <p>Full cubes use the face table. Every other block with a model (slabs, stairs, plants, fences...)
+ * gets a list of its real model quads in a pool, see {@link #KIND_QUADS}. Fluids and blocks drawn by
+ * block entities (chests, signs) are air, so vanilla still draws those.
  *
  * <p>Voxel ids are handed out sequentially, so the tables only grow with the block states actually
  * seen. They are invalidated by {@link #reset()} when resources reload.
@@ -62,8 +66,28 @@ public final class BlockClassifier {
   public static final int META_FLOATS = 12;
   /** Where the metadata starts in the face table, after all the rows. */
   public static final int META_START = ROWS * ID_FLOATS;
+
+  /** Kind of a voxel id, kept in the color table above {@link #OCCLUDER_BIT}. 0 is a cube. */
+  public static final int KIND_SHIFT = 25;
+  /** A list of model quads in the quad pool, intersected inside the voxel. */
+  public static final int KIND_QUADS = 1;
+  /** Like {@link #KIND_QUADS}, but it is a plant: it gets a position offset and sways. */
+  public static final int KIND_PLANT = 2;
+
+  /** Floats per quad in the pool, five RGBA texels, see {@link #addQuads}. */
+  public static final int QUAD_FLOATS = 20;
+  /** Quads in the shared pool. Ids with the same quads share them. */
+  public static final int QUAD_POOL = 65536;
+  /** Most quads kept for one id; the rest are dropped. */
+  public static final int MAX_QUADS = 48;
+  /** Floats of quad header per voxel id, three RGBA texels: (first quad, count, plant, offset), bounds min, bounds max. */
+  public static final int HDR_FLOATS = 12;
+  /** Where the quad headers start in the face table, after the variant metadata. */
+  public static final int HDR_START = META_START + (MAX_ID + 1) * META_FLOATS;
+  /** Where the quad pool starts in the face table. */
+  public static final int POOL_START = HDR_START + (MAX_ID + 1) * HDR_FLOATS;
   /** Total floats in the face table. */
-  public static final int FACE_FLOATS = META_START + (MAX_ID + 1) * META_FLOATS;
+  public static final int FACE_FLOATS = POOL_START + QUAD_POOL * QUAD_FLOATS;
 
   /** Face table tint values below zero: follow the biome grass / foliage color, see {@link TintMap}. */
   private static final float TINT_GRASS = -1f;
@@ -112,6 +136,7 @@ public final class BlockClassifier {
   private static int nextId = 1;
   private static boolean warnedFull;
   private static boolean warnedExtra;
+  private static boolean warnedPool;
   private static int nextExtraRow = MAX_ID + 1;
 
   /** RGB (plus {@link #OCCLUDER_BIT}) per voxel id, indexed by voxel id. */
@@ -142,6 +167,16 @@ public final class BlockClassifier {
   private static final Dirty dirtyIds = new Dirty();
   private static final Dirty dirtyExtra = new Dirty();
   private static final Dirty dirtyMeta = new Dirty();
+  private static final Dirty dirtyHdr = new Dirty();
+  private static final Dirty dirtyPool = new Dirty();
+
+  private static int nextQuad;
+  /** Hash of a run of quads in the pool -> {first, count} of the runs with that hash. */
+  private static final Map<Integer, List<int[]>> poolIndex = new HashMap<>();
+  /** Plant id -> {u0, v0, du/da, dv/da, du/db, dv/db, tint} of its first quad, see {@link #coverId}. */
+  private static final Map<Integer, float[]> overlays = new HashMap<>();
+  /** (ground << 16 | plant) -> id of the ground with the plant drawn on top. */
+  private static final Map<Integer, Integer> covers = new HashMap<>();
 
   private BlockClassifier() {}
 
@@ -158,7 +193,16 @@ public final class BlockClassifier {
     colorsDirty = true;
     dirtyIds.markAll(0, (MAX_ID + 1) * ID_FLOATS - 1);
     dirtyExtra.markAll((MAX_ID + 1) * ID_FLOATS, META_START - 1);
-    dirtyMeta.markAll(META_START, FACE_FLOATS - 1);
+    dirtyMeta.markAll(META_START, HDR_START - 1);
+    dirtyHdr.markAll(HDR_START, POOL_START - 1);
+    // The pool is not cleared on the GPU: zeroed headers mean nothing refers to it.
+    dirtyPool.min = Integer.MAX_VALUE;
+    dirtyPool.max = -1;
+    nextQuad = 0;
+    poolIndex.clear();
+    overlays.clear();
+    covers.clear();
+    warnedPool = false;
   }
 
   public static int voxelId(BlockState state) {
@@ -193,9 +237,21 @@ public final class BlockClassifier {
 
   private static int classify(BlockState state) {
     if (state.isAir()) return 0;
-    if (!state.getFluidState().isEmpty()) return 0;
+    // Block entities (chests, signs, banners) and invisible blocks are drawn by vanilla.
     if (state.getRenderShape() != RenderShape.MODEL) return 0;
-    if (!state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO)) return 0;
+
+    boolean cube = state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+    if (cube && !state.getFluidState().isEmpty()) return 0;
+
+    QuadModel quads = null;
+    if (!cube) {
+      try {
+        quads = extractQuads(state);
+      } catch (RuntimeException e) {
+        LookMod.LOGGER.warn("Could not read model of {}: {}", state, e.toString());
+      }
+      if (quads == null) return 0;
+    }
 
     if (nextId > MAX_ID) {
       if (!warnedFull) {
@@ -212,18 +268,201 @@ public final class BlockClassifier {
     } catch (RuntimeException e) {
       color = 0;
     }
-    priorities[id] = (byte) priorityOf(state);
     colors[id] = (color == 0 ? FALLBACK_COLOR : color) & 0xFFFFFF;
-    if (state.canOcclude()) colors[id] |= OCCLUDER_BIT;
     colorsDirty = true;
 
-    try {
-      bakeFaces(state, id);
-    } catch (RuntimeException e) {
-      // Leave the faces empty so the shader falls back to the map color.
-      LookMod.LOGGER.warn("Could not read model of {}: {}", state, e.toString());
+    if (cube) {
+      priorities[id] = (byte) priorityOf(state);
+      if (state.canOcclude()) colors[id] |= OCCLUDER_BIT;
+
+      try {
+        bakeFaces(state, id);
+      } catch (RuntimeException e) {
+        // Leave the faces empty so the shader falls back to the map color.
+        LookMod.LOGGER.warn("Could not read model of {}: {}", state, e.toString());
+      }
+    } else {
+      bakeQuads(state, id, quads);
     }
 
+    return id;
+  }
+
+  // --- Non-cube blocks -------------------------------------------------------------------------
+
+  /** The quads of a non-cube model, flattened to {@link #QUAD_FLOATS} floats each. */
+  private record QuadModel(float[] data, int count, float[] min, float[] max) {}
+
+  private static QuadModel extractQuads(BlockState state) {
+    BakedModel model = Minecraft.getInstance().getBlockRenderer().getBlockModelShaper().getBlockModel(state);
+    if (model instanceof WeightedBakedModel weighted) {
+      List<WeightedEntry.Wrapper<BakedModel>> variants = ((WeightedBakedModelAccessor) weighted).look$variants();
+      if (variants.isEmpty()) return null;
+      // Weighted rotations are only a variation of the same shape; one is enough.
+      model = variants.get(0).data();
+    }
+
+    List<float[]> recs = new ArrayList<>();
+    for (int i = -1; i < 6; i++) {
+      Direction cull = i < 0 ? null : Direction.from3DDataValue(i);
+      for (BakedQuad quad : model.getQuads(state, cull, RandomSource.create(42L))) {
+        float[] r = quadRecord(state, quad.getVertices(), quad.getTintIndex());
+        if (r != null) recs.add(r);
+      }
+    }
+    if (recs.isEmpty()) return null;
+
+    int count = Math.min(recs.size(), MAX_QUADS);
+    if (recs.size() > MAX_QUADS) {
+      LookMod.LOGGER.warn("{} has {} quads; only using the first {}", state, recs.size(), MAX_QUADS);
+    }
+
+    float[] data = new float[count * QUAD_FLOATS];
+    float[] min = {Float.MAX_VALUE, Float.MAX_VALUE, Float.MAX_VALUE};
+    float[] max = {-Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE};
+    for (int q = 0; q < count; q++) {
+      float[] r = recs.get(q);
+      System.arraycopy(r, 0, data, q * QUAD_FLOATS, QUAD_FLOATS);
+      // The four corners of the parallelogram: p, p + e1, p + e2, p + e1 + e2.
+      for (int c = 0; c < 4; c++) {
+        for (int a = 0; a < 3; a++) {
+          float x = r[a] + ((c & 1) != 0 ? r[4 + a] : 0f) + ((c & 2) != 0 ? r[8 + a] : 0f);
+          min[a] = Math.min(min[a], x);
+          max[a] = Math.max(max[a], x);
+        }
+      }
+    }
+    return new QuadModel(data, count, min, max);
+  }
+
+  /**
+   * One quad as a parallelogram {@code p + a * e1 + b * e2} with {@code uv = uv0 + a * du1 + b * du2}
+   * (a, b in [0, 1]), laid out as five texels: (p), (e1), (e2), (uv0, du1), (du2, tint).
+   */
+  private static float[] quadRecord(BlockState state, int[] v, int tintIndex) {
+    float e1x = vx(v, 1, 0) - vx(v, 0, 0), e1y = vx(v, 1, 1) - vx(v, 0, 1), e1z = vx(v, 1, 2) - vx(v, 0, 2);
+    float e2x = vx(v, 3, 0) - vx(v, 0, 0), e2y = vx(v, 3, 1) - vx(v, 0, 1), e2z = vx(v, 3, 2) - vx(v, 0, 2);
+    float cx = e1y * e2z - e1z * e2y, cy = e1z * e2x - e1x * e2z, cz = e1x * e2y - e1y * e2x;
+    if (cx * cx + cy * cy + cz * cz < 1e-10f) return null;
+
+    float tint = tintIndex >= 0 ? tintOf(state, tintIndex) : 0xFFFFFF;
+    float u0 = vx(v, 0, 4), v0 = vx(v, 0, 5);
+    return new float[] {
+      vx(v, 0, 0), vx(v, 0, 1), vx(v, 0, 2), 0f,
+      e1x, e1y, e1z, 0f,
+      e2x, e2y, e2z, 0f,
+      u0, v0, vx(v, 1, 4) - u0, vx(v, 1, 5) - v0,
+      vx(v, 3, 4) - u0, vx(v, 3, 5) - v0, tint, 0f,
+    };
+  }
+
+  private static boolean isPlant(BlockState state) {
+    return state.getBlock() instanceof BushBlock
+        && state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO).isEmpty();
+  }
+
+  /** Largest horizontal position offset vanilla gives this state, over a few positions. */
+  private static float offsetAmplitude(BlockState state) {
+    float amp = 0f;
+    for (int i = 0; i < 16; i++) {
+      Vec3 off = state.getOffset(EmptyBlockGetter.INSTANCE, new BlockPos(i * 7, 0, i * 13));
+      amp = Math.max(amp, (float) Math.max(Math.abs(off.x), Math.abs(off.z)));
+    }
+    // Cross quads stay 0.18 inside their voxel and the wind adds up to 0.07; more offset would be cut off.
+    return Math.min(amp, 0.1f);
+  }
+
+  private static void bakeQuads(BlockState state, int id, QuadModel quads) {
+    boolean plant = isPlant(state);
+    int kind = plant ? KIND_PLANT : KIND_QUADS;
+    colors[id] |= kind << KIND_SHIFT;
+    // Plants never win a coarse voxel, they are drawn over the ground instead, see coverId.
+    priorities[id] = (byte) (plant ? 0 : 1);
+
+    int first = addQuads(quads);
+    float amp = plant ? offsetAmplitude(state) : 0f;
+    // Sway and offset move a plant out of its own voxel a little, so grow the bounds to match.
+    float pad = plant ? amp + 0.2f : 0f;
+
+    int o = HDR_START + id * HDR_FLOATS;
+    faces[o] = first;
+    faces[o + 1] = first < 0 ? 0 : quads.count();
+    faces[o + 2] = plant ? 1f : 0f;
+    faces[o + 3] = amp;
+    for (int a = 0; a < 3; a++) {
+      float p = a == 1 ? 0f : pad;
+      faces[o + 4 + a] = quads.min()[a] - p;
+      faces[o + 8 + a] = quads.max()[a] + p;
+    }
+    dirtyHdr.mark(o, o + HDR_FLOATS - 1);
+
+    if (plant) {
+      float[] d = quads.data();
+      overlays.put(id, new float[] {d[12], d[13], d[14], d[15], d[16], d[17], d[18]});
+    }
+  }
+
+  /** Puts the quads in the pool, reusing an identical run if there is one. Returns -1 when the pool is full. */
+  private static int addQuads(QuadModel quads) {
+    float[] data = quads.data();
+    int hash = Arrays.hashCode(data);
+    List<int[]> runs = poolIndex.computeIfAbsent(hash, k -> new ArrayList<>(1));
+    for (int[] run : runs) {
+      if (run[1] != quads.count()) continue;
+      int base = POOL_START + run[0] * QUAD_FLOATS;
+      if (Arrays.equals(faces, base, base + data.length, data, 0, data.length)) return run[0];
+    }
+
+    if (nextQuad + quads.count() > QUAD_POOL) {
+      if (!warnedPool) {
+        LookMod.LOGGER.warn("Out of quad pool space ({}); some blocks will be missing", QUAD_POOL);
+        warnedPool = true;
+      }
+      return -1;
+    }
+
+    int first = nextQuad;
+    nextQuad += quads.count();
+    int base = POOL_START + first * QUAD_FLOATS;
+    System.arraycopy(data, 0, faces, base, data.length);
+    dirtyPool.mark(base, base + data.length - 1);
+    runs.add(new int[] {first, quads.count()});
+    return first;
+  }
+
+  /** Kind of a voxel id: 0 for a cube (and air), else {@link #KIND_QUADS} or {@link #KIND_PLANT}. */
+  public static int kind(int id) {
+    return (colors[id] >> KIND_SHIFT) & 3;
+  }
+
+  /**
+   * The cube {@code ground} with the sprite of {@code plant} drawn over its top. Coarse levels cannot
+   * hold the plant's own geometry, so this is how plants show up in the distance. Returns
+   * {@code ground} when it cannot be done.
+   */
+  public static int coverId(int ground, int plant) {
+    int key = ground << 16 | plant;
+    Integer known = covers.get(key);
+    if (known != null) return known;
+
+    int id = ground;
+    float[] ov = overlays.get(plant);
+    if (ov != null && nextId <= MAX_ID) {
+      id = nextId++;
+      System.arraycopy(faces, ground * ID_FLOATS, faces, id * ID_FLOATS, ID_FLOATS);
+      colors[id] = colors[ground];
+      priorities[id] = priorities[ground];
+      colorsDirty = true;
+
+      // The up face (index 1): the second layer, or the first if the face has no texture at all.
+      boolean textured = faces[ground * ID_FLOATS + (1 * LAYERS + 0) * LAYER_FLOATS + 7] >= 0.5f;
+      int layer = textured ? 1 : 0;
+      int o = id * ID_FLOATS + (1 * LAYERS + layer) * LAYER_FLOATS;
+      System.arraycopy(ov, 0, faces, o, 7);
+      faces[o + 7] = 1f;
+      dirtyIds.mark(id * ID_FLOATS, (id + 1) * ID_FLOATS - 1);
+    }
+    covers.put(key, id);
     return id;
   }
 
@@ -433,8 +672,8 @@ public final class BlockClassifier {
    * {@code {first, count}}. Empty when nothing changed.
    */
   public static List<int[]> takeFaceRanges() {
-    List<int[]> out = new ArrayList<>(3);
-    for (Dirty d : new Dirty[] {dirtyIds, dirtyExtra, dirtyMeta}) {
+    List<int[]> out = new ArrayList<>(5);
+    for (Dirty d : new Dirty[] {dirtyIds, dirtyExtra, dirtyMeta, dirtyHdr, dirtyPool}) {
       if (d.max < 0) continue;
       out.add(new int[] {d.min, d.max - d.min + 1});
       d.min = Integer.MAX_VALUE;

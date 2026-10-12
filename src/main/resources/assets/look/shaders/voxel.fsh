@@ -30,6 +30,7 @@ uniform usampler3D uLightIndirection;  // level 0 section -> light slot + 1, 0 w
 uniform usamplerBuffer uLight;    // 4096 u8 per slot: sky light << 4 | block light
 uniform float uSkyDarken;         // vanilla's sky brightness for the time of day and weather, 0.2..1
 uniform float uAmbientLight;      // dimension ambient light, lifts the darkest light levels
+uniform float uTime;              // game ticks, wrapped to a multiple of the sway period
 
 in vec2 vNdc;
 out vec4 fragColor;
@@ -43,6 +44,11 @@ const int TINT_FAR_FIRST = 5;  // TintMap.FAR_FIRST
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
 const int META_START = (16384 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
+const int QUAD_HDR_START = META_START + 16384 * META_TEXELS;  // BlockClassifier.HDR_START / 4
+const int QUAD_POOL_START = QUAD_HDR_START + 16384 * 3;       // BlockClassifier.POOL_START / 4
+const int QUAD_TEXELS = 5;       // BlockClassifier.QUAD_FLOATS / 4
+const int MAX_QUADS = 48;        // BlockClassifier.MAX_QUADS
+const float SWAY_OMEGA = 0.0490874;  // 2 pi / 128 ticks, so wrapping uTime at a multiple of 128 is seamless
 
 uint readSlot(int lvl, ivec3 sec) {
   ivec3 c = ivec3(sec.x & (uGrid.x - 1), uLevel[lvl].z + sec.y - uLevel[lvl].x, sec.z & (uGrid.z - 1));
@@ -172,6 +178,17 @@ int variantRow(uint id, ivec3 cell) {
   return v == 0 ? int(id) : int(m.x) + v - 1;
 }
 
+// Multiplier for a face table tint: -1 grass, -2 foliage (from the biome tint texture), else a 0xRRGGBB constant.
+// Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
+vec3 tintColor(float tint, vec2 column, float lowLayer, vec3 farTint) {
+  if (tint < -0.5) {
+    if (farTint.z >= 0.0 && tint > -1.5) return textureLod(uTint, farTint, 0.0).rgb;
+    return textureLod(uTint, vec3(column, lowLayer + (tint < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
+  }
+  int t = int(tint);
+  return vec3(float((t >> 16) & 255), float((t >> 8) & 255), float(t & 255)) / 255.0;
+}
+
 // Surface color of voxel `id` where the ray hits face `axis`. `local` is the hit point inside the
 // voxel (0..1) and t the ray distance in blocks. Returns false for transparent texels (leaves etc.),
 // so the caller keeps marching. `column` is the world column of the voxel's center, for biome tint,
@@ -220,18 +237,7 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     }
     s /= float(taps);
 
-    if (b.z < -0.5) {
-      // Biome tint: -1 grass, -2 foliage.
-      // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
-      if (farTint.z >= 0.0 && b.z > -1.5) {
-        s.rgb *= textureLod(uTint, farTint, 0.0).rgb;
-      } else {
-        s.rgb *= textureLod(uTint, vec3(column, lowLayer + (b.z < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
-      }
-    } else {
-      int tint = int(b.z);
-      s.rgb *= vec3(float((tint >> 16) & 255), float((tint >> 8) & 255), float(tint & 255)) / 255.0;
-    }
+    s.rgb *= tintColor(b.z, column, lowLayer, farTint);
 
     rgb = layer == 0 ? s.rgb : mix(rgb, s.rgb, s.a);
     alpha = layer == 0 ? s.a : max(alpha, s.a);
@@ -251,11 +257,87 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
   return true;
 }
 
+// Nearest opaque texel of the model quads of a non-cube voxel `id`. `ol` is the ray origin and `d` its
+// direction in voxel units (the voxel is [0, 1]^3, a unit is one voxel of the level), and [t0, t1] the
+// part of the ray inside the voxel. Plants are moved by a per-voxel offset and sheared by the wind;
+// both keep a quad a parallelogram, so the intersection stays the same. `nrm` points back at the ray.
+bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 column, float lowLayer, vec3 farTint, out float tHit, out vec3 nrm, out vec3 albedo) {
+  int hdr = QUAD_HDR_START + int(id) * 3;
+  vec4 h0 = texelFetch(uFaces, hdr);
+  int count = min(int(h0.y), MAX_QUADS);
+  if (h0.x < 0.0 || count == 0) return false;
+
+  // Skip the quads when the ray misses the bounds of the model.
+  vec3 invD = 1.0 / d;
+  vec3 ta = (texelFetch(uFaces, hdr + 1).xyz - ol) * invD;
+  vec3 tb = (texelFetch(uFaces, hdr + 2).xyz - ol) * invD;
+  vec3 tn = min(ta, tb), tf = max(ta, tb);
+  float te = max(max(tn.x, tn.y), max(tn.z, t0));
+  float tl = min(min(tf.x, tf.y), min(tf.z, t1));
+  if (te > tl) return false;
+
+  bool plant = h0.z > 0.5;
+  vec3 shift = vec3(0.0);
+  vec3 lean = vec3(0.0);   // shift per unit of height
+  if (plant) {
+    uint hh = hash3(cell);
+    vec2 off = vec2(float(hh & 255u), float((hh >> 8u) & 255u)) / 127.5 - 1.0;
+    shift = vec3(off.x * h0.w, 0.0, off.y * h0.w);
+    float ph = uTime * SWAY_OMEGA + float(cell.x) * 0.31 + float(cell.z) * 0.23 + float((hh >> 16u) & 255u) * 0.01;
+    lean = vec3(1.0, 0.0, 0.4) * (0.045 * (sin(ph) + 0.5 * sin(2.0 * ph + 1.7)));
+  }
+
+  float best = tl + 1e-4;
+  bool found = false;
+  int first = int(h0.x);
+  for (int i = 0; i < count; i++) {
+    int q = QUAD_POOL_START + (first + i) * QUAD_TEXELS;
+    vec3 P = texelFetch(uFaces, q).xyz;
+    vec3 E1 = texelFetch(uFaces, q + 1).xyz;
+    vec3 E2 = texelFetch(uFaces, q + 2).xyz;
+    if (plant) {
+      P += shift + lean * P.y;
+      E1 += lean * E1.y;
+      E2 += lean * E2.y;
+    }
+
+    vec3 n = cross(E1, E2);
+    float dn = dot(d, n);
+    if (abs(dn) < 1e-9) continue;
+    float T = dot(P - ol, n) / dn;
+    if (T < te - 1e-4 || T >= best) continue;
+
+    vec3 hp = ol + d * T - P;
+    float nn = dot(n, n);
+    float a = dot(cross(hp, E2), n) / nn;
+    float b = dot(cross(E1, hp), n) / nn;
+    if (a < 0.0 || a > 1.0 || b < 0.0 || b > 1.0) continue;
+
+    vec4 m0 = texelFetch(uFaces, q + 3);
+    vec4 m1 = texelFetch(uFaces, q + 4);
+    vec2 uv = m0.xy + a * m0.zw + b * m1.xy;
+    float texelsPerUnit = max(length(m0.zw * uAtlasSize) / max(length(E1), 1e-4), length(m1.xy * uAtlasSize) / max(length(E2), 1e-4));
+    float lod = clamp(log2(max(T * uPixelAngle * texelsPerUnit, 1e-6)), 0.0, uMaxLod);
+    vec4 s = textureLod(uAtlas, uv, lod);
+    if (s.a < 0.5) continue;
+
+    best = T;
+    found = true;
+    tHit = T;
+    nrm = normalize(n);
+    albedo = s.rgb * tintColor(m1.z, column, lowLayer, farTint);
+  }
+
+  if (found && dot(nrm, d) > 0.0) nrm = -nrm;
+  return found;
+}
+
 // Two-level DDA over the LOD pyramid: whole sections are skipped when empty, voxels are stepped
 // inside bricks. At level k every voxel is 2^k blocks wide and a section is 16 voxels, but the
 // stepping is the same, so all the lengths below are just scaled by the voxel size.
-// o is relative to uCamBlock. d is normalized with no zero components.
-bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, out int steps) {
+// o is relative to uCamBlock. d is normalized with no zero components. hitNormal is the surface normal
+// facing the ray, hitKind the BlockClassifier kind of the voxel that was hit.
+bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, out int steps, out vec3 hitNormal, out int hitKind) {
   steps = 0;
   vec3 invD = 1.0 / d;
   ivec3 stp = ivec3(sign(d));
@@ -327,13 +409,35 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
           }
         }
 
-        if (surface(id, voxel, vs, axis, d, local, tc, column, lowLayer, farTint, albedo)) {
-          tHit = tc;
-          hitId = id;
-          hitAxis = axis;
-          hitVoxel = voxel;
-          hitLevel = lvl;
-          return true;
+        int kind = int((texelFetch(uColors, int(id)).r >> 25) & 3u);
+        if (kind == 0) {
+          if (surface(id, voxel, vs, axis, d, local, tc, column, lowLayer, farTint, albedo)) {
+            tHit = tc;
+            hitId = id;
+            hitAxis = axis;
+            hitVoxel = voxel;
+            hitLevel = lvl;
+            hitKind = 0;
+            hitNormal = vec3(0.0);
+            hitNormal[axis] = d[axis] > 0.0 ? -1.0 : 1.0;
+            return true;
+          }
+        } else {
+          // Model quads: intersect them inside this voxel, up to where the ray leaves it (tMax).
+          vec3 ol = (o - vec3(voxel - uCamBlock)) / vs;
+          float exitT = min(tMax.x, min(tMax.y, tMax.z));
+          float th;
+          vec3 qn;
+          if (quadSurface(id, voxel >> lvl, ol, d, (tc - eps) / vs, (exitT + eps) / vs, column, lowLayer, farTint, th, qn, albedo)) {
+            tHit = th * vs;
+            hitId = id;
+            hitAxis = axis;
+            hitVoxel = voxel;
+            hitLevel = lvl;
+            hitKind = kind;
+            hitNormal = qn;
+            return true;
+          }
         }
       }
 
@@ -377,7 +481,9 @@ void main() {
   vec3 albedo;
   int level = 0;
   int steps;
-  bool hit = trace(o, d, tHit, id, axis, voxel, level, albedo, steps);
+  vec3 hitNormal;
+  int hitKind;
+  bool hit = trace(o, d, tHit, id, axis, voxel, level, albedo, steps, hitNormal, hitKind);
 
   if (!hit && uDebug != 1) discard;
 
@@ -399,7 +505,7 @@ void main() {
   }
 
   // Flat per-face shading, same factors vanilla uses for its directional light.
-  float shade = axis == 1 ? (d.y < 0.0 ? 1.0 : 0.5) : (axis == 0 ? 0.6 : 0.8);
+  float shade = dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
 
   // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
   vec2 light = vec2(1.0, 0.0);
@@ -407,10 +513,20 @@ void main() {
   if (level == 0) {
     // Fade out over the second half of level 0, where the LOD switch happens.
     float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
-    vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
     vec2 l;
-    float a = ambientOcclusion(voxel, axis, d, p, l);
-    ao = mix(1.0, a, fade);
+    if (hitKind == 0) {
+      vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
+      float a = ambientOcclusion(voxel, axis, d, p, l);
+      ao = mix(1.0, a, fade);
+    } else {
+      // The cell of a slab is dark like a solid block, so take the better of it and the cell in front.
+      vec3 an = abs(hitNormal);
+      ivec3 stp = ivec3(0);
+      if (an.x >= an.y && an.x >= an.z) stp.x = hitNormal.x > 0.0 ? 1 : -1;
+      else if (an.y >= an.z) stp.y = hitNormal.y > 0.0 ? 1 : -1;
+      else stp.z = hitNormal.z > 0.0 ? 1 : -1;
+      l = max(lightAt(voxel), lightAt(voxel + stp));
+    }
     light = mix(vec2(1.0, 0.0), l / 15.0, fade);
   }
 

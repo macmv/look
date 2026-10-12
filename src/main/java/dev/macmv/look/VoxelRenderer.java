@@ -36,6 +36,7 @@ public final class VoxelRenderer {
   private static int uMinY;
   private static int uSkyDarken;
   private static int uAmbientLight;
+  private static int uTime;
 
   private VoxelRenderer() {}
 
@@ -122,6 +123,11 @@ public final class VoxelRenderer {
     ClientLevel level = Minecraft.getInstance().level;
     float partial = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
 
+    // Wraps at a multiple of the 128 tick sway period, so the wind has no visible jump.
+    float time = 0f;
+    if (level != null) time = (float) (level.getGameTime() % 12800L) + partial;
+    GL33C.glUniform1f(uTime, time);
+
     float skyDarken = 1f;
     float ambient = 0f;
     if (level != null) {
@@ -166,6 +172,7 @@ public final class VoxelRenderer {
     uSkyDarken = GL33C.glGetUniformLocation(program, "uSkyDarken");
     uAmbientLight = GL33C.glGetUniformLocation(program, "uAmbientLight");
     uMinY = GL33C.glGetUniformLocation(program, "uMinY");
+    uTime = GL33C.glGetUniformLocation(program, "uTime");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
     vao = GL33C.glGenVertexArrays();

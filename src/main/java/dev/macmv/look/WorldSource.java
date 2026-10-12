@@ -294,11 +294,11 @@ public final class WorldSource implements VoxelSource {
                   }
                   samples[i] = idAt(c, pos.set(bx, by, bz));
                   // Lower samples are covered by the sample above; upper ones by the next block up.
-                  if (dy == 1) exposed[i] = idAt(c, pos.set(bx, by + 1, bz)) == 0;
+                  if (dy == 1) exposed[i] = isOpen(idAt(c, pos.set(bx, by + 1, bz)));
                 }
               }
             }
-            for (int i = 0; i < 4; i++) exposed[i] = samples[i + 4] == 0;
+            for (int i = 0; i < 4; i++) exposed[i] = isOpen(samples[i + 4]);
             id = LodReduce.reduce(samples, exposed);
           }
           if (id != 0) solid++;
@@ -310,12 +310,16 @@ public final class WorldSource implements VoxelSource {
     return solid;
   }
 
+  /** Whether nothing solid is in a sample with this id: air, or a plant. */
+  private static boolean isOpen(int id) {
+    return id == 0 || BlockClassifier.kind(id) == BlockClassifier.KIND_PLANT;
+  }
+
   /** Voxel id of the block at {@code pos}, with snow layers counted as snow blocks. */
   private static int idAt(LevelChunk chunk, BlockPos pos) {
     BlockState state = chunk.getBlockState(pos);
     if (state.isAir()) return 0;
-    int id = BlockClassifier.voxelId(state);
-    if (id == 0 && state.is(Blocks.SNOW)) return BlockClassifier.voxelId(Blocks.SNOW_BLOCK.defaultBlockState());
-    return id;
+    if (state.is(Blocks.SNOW)) return BlockClassifier.voxelId(Blocks.SNOW_BLOCK.defaultBlockState());
+    return BlockClassifier.voxelId(state);
   }
 }
