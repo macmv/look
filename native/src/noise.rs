@@ -1,5 +1,6 @@
-//! Perlin noise as the game builds it: `ImprovedNoise` (one octave), `PerlinNoise` (octaves) and
-//! `NormalNoise` (two Perlin noises averaged). Matches vanilla's 1.21 non-legacy initialization.
+//! Perlin noise as the game builds it: `ImprovedNoise` (one octave),
+//! `PerlinNoise` (octaves) and `NormalNoise` (two Perlin noises averaged).
+//! Matches vanilla's 1.21 non-legacy initialization.
 
 use crate::rng::Xoroshiro;
 
@@ -24,14 +25,10 @@ const GRADIENT: [[i32; 3]; 16] = [
 ];
 
 #[inline]
-fn lerp(t: f64, a: f64, b: f64) -> f64 {
-  a + t * (b - a)
-}
+fn lerp(t: f64, a: f64, b: f64) -> f64 { a + t * (b - a) }
 
 #[inline]
-fn smoothstep(x: f64) -> f64 {
-  x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
-}
+fn smoothstep(x: f64) -> f64 { x * x * x * (x * (x * 6.0 - 15.0) + 10.0) }
 
 #[inline]
 fn floor(x: f64) -> i32 {
@@ -48,7 +45,7 @@ pub struct ImprovedNoise {
   xo: f64,
   yo: f64,
   zo: f64,
-  p: [u8; 256],
+  p:  [u8; 256],
 }
 
 impl ImprovedNoise {
@@ -69,9 +66,7 @@ impl ImprovedNoise {
   }
 
   #[inline]
-  fn p(&self, i: i32) -> i32 {
-    self.p[(i & 0xFF) as usize] as i32
-  }
+  fn p(&self, i: i32) -> i32 { self.p[(i & 0xFF) as usize] as i32 }
 
   #[inline]
   fn grad_dot(hash: i32, x: f64, y: f64, z: f64) -> f64 {
@@ -79,13 +74,12 @@ impl ImprovedNoise {
     g[0] as f64 * x + g[1] as f64 * y + g[2] as f64 * z
   }
 
-  pub fn noise(&self, x: f64, y: f64, z: f64) -> f64 {
-    self.noise_fudged(x, y, z, 0.0, 0.0)
-  }
+  pub fn noise(&self, x: f64, y: f64, z: f64) -> f64 { self.noise_fudged(x, y, z, 0.0, 0.0) }
 
-  /// `noise(x, y, z, yScale, yMax)`: the variant the old blended noise uses, which snaps the
-  /// vertical position used for the gradients down to a multiple of `y_fudge` (smearing the noise
-  /// along y) while the interpolation weight still follows the real position.
+  /// `noise(x, y, z, yScale, yMax)`: the variant the old blended noise uses,
+  /// which snaps the vertical position used for the gradients down to a
+  /// multiple of `y_fudge` (smearing the noise along y) while the
+  /// interpolation weight still follows the real position.
   pub fn noise_fudged(&self, x: f64, y: f64, z: f64, y_fudge: f64, y_max: f64) -> f64 {
     let d = x + self.xo;
     let e = y + self.yo;
@@ -134,14 +128,13 @@ impl ImprovedNoise {
 
 /// Keeps coordinates small so float precision holds up far from the origin.
 #[inline]
-fn wrap(v: f64) -> f64 {
-  v - (v / 3.355_443_2e7 + 0.5).floor() * 3.355_443_2e7
-}
+fn wrap(v: f64) -> f64 { v - (v / 3.355_443_2e7 + 0.5).floor() * 3.355_443_2e7 }
 
-/// `PerlinNoise`: octaves of `ImprovedNoise`, each twice the frequency of the last.
+/// `PerlinNoise`: octaves of `ImprovedNoise`, each twice the frequency of the
+/// last.
 pub struct PerlinNoise {
-  levels: Vec<Option<ImprovedNoise>>,
-  amplitudes: Vec<f64>,
+  levels:            Vec<Option<ImprovedNoise>>,
+  amplitudes:        Vec<f64>,
   lowest_freq_input: f64,
   lowest_freq_value: f64,
 }
@@ -155,7 +148,8 @@ impl PerlinNoise {
     for (k, &amp) in amplitudes.iter().enumerate() {
       if amp != 0.0 {
         let octave = first_octave + k as i32;
-        levels.push(Some(ImprovedNoise::new(&mut factory.from_hash_of(&format!("octave_{octave}")))));
+        levels
+          .push(Some(ImprovedNoise::new(&mut factory.from_hash_of(&format!("octave_{octave}")))));
       } else {
         levels.push(None);
       }
@@ -184,11 +178,12 @@ impl PerlinNoise {
   }
 }
 
-/// `NormalNoise`: two independent Perlin noises, the second sampled at a slightly different scale
-/// so their patterns do not line up, scaled to a roughly unit range.
+/// `NormalNoise`: two independent Perlin noises, the second sampled at a
+/// slightly different scale so their patterns do not line up, scaled to a
+/// roughly unit range.
 pub struct NormalNoise {
-  first: PerlinNoise,
-  second: PerlinNoise,
+  first:        PerlinNoise,
+  second:       PerlinNoise,
   value_factor: f64,
 }
 
@@ -205,7 +200,8 @@ impl NormalNoise {
         hi = hi.max(i as i32);
       }
     }
-    // A noise with every amplitude zero is flat; avoid dividing by a nonsense deviation.
+    // A noise with every amplitude zero is flat; avoid dividing by a nonsense
+    // deviation.
     let octaves = if hi >= lo { hi - lo } else { 0 };
     let value_factor = 0.166_666_666_666_666_66 / (0.1 * (1.0 + 1.0 / (octaves as f64 + 1.0)));
 
@@ -214,23 +210,25 @@ impl NormalNoise {
 
   pub fn value(&self, x: f64, y: f64, z: f64) -> f64 {
     const SCALE: f64 = 1.018_126_888_217_522_7;
-    (self.first.value(x, y, z) + self.second.value(x * SCALE, y * SCALE, z * SCALE)) * self.value_factor
+    (self.first.value(x, y, z) + self.second.value(x * SCALE, y * SCALE, z * SCALE))
+      * self.value_factor
   }
 }
 
-/// `BlendedNoise` (`old_blended_noise`): the 3D terrain noise. Two 16 octave limit noises are
-/// blended by an 8 octave selector noise, so some places are smooth and others rough. Unlike the
-/// other noises it is seeded the legacy way: octaves are drawn one after the other from one random
-/// source, highest frequency first, instead of by name.
+/// `BlendedNoise` (`old_blended_noise`): the 3D terrain noise. Two 16 octave
+/// limit noises are blended by an 8 octave selector noise, so some places are
+/// smooth and others rough. Unlike the other noises it is seeded the legacy
+/// way: octaves are drawn one after the other from one random source, highest
+/// frequency first, instead of by name.
 pub struct BlendedNoise {
   /// Highest frequency first, like `PerlinNoise.getOctaveNoise`.
-  min_limit: Vec<ImprovedNoise>,
-  max_limit: Vec<ImprovedNoise>,
-  main: Vec<ImprovedNoise>,
-  xz_multiplier: f64,
-  y_multiplier: f64,
-  xz_factor: f64,
-  y_factor: f64,
+  min_limit:              Vec<ImprovedNoise>,
+  max_limit:              Vec<ImprovedNoise>,
+  main:                   Vec<ImprovedNoise>,
+  xz_multiplier:          f64,
+  y_multiplier:           f64,
+  xz_factor:              f64,
+  y_factor:               f64,
   smear_scale_multiplier: f64,
 }
 

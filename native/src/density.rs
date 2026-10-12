@@ -1,20 +1,25 @@
-//! Vanilla's density functions, interpreted. The graph is read from the same JSON the game loads
-//! (exported from the live registry, so datapacks and custom worlds are honored), compiled into a
-//! flat node array, and evaluated at single points.
+//! Vanilla's density functions, interpreted. The graph is read from the same
+//! JSON the game loads (exported from the live registry, so datapacks and
+//! custom worlds are honored), compiled into a flat node array, and evaluated
+//! at single points.
 //!
-//! Only the node types the terrain surface and climate need are supported; anything else makes
-//! compilation fail with the type's name, so the caller can fall back to not predicting terrain.
+//! Only the node types the terrain surface and climate need are supported;
+//! anything else makes compilation fail with the type's name, so the caller can
+//! fall back to not predicting terrain.
 //!
-//! The `flat_cache`, `cache_2d` and `cache_once` markers keep their meaning: they are memoized per
-//! thread on the point they were last evaluated at. Terrain shape depends on (x, z) only, and the
-//! height search evaluates the same column dozens of times, so this is most of the speed.
+//! The `flat_cache`, `cache_2d` and `cache_once` markers keep their meaning:
+//! they are memoized per thread on the point they were last evaluated at.
+//! Terrain shape depends on (x, z) only, and the height search evaluates the
+//! same column dozens of times, so this is most of the speed.
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::noise::{BlendedNoise, NormalNoise};
-use crate::rng::PositionalFactory;
+use crate::{
+  noise::{BlendedNoise, NormalNoise},
+  rng::PositionalFactory,
+};
 
 type Id = u32;
 
@@ -31,20 +36,60 @@ enum Node {
   HalfNegative(Id),
   QuarterNegative(Id),
   Squeeze(Id),
-  Clamp { input: Id, min: f64, max: f64 },
-  YGradient { from_y: f64, to_y: f64, from: f64, to: f64 },
-  Noise { noise: u32, xz: f64, y: f64 },
-  ShiftedNoise { noise: u32, sx: Id, sy: Id, sz: Id, xz: f64, y: f64 },
-  Shift { noise: u32, mode: ShiftMode },
-  /// `rarity * |noise(pos / rarity)|`, with the rarity picked from the input (the cave shapes).
-  WeirdScaled { input: Id, noise: u32, tunnels: bool },
+  Clamp {
+    input: Id,
+    min:   f64,
+    max:   f64,
+  },
+  YGradient {
+    from_y: f64,
+    to_y:   f64,
+    from:   f64,
+    to:     f64,
+  },
+  Noise {
+    noise: u32,
+    xz:    f64,
+    y:     f64,
+  },
+  ShiftedNoise {
+    noise: u32,
+    sx:    Id,
+    sy:    Id,
+    sz:    Id,
+    xz:    f64,
+    y:     f64,
+  },
+  Shift {
+    noise: u32,
+    mode:  ShiftMode,
+  },
+  /// `rarity * |noise(pos / rarity)|`, with the rarity picked from the input
+  /// (the cave shapes).
+  WeirdScaled {
+    input:   Id,
+    noise:   u32,
+    tunnels: bool,
+  },
   Spline(u32),
   Blended(u32),
-  RangeChoice { input: Id, min: f64, max: f64, in_range: Id, out_of_range: Id },
+  RangeChoice {
+    input:        Id,
+    min:          f64,
+    max:          f64,
+    in_range:     Id,
+    out_of_range: Id,
+  },
   /// Memoized on (x, z).
-  Memo2D { arg: Id, slot: u32 },
+  Memo2D {
+    arg:  Id,
+    slot: u32,
+  },
   /// Memoized on (x, y, z).
-  MemoPoint { arg: Id, slot: u32 },
+  MemoPoint {
+    arg:  Id,
+    slot: u32,
+  },
   /// Markers that only matter inside the game's chunk generator.
   Pass(Id),
 }
@@ -59,14 +104,14 @@ enum ShiftMode {
 #[derive(Debug)]
 struct Spline {
   coordinate: Id,
-  points: Vec<SplinePoint>,
+  points:     Vec<SplinePoint>,
 }
 
 #[derive(Debug)]
 struct SplinePoint {
-  location: f32,
+  location:   f32,
   derivative: f32,
-  value: SplineValue,
+  value:      SplineValue,
 }
 
 #[derive(Debug)]
@@ -85,9 +130,9 @@ pub struct Point {
 
 #[derive(Clone, Copy)]
 struct Memo {
-  x: i32,
-  y: i32,
-  z: i32,
+  x:     i32,
+  y:     i32,
+  z:     i32,
   valid: bool,
   value: f64,
 }
@@ -98,10 +143,10 @@ pub struct Scratch {
 }
 
 pub struct Graph {
-  nodes: Vec<Node>,
-  splines: Vec<Spline>,
-  noises: Vec<NormalNoise>,
-  blended: Vec<BlendedNoise>,
+  nodes:      Vec<Node>,
+  splines:    Vec<Spline>,
+  noises:     Vec<NormalNoise>,
+  blended:    Vec<BlendedNoise>,
   memo_slots: usize,
 }
 
@@ -110,9 +155,7 @@ impl Graph {
     Scratch { memo: vec![Memo { x: 0, y: 0, z: 0, valid: false, value: 0.0 }; self.memo_slots] }
   }
 
-  pub fn eval(&self, root: Root, p: Point, s: &mut Scratch) -> f64 {
-    self.node(root.0, p, s)
-  }
+  pub fn eval(&self, root: Root, p: Point, s: &mut Scratch) -> f64 { self.node(root.0, p, s) }
 
   fn node(&self, id: Id, p: Point, s: &mut Scratch) -> f64 {
     match &self.nodes[id as usize] {
@@ -220,7 +263,10 @@ impl Graph {
             2.0
           }
         };
-        rarity * self.noises[*noise as usize].value(p.x as f64 / rarity, p.y as f64 / rarity, p.z as f64 / rarity).abs()
+        rarity
+          * self.noises[*noise as usize]
+            .value(p.x as f64 / rarity, p.y as f64 / rarity, p.z as f64 / rarity)
+            .abs()
       }
       Node::Spline(i) => self.spline(*i, p, s) as f64,
       Node::Blended(i) => self.blended[*i as usize].value(p.x as f64, p.y as f64, p.z as f64),
@@ -304,15 +350,15 @@ impl Graph {
 #[derive(Clone, Copy, Debug)]
 pub struct Root(Id);
 
-/// Compiles functions out of the exported config into one shared graph, so functions that several
-/// roots refer to are evaluated (and memoized) once.
+/// Compiles functions out of the exported config into one shared graph, so
+/// functions that several roots refer to are evaluated (and memoized) once.
 pub struct Compiler<'a> {
-  functions: &'a serde_json::Map<String, Value>,
-  noise_params: &'a serde_json::Map<String, Value>,
+  functions:     &'a serde_json::Map<String, Value>,
+  noise_params:  &'a serde_json::Map<String, Value>,
   noise_factory: PositionalFactory,
 
-  graph: Graph,
-  by_name: HashMap<String, Id>,
+  graph:     Graph,
+  by_name:   HashMap<String, Id>,
   noise_ids: HashMap<String, u32>,
 }
 
@@ -326,19 +372,21 @@ impl<'a> Compiler<'a> {
       functions,
       noise_params,
       noise_factory,
-      graph: Graph { nodes: Vec::new(), splines: Vec::new(), noises: Vec::new(), blended: Vec::new(), memo_slots: 0 },
+      graph: Graph {
+        nodes:      Vec::new(),
+        splines:    Vec::new(),
+        noises:     Vec::new(),
+        blended:    Vec::new(),
+        memo_slots: 0,
+      },
       by_name: HashMap::new(),
       noise_ids: HashMap::new(),
     }
   }
 
-  pub fn root(&mut self, v: &Value) -> Result<Root, String> {
-    Ok(Root(self.compile(v)?))
-  }
+  pub fn root(&mut self, v: &Value) -> Result<Root, String> { Ok(Root(self.compile(v)?)) }
 
-  pub fn finish(self) -> Graph {
-    self.graph
-  }
+  pub fn finish(self) -> Graph { self.graph }
 
   fn push(&mut self, n: Node) -> Id {
     self.graph.nodes.push(n);
@@ -354,7 +402,8 @@ impl<'a> Compiler<'a> {
     if let Some(&i) = self.noise_ids.get(name) {
       return Ok(i);
     }
-    let params = self.noise_params.get(name).ok_or_else(|| format!("missing noise parameters for {name}"))?;
+    let params =
+      self.noise_params.get(name).ok_or_else(|| format!("missing noise parameters for {name}"))?;
     let first_octave = params
       .get("firstOctave")
       .and_then(Value::as_i64)
@@ -381,13 +430,15 @@ impl<'a> Compiler<'a> {
         if let Some(&id) = self.by_name.get(name) {
           return Ok(id);
         }
-        let def = self.functions.get(name).ok_or_else(|| format!("unknown density function {name}"))?;
+        let def =
+          self.functions.get(name).ok_or_else(|| format!("unknown density function {name}"))?;
         let id = self.compile(def)?;
         self.by_name.insert(name.clone(), id);
         Ok(id)
       }
       Value::Object(obj) => {
-        let ty = obj.get("type").and_then(Value::as_str).ok_or("density function without a type")?;
+        let ty =
+          obj.get("type").and_then(Value::as_str).ok_or("density function without a type")?;
         let ty = ty.strip_prefix("minecraft:").unwrap_or(ty);
         self.compile_typed(ty, obj)
       }
@@ -408,7 +459,11 @@ impl<'a> Compiler<'a> {
     obj.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing string {key}"))
   }
 
-  fn compile_typed(&mut self, ty: &str, obj: &serde_json::Map<String, Value>) -> Result<Id, String> {
+  fn compile_typed(
+    &mut self,
+    ty: &str,
+    obj: &serde_json::Map<String, Value>,
+  ) -> Result<Id, String> {
     let node = match ty {
       "constant" => Node::Const(Self::num(obj, "argument")?),
       "add" | "mul" | "min" | "max" => {
@@ -434,36 +489,42 @@ impl<'a> Compiler<'a> {
       }
       "clamp" => Node::Clamp {
         input: self.arg(obj, "input")?,
-        min: Self::num(obj, "min")?,
-        max: Self::num(obj, "max")?,
+        min:   Self::num(obj, "min")?,
+        max:   Self::num(obj, "max")?,
       },
       "y_clamped_gradient" => Node::YGradient {
         from_y: Self::num(obj, "from_y")?,
-        to_y: Self::num(obj, "to_y")?,
-        from: Self::num(obj, "from_value")?,
-        to: Self::num(obj, "to_value")?,
+        to_y:   Self::num(obj, "to_y")?,
+        from:   Self::num(obj, "from_value")?,
+        to:     Self::num(obj, "to_value")?,
       },
       "noise" => Node::Noise {
         noise: self.noise(Self::text(obj, "noise")?)?,
-        xz: Self::num(obj, "xz_scale")?,
-        y: Self::num(obj, "y_scale")?,
+        xz:    Self::num(obj, "xz_scale")?,
+        y:     Self::num(obj, "y_scale")?,
       },
       "shifted_noise" => Node::ShiftedNoise {
         noise: self.noise(Self::text(obj, "noise")?)?,
-        sx: self.arg(obj, "shift_x")?,
-        sy: self.arg(obj, "shift_y")?,
-        sz: self.arg(obj, "shift_z")?,
-        xz: Self::num(obj, "xz_scale")?,
-        y: Self::num(obj, "y_scale")?,
+        sx:    self.arg(obj, "shift_x")?,
+        sy:    self.arg(obj, "shift_y")?,
+        sz:    self.arg(obj, "shift_z")?,
+        xz:    Self::num(obj, "xz_scale")?,
+        y:     Self::num(obj, "y_scale")?,
       },
-      "shift_a" => Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::A },
-      "shift_b" => Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::B },
-      "shift" => Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::Both },
+      "shift_a" => {
+        Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::A }
+      }
+      "shift_b" => {
+        Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::B }
+      }
+      "shift" => {
+        Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::Both }
+      }
       "weird_scaled_sampler" => {
         let mapper = Self::text(obj, "rarity_value_mapper")?;
         Node::WeirdScaled {
-          input: self.arg(obj, "input")?,
-          noise: self.noise(Self::text(obj, "noise")?)?,
+          input:   self.arg(obj, "input")?,
+          noise:   self.noise(Self::text(obj, "noise")?)?,
           tunnels: match mapper {
             "type_1" => true,
             "type_2" => false,
@@ -472,10 +533,10 @@ impl<'a> Compiler<'a> {
         }
       }
       "range_choice" => Node::RangeChoice {
-        input: self.arg(obj, "input")?,
-        min: Self::num(obj, "min_inclusive")?,
-        max: Self::num(obj, "max_exclusive")?,
-        in_range: self.arg(obj, "when_in_range")?,
+        input:        self.arg(obj, "input")?,
+        min:          Self::num(obj, "min_inclusive")?,
+        max:          Self::num(obj, "max_exclusive")?,
+        in_range:     self.arg(obj, "when_in_range")?,
         out_of_range: self.arg(obj, "when_out_of_range")?,
       },
       "spline" => {
@@ -486,7 +547,8 @@ impl<'a> Compiler<'a> {
         }
       }
       "old_blended_noise" => {
-        // The game seeds it from the name "minecraft:terrain", whatever else the world uses.
+        // The game seeds it from the name "minecraft:terrain", whatever else
+        // the world uses.
         let mut rng = self.noise_factory.from_hash_of("minecraft:terrain");
         let noise = BlendedNoise::new(
           &mut rng,
@@ -499,9 +561,13 @@ impl<'a> Compiler<'a> {
         self.graph.blended.push(noise);
         Node::Blended((self.graph.blended.len() - 1) as u32)
       }
-      "flat_cache" | "cache_2d" => Node::Memo2D { arg: self.arg(obj, "argument")?, slot: self.slot() },
+      "flat_cache" | "cache_2d" => {
+        Node::Memo2D { arg: self.arg(obj, "argument")?, slot: self.slot() }
+      }
       "cache_once" => Node::MemoPoint { arg: self.arg(obj, "argument")?, slot: self.slot() },
-      "interpolated" | "cache_all_in_cell" | "blend_density" => Node::Pass(self.arg(obj, "argument")?),
+      "interpolated" | "cache_all_in_cell" | "blend_density" => {
+        Node::Pass(self.arg(obj, "argument")?)
+      }
       // No blending happens outside the chunk generator.
       "blend_alpha" => Node::Const(1.0),
       "blend_offset" => Node::Const(0.0),
@@ -520,9 +586,10 @@ impl<'a> Compiler<'a> {
         for pt in points {
           let pt = pt.as_object().ok_or("bad spline point")?;
           out.push(SplinePoint {
-            location: Self::num(pt, "location")? as f32,
+            location:   Self::num(pt, "location")? as f32,
             derivative: Self::num(pt, "derivative")? as f32,
-            value: self.compile_spline(pt.get("value").ok_or("spline point without a value")?)?,
+            value:      self
+              .compile_spline(pt.get("value").ok_or("spline point without a value")?)?,
           });
         }
         if out.is_empty() {

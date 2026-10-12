@@ -1,6 +1,7 @@
-//! The overworld's biome table: parameter points in six climate dimensions, and the lookup that
-//! finds the nearest one for a sampled climate. Only what the terrain surface needs is kept per
-//! biome (flags and a temperature), computed by the Java side from tags and the biome definition.
+//! The overworld's biome table: parameter points in six climate dimensions, and
+//! the lookup that finds the nearest one for a sampled climate. Only what the
+//! terrain surface needs is kept per biome (flags and a temperature), computed
+//! by the Java side from tags and the biome definition.
 
 use serde_json::Value;
 
@@ -20,30 +21,30 @@ pub mod flags {
 
 #[derive(Clone, Copy, Debug)]
 pub struct BiomeInfo {
-  pub flags: u32,
+  pub flags:       u32,
   pub temperature: f32,
   /// Grass color (0xRRGGBB) of the biome, for tinting grass blocks.
-  pub grass: u32,
+  pub grass:       u32,
 }
 
 /// Used for biomes the export gave no grass color for (plains).
 const DEFAULT_GRASS: u32 = 0x91BD59;
 
 struct Point {
-  min: [i64; 6],
-  max: [i64; 6],
+  min:    [i64; 6],
+  max:    [i64; 6],
   offset: i64,
-  biome: u16,
+  biome:  u16,
 }
 
-/// A node of the search tree: the bounding box of everything below it, and the smallest offset
-/// (which adds to every point's fitness) among them.
+/// A node of the search tree: the bounding box of everything below it, and the
+/// smallest offset (which adds to every point's fitness) among them.
 struct Node {
-  min: [i64; 6],
-  max: [i64; 6],
+  min:           [i64; 6],
+  max:           [i64; 6],
   min_offset_sq: i64,
   /// Children are either a range of `points` (leaf) or node indices.
-  kind: Kind,
+  kind:          Kind,
 }
 
 enum Kind {
@@ -59,11 +60,12 @@ pub struct BiomeIndex {
   biomes: Vec<BiomeInfo>,
   /// Reordered so every leaf is a contiguous range.
   points: Vec<Point>,
-  nodes: Vec<Node>,
-  root: usize,
+  nodes:  Vec<Node>,
+  root:   usize,
 }
 
-/// `Climate.Parameter.distance`: zero inside the range, else the gap to the nearer end.
+/// `Climate.Parameter.distance`: zero inside the range, else the gap to the
+/// nearer end.
 #[inline]
 fn distance(min: i64, max: i64, target: i64) -> i64 {
   let above = target - max;
@@ -76,10 +78,12 @@ fn distance(min: i64, max: i64, target: i64) -> i64 {
 }
 
 impl BiomeIndex {
-  /// Reads `{ "flags": [..], "temperatures": [..], "grass_colors": [..] (optional), "points": [[12 range bounds, offset, biome]..] }`.
+  /// Reads `{ "flags": [..], "temperatures": [..], "grass_colors": [..]
+  /// (optional), "points": [[12 range bounds, offset, biome]..] }`.
   pub fn from_json(v: &Value) -> Result<BiomeIndex, String> {
     let flags = v.get("flags").and_then(Value::as_array).ok_or("biomes without flags")?;
-    let temps = v.get("temperatures").and_then(Value::as_array).ok_or("biomes without temperatures")?;
+    let temps =
+      v.get("temperatures").and_then(Value::as_array).ok_or("biomes without temperatures")?;
     if flags.len() != temps.len() {
       return Err("biome flags and temperatures differ in length".into());
     }
@@ -89,9 +93,12 @@ impl BiomeIndex {
       .zip(temps)
       .enumerate()
       .map(|(i, (f, t))| BiomeInfo {
-        flags: f.as_u64().unwrap_or(0) as u32,
+        flags:       f.as_u64().unwrap_or(0) as u32,
         temperature: t.as_f64().unwrap_or(0.5) as f32,
-        grass: grass.and_then(|g| g.get(i)).and_then(Value::as_u64).map_or(DEFAULT_GRASS, |c| c as u32 & 0xFFFFFF),
+        grass:       grass
+          .and_then(|g| g.get(i))
+          .and_then(Value::as_u64)
+          .map_or(DEFAULT_GRASS, |c| c as u32 & 0xFFFFFF),
       })
       .collect();
 
@@ -122,20 +129,21 @@ impl BiomeIndex {
     Ok(BiomeIndex { biomes, points: ordered, nodes, root })
   }
 
-  /// The biome whose parameter point is nearest to `target` (temperature, humidity,
-  /// continentalness, erosion, depth, weirdness; quantized like `Climate.TargetPoint`).
-  pub fn nearest(&self, target: [i64; 6]) -> BiomeInfo {
-    self.biomes[self.nearest_index(target).0]
-  }
+  /// The biome whose parameter point is nearest to `target` (temperature,
+  /// humidity, continentalness, erosion, depth, weirdness; quantized like
+  /// `Climate.TargetPoint`).
+  pub fn nearest(&self, target: [i64; 6]) -> BiomeInfo { self.biomes[self.nearest_index(target).0] }
 
-  /// Like [`nearest`](Self::nearest), but returns the biome's index and the winning fitness.
+  /// Like [`nearest`](Self::nearest), but returns the biome's index and the
+  /// winning fitness.
   pub fn nearest_index(&self, target: [i64; 6]) -> (usize, i64) {
     let mut best = (i64::MAX, self.points[0].biome);
     self.search(self.root, &target, &mut best);
     (best.1 as usize, best.0)
   }
 
-  /// The fitness of the nearest point found by looking at every point; the reference for the tree.
+  /// The fitness of the nearest point found by looking at every point; the
+  /// reference for the tree.
   pub fn nearest_index_brute_force(&self, target: [i64; 6]) -> (usize, i64) {
     let mut best = (i64::MAX, self.points[0].biome);
     self.scan(0, self.points.len(), &target, &mut best);
@@ -170,7 +178,8 @@ impl BiomeIndex {
     match &self.nodes[id].kind {
       Kind::Leaf { start, end } => self.scan(*start, *end, target, best),
       Kind::Inner { children } => {
-        // Nearest child first, so the others are likely cut off by what it finds.
+        // Nearest child first, so the others are likely cut off by what it
+        // finds.
         let mut order = [(0i64, 0usize); FANOUT];
         let n = children.len();
         for (slot, &c) in order.iter_mut().zip(children) {
@@ -187,8 +196,9 @@ impl BiomeIndex {
   }
 }
 
-/// Builds the subtree for `points` (appending them to `ordered` grouped by leaf) and returns its
-/// node index. Splits along the dimension where the points' centers are most spread out.
+/// Builds the subtree for `points` (appending them to `ordered` grouped by
+/// leaf) and returns its node index. Splits along the dimension where the
+/// points' centers are most spread out.
 fn build(mut points: Vec<Point>, ordered: &mut Vec<Point>, nodes: &mut Vec<Node>) -> usize {
   let mut min = [i64::MAX; 6];
   let mut max = [i64::MIN; 6];

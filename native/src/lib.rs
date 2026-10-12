@@ -84,23 +84,29 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_buildOccupancy<'l>(
   })
 }
 
-// --- Predicted terrain -------------------------------------------------------------------------
+// --- Predicted terrain
+// -------------------------------------------------------------------------
 
 use engine::Engine;
 use terrain::{Ids, Terrain, BRICK_VOXELS};
 
-/// Borrows the engine behind a handle from `terrainCreate`. Java must not use a handle after
-/// `terrainDestroy`, and only calls in from the render thread.
+/// Borrows the engine behind a handle from `terrainCreate`. Java must not use a
+/// handle after `terrainDestroy`, and only calls in from the render thread.
 fn engine<'a>(handle: jlong) -> Result<&'a Engine, String> {
   if handle == 0 {
     return Err("terrain engine handle is null".into());
   }
-  // SAFETY: non-null handles come from Box::into_raw in terrainCreate and live until terrainDestroy.
+  // SAFETY: non-null handles come from Box::into_raw in terrainCreate and live
+  // until terrainDestroy.
   Ok(unsafe { &*(handle as *const Engine) })
 }
 
 /// Direct buffer contents as a typed pointer, checking size and alignment.
-fn buffer_ptr<T>(env: &JNIEnv, buf: &JByteBuffer, min_bytes: usize) -> Result<(*mut T, usize), String> {
+fn buffer_ptr<T>(
+  env: &JNIEnv,
+  buf: &JByteBuffer,
+  min_bytes: usize,
+) -> Result<(*mut T, usize), String> {
   let cap = env.get_direct_buffer_capacity(buf).map_err(|e| e.to_string())?;
   if cap < min_bytes {
     return Err(format!("buffer too small: {cap} < {min_bytes}"));
@@ -112,8 +118,9 @@ fn buffer_ptr<T>(env: &JNIEnv, buf: &JByteBuffer, min_bytes: usize) -> Result<(*
   Ok((ptr as *mut T, cap))
 }
 
-/// Builds the generator from the exported world config and starts its worker threads
-/// (`threads <= 0` picks a default that leaves two cores for the game). Returns a handle.
+/// Builds the generator from the exported world config and starts its worker
+/// threads (`threads <= 0` picks a default that leaves two cores for the game).
+/// Returns a handle.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCreate<'l>(
   mut env: JNIEnv<'l>,
@@ -151,8 +158,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainDestroy<'l>(
   })
 }
 
-/// Sets the voxel ids bricks are written with: per surface kind the top and filler id, then stone
-/// and the water stand-in (`terrain::Ids::LEN` values).
+/// Sets the voxel ids bricks are written with: per surface kind the top and
+/// filler id, then stone and the water stand-in (`terrain::Ids::LEN` values).
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainSetIds<'l>(
   mut env: JNIEnv<'l>,
@@ -164,7 +171,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainSetIds<'l>(
     let len = env.get_array_length(&ids).map_err(|e| e.to_string())? as usize;
     let mut buf = vec![0i32; len];
     env.get_int_array_region(&ids, 0, &mut buf).map_err(|e| e.to_string())?;
-    let ids = Ids::from_slice(&buf).ok_or_else(|| format!("expected {} ids, got {len}", Ids::LEN))?;
+    let ids =
+      Ids::from_slice(&buf).ok_or_else(|| format!("expected {} ids, got {len}", Ids::LEN))?;
     engine(handle)?.set_ids(ids);
     Ok(())
   })
@@ -185,7 +193,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCamera<'l>(
   })
 }
 
-/// Queues a tile (a section column of a level). Returns true if it was newly queued.
+/// Queues a tile (a section column of a level). Returns true if it was newly
+/// queued.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainRequest<'l>(
   mut env: JNIEnv<'l>,
@@ -198,8 +207,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainRequest<'l>(
   guard(&mut env, |_| Ok(engine(handle)?.request(level as u32, sx, sz) as jboolean))
 }
 
-/// Writes the keys of tiles finished since the last call into `out` (u64 each, native order) and
-/// returns how many.
+/// Writes the keys of tiles finished since the last call into `out` (u64 each,
+/// native order) and returns how many.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainPoll<'l>(
   mut env: JNIEnv<'l>,
@@ -209,14 +218,15 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainPoll<'l>(
 ) -> jint {
   guard(&mut env, |env| {
     let (ptr, cap) = buffer_ptr::<u64>(env, &out, 8)?;
-    // SAFETY: size and alignment were checked, and Java owns the buffer for the duration of the call.
+    // SAFETY: size and alignment were checked, and Java owns the buffer for the
+    // duration of the call.
     let out = unsafe { std::slice::from_raw_parts_mut(ptr, cap / 8) };
     Ok(engine(handle)?.poll(out) as jint)
   })
 }
 
-/// Builds one brick (4096 u16 voxel ids, native order) from a finished tile. Returns the number of
-/// non-air voxels, or -1 if the tile is not ready.
+/// Builds one brick (4096 u16 voxel ids, native order) from a finished tile.
+/// Returns the number of non-air voxels, or -1 if the tile is not ready.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFetch<'l>(
   mut env: JNIEnv<'l>,
@@ -236,8 +246,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFetch<'l>(
   })
 }
 
-/// Writes the grass colors of a finished tile as RGBA texels (row major, at most 8 x 8) and returns
-/// the texels per side, or -1 if the tile is not ready.
+/// Writes the grass colors of a finished tile as RGBA texels (row major, at
+/// most 8 x 8) and returns the texels per side, or -1 if the tile is not ready.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFarTint<'l>(
   mut env: JNIEnv<'l>,
@@ -256,7 +266,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFarTint<'l>(
   })
 }
 
-/// Fills `out` with `{queued or running tiles, finished tiles kept, tiles computed so far}`.
+/// Fills `out` with `{queued or running tiles, finished tiles kept, tiles
+/// computed so far}`.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainStats<'l>(
   mut env: JNIEnv<'l>,

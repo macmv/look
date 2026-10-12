@@ -1,6 +1,7 @@
-//! Minecraft's Xoroshiro128++ random source and the rules that turn a world seed into per-noise
-//! generators. Everything here has to match the game bit for bit, or every noise value (and so the
-//! whole terrain) comes out different; `tests/oracle.rs` checks it against values from vanilla.
+//! Minecraft's Xoroshiro128++ random source and the rules that turn a world
+//! seed into per-noise generators. Everything here has to match the game bit
+//! for bit, or every noise value (and so the whole terrain) comes out
+//! different; `tests/oracle.rs` checks it against values from vanilla.
 
 const GOLDEN_RATIO_64: u64 = 0x9E37_79B9_7F4A_7C15;
 const SILVER_RATIO_64: u64 = 0x6A09_E667_F3BC_C909;
@@ -19,7 +20,8 @@ pub struct Xoroshiro {
 }
 
 impl Xoroshiro {
-  /// A source from a 128 bit seed. An all zero state would never move, so vanilla swaps it.
+  /// A source from a 128 bit seed. An all zero state would never move, so
+  /// vanilla swaps it.
   pub fn from_128(lo: u64, hi: u64) -> Self {
     if lo | hi == 0 {
       Xoroshiro { lo: GOLDEN_RATIO_64, hi: SILVER_RATIO_64 }
@@ -45,9 +47,7 @@ impl Xoroshiro {
     n
   }
 
-  pub fn next_int(&mut self) -> i32 {
-    self.next_long() as i32
-  }
+  pub fn next_int(&mut self) -> i32 { self.next_long() as i32 }
 
   /// `nextInt(bound)` for `bound > 0`: unbiased, via rejection like vanilla.
   pub fn next_int_bound(&mut self, bound: i32) -> i32 {
@@ -87,7 +87,8 @@ pub struct PositionalFactory {
 }
 
 impl PositionalFactory {
-  /// The source for a noise (or octave) name: the MD5 of the name, mixed with this factory's seed.
+  /// The source for a noise (or octave) name: the MD5 of the name, mixed with
+  /// this factory's seed.
   pub fn from_hash_of(&self, name: &str) -> Xoroshiro {
     let digest = md5::compute(name.as_bytes()).0;
     let lo = u64::from_be_bytes(digest[0..8].try_into().unwrap());

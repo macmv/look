@@ -1,56 +1,66 @@
-//! Predicted terrain from the world seed: where the surface is and what it is made of, sampled one
-//! column per voxel and expanded into bricks on demand.
+//! Predicted terrain from the world seed: where the surface is and what it is
+//! made of, sampled one column per voxel and expanded into bricks on demand.
 //!
-//! The surface height is vanilla's own: the highest block where the final density is positive. The
-//! density is the router's `sloped_cheese` (continents, erosion and ridges through the terrain
-//! splines, jagged peaks, and the 3D `old_blended_noise`) under the overworld's top and bottom
-//! slides, and, like the game, it is only evaluated at the corners of 4 x 8 x 4 block noise cells
-//! and interpolated trilinearly in between. The router's `final_density` adds the caves on top. It does not
-//! know about aquifers, surface rules, trees or structures. A block is picked from the biome at the surface.
+//! The surface height is vanilla's own: the highest block where the final
+//! density is positive. The density is the router's `sloped_cheese`
+//! (continents, erosion and ridges through the terrain splines, jagged peaks,
+//! and the 3D `old_blended_noise`) under the overworld's top and bottom slides,
+//! and, like the game, it is only evaluated at the corners of 4 x 8 x 4 block
+//! noise cells and interpolated trilinearly in between. The router's
+//! `final_density` adds the caves on top. It does not know about aquifers,
+//! surface rules, trees or structures. A block is picked from the biome at the
+//! surface.
 //!
-//! The corners are expensive (the blended noise is 40 octaves of Perlin noise), so the search for
-//! the surface starts from a cheap 2D estimate (`initial_density`, the shape without the 3D noise)
-//! and only evaluates corners near it. Coarse levels, whose voxels are much wider than a cell, skip
-//! the interpolation and sample the density at the voxel's center.
+//! The corners are expensive (the blended noise is 40 octaves of Perlin noise),
+//! so the search for the surface starts from a cheap 2D estimate
+//! (`initial_density`, the shape without the 3D noise) and only evaluates
+//! corners near it. Coarse levels, whose voxels are much wider than a cell,
+//! skip the interpolation and sample the density at the voxel's center.
 //!
-//! `tests/oracle.rs` measures it against `NoiseBasedChunkGenerator.getBaseHeight`.
+//! `tests/oracle.rs` measures it against
+//! `NoiseBasedChunkGenerator.getBaseHeight`.
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::biome::{flags, BiomeIndex, BiomeInfo};
-use crate::density::{Compiler, Graph, Point, Root, Scratch};
-use crate::rng::Xoroshiro;
+use crate::{
+  biome::{flags, BiomeIndex, BiomeInfo},
+  density::{Compiler, Graph, Point, Root, Scratch},
+  rng::Xoroshiro,
+};
 
-/// Density above which a point counts as terrain. It must stay above the world-top slide (about
-/// -0.08).
+/// Density above which a point counts as terrain. It must stay above the
+/// world-top slide (about -0.08).
 const SURFACE_THRESHOLD: f64 = 0.0;
-/// Size of a noise cell in blocks: the density is only computed at cell corners.
+/// Size of a noise cell in blocks: the density is only computed at cell
+/// corners.
 const CELL_W: i32 = 4;
 const CELL_H: i32 = 8;
-/// How far above the 2D estimate the search for the surface starts, in blocks. The 3D noise moves
-/// the surface by up to roughly this much.
+/// How far above the 2D estimate the search for the surface starts, in blocks.
+/// The 3D noise moves the surface by up to roughly this much.
 const SEARCH_MARGIN: i32 = 48;
-/// Height difference between the columns on either side of one, per block of run, from which
-/// vanilla's `steep` surface rule holds: 4 blocks over 2.
+/// Height difference between the columns on either side of one, per block of
+/// run, from which vanilla's `steep` surface rule holds: 4 blocks over 2.
 const STEEP_SLOPE: i32 = 2;
-/// Vanilla cools a biome by this much per block above y 80, and snows below a temperature of 0.15.
+/// Vanilla cools a biome by this much per block above y 80, and snows below a
+/// temperature of 0.15.
 const LAPSE_PER_BLOCK: f32 = 0.05 / 40.0;
 
 pub const NO_TERRAIN: i16 = i16::MIN;
 pub const BRICK_VOXELS: usize = 16 * 16 * 16;
 
-/// What the top of a column is made of. The order is shared with `SeedSource.java`.
+/// What the top of a column is made of. The order is shared with
+/// `SeedSource.java`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Surface {
-  Grass = 0,
-  Sand = 1,
+  Grass   = 0,
+  Sand    = 1,
   RedSand = 2,
-  Gravel = 3,
-  Snow = 4,
-  Stone = 5,
+  Gravel  = 3,
+  Snow    = 4,
+  Stone   = 5,
 }
 
 pub const SURFACES: usize = 6;
@@ -68,14 +78,15 @@ impl Surface {
   }
 }
 
-/// Voxel ids to write into bricks, set by Java (they come from `BlockClassifier`). Per surface kind
-/// the top block and the filler below it, then stone and the water stand-in.
+/// Voxel ids to write into bricks, set by Java (they come from
+/// `BlockClassifier`). Per surface kind the top block and the filler below it,
+/// then stone and the water stand-in.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ids {
-  pub top: [u16; SURFACES],
+  pub top:    [u16; SURFACES],
   pub filler: [u16; SURFACES],
-  pub stone: u16,
-  pub water: u16,
+  pub stone:  u16,
+  pub water:  u16,
 }
 
 impl Ids {
@@ -96,17 +107,19 @@ impl Ids {
   }
 }
 
-/// The surface of one level-k section column: 16 x 16 samples, indexed `z * 16 + x`.
+/// The surface of one level-k section column: 16 x 16 samples, indexed `z * 16
+/// + x`.
 pub struct Tile {
-  pub top: [i16; 256],
+  pub top:     [i16; 256],
   pub surface: [u8; 256],
   /// Grass color (0xRRGGBB) of the biome of each column.
-  pub grass: [u32; 256],
+  pub grass:   [u32; 256],
 }
 
-/// Layout of a tile's grass colors as texels of the far tint texture (see `TintMap.java`): a texel
-/// is `max(8, 2 << level)` blocks wide, so the wrapping texture always spans a whole level. Returns
-/// `(texels per side, columns per texel side)`.
+/// Layout of a tile's grass colors as texels of the far tint texture (see
+/// `TintMap.java`): a texel is `max(8, 2 << level)` blocks wide, so the
+/// wrapping texture always spans a whole level. Returns `(texels per side,
+/// columns per texel side)`.
 pub fn far_tint_layout(level: u32) -> (usize, usize) {
   let cell = 8usize.max(2usize << level);
   let cols = cell >> level;
@@ -114,13 +127,12 @@ pub fn far_tint_layout(level: u32) -> (usize, usize) {
 }
 
 impl Tile {
-  pub fn empty() -> Tile {
-    Tile { top: [NO_TERRAIN; 256], surface: [0; 256], grass: [0; 256] }
-  }
+  pub fn empty() -> Tile { Tile { top: [NO_TERRAIN; 256], surface: [0; 256], grass: [0; 256] } }
 
-  /// Writes the tile as RGBA texels of the far tint texture, row major, and returns the texels per
-  /// side. A texel takes the color of the first grass column of its group (so a coast does not tint
-  /// its grass with the sea's biome), else of the group's middle column. Texels with no terrain
+  /// Writes the tile as RGBA texels of the far tint texture, row major, and
+  /// returns the texels per side. A texel takes the color of the first grass
+  /// column of its group (so a coast does not tint its grass with the sea's
+  /// biome), else of the group's middle column. Texels with no terrain
   /// have alpha 0.
   pub fn write_far_tint(&self, level: u32, out: &mut [u8]) -> usize {
     let (side, cols) = far_tint_layout(level);
@@ -148,9 +160,17 @@ impl Tile {
     side
   }
 
-  /// Writes the 4096 voxels of section row `sy` of this column into `out` and returns how many are
-  /// not air. Always writes the whole brick, since callers may layer other data over it.
-  pub fn fill_brick(&self, level: u32, sy: i32, t: &TerrainParams, ids: &Ids, out: &mut [u16; BRICK_VOXELS]) -> u32 {
+  /// Writes the 4096 voxels of section row `sy` of this column into `out` and
+  /// returns how many are not air. Always writes the whole brick, since
+  /// callers may layer other data over it.
+  pub fn fill_brick(
+    &self,
+    level: u32,
+    sy: i32,
+    t: &TerrainParams,
+    ids: &Ids,
+    out: &mut [u16; BRICK_VOXELS],
+  ) -> u32 {
     let size = 1i32 << level;
     let half = size >> 1;
     let y0 = (sy as i64) << (level + 4);
@@ -171,7 +191,8 @@ impl Tile {
             let by = by as i32;
             let top = top as i32;
             if by < top {
-              // The one voxel holding the surface is the surface block; a few below it are filler.
+              // The one voxel holding the surface is the surface block; a few
+              // below it are filler.
               id = if by + size >= top {
                 top_id
               } else if top - by <= filler_depth {
@@ -194,53 +215,67 @@ impl Tile {
   }
 }
 
-/// The constants of the world's height range, split off so bricks can be built without the graph.
+/// The constants of the world's height range, split off so bricks can be built
+/// without the graph.
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainParams {
   pub sea_level: i32,
-  pub min_y: i32,
-  pub max_y: i32,
+  pub min_y:     i32,
+  pub max_y:     i32,
 }
 
-/// Densities at noise cell corners, by column and cell row, for the columns of one tile (which
-/// share corners). `NaN` marks a corner not computed yet.
+/// Densities at noise cell corners, by column and cell row, for the columns of
+/// one tile (which share corners). `NaN` marks a corner not computed yet.
 #[derive(Default)]
 struct CornerCache {
   columns: HashMap<(i32, i32), Vec<f64>>,
 }
 
 pub struct Terrain {
-  pub params: TerrainParams,
-  graph: Graph,
-  /// Cheap 2D estimate of the surface shape (no 3D noise), to know where to look.
-  estimate: Root,
+  pub params:      TerrainParams,
+  graph:           Graph,
+  /// Cheap 2D estimate of the surface shape (no 3D noise), to know where to
+  /// look.
+  estimate:        Root,
   /// The same without the jagged peaks, only kept for tests.
-  flat: Root,
+  flat:            Root,
   /// The surface shape with the 3D noise, when the world has one.
-  sloped_cheese: Option<Root>,
-  /// What the game generates from: the sloped cheese with the caves and the world's slides.
-  final_density: Option<Root>,
-  temperature: Root,
-  humidity: Root,
+  sloped_cheese:   Option<Root>,
+  /// What the game generates from: the sloped cheese with the caves and the
+  /// world's slides.
+  final_density:   Option<Root>,
+  temperature:     Root,
+  humidity:        Root,
   continentalness: Root,
-  erosion: Root,
-  depth: Root,
-  weirdness: Root,
-  biomes: BiomeIndex,
+  erosion:         Root,
+  depth:           Root,
+  weirdness:       Root,
+  biomes:          BiomeIndex,
 }
 
 impl Terrain {
-  /// Builds the generator for a world. `config` is the JSON written by `TerrainExport.java`.
+  /// Builds the generator for a world. `config` is the JSON written by
+  /// `TerrainExport.java`.
   pub fn from_config(seed: i64, config: &[u8]) -> Result<Terrain, String> {
-    let cfg: Value = serde_json::from_slice(config).map_err(|e| format!("bad terrain config: {e}"))?;
+    let cfg: Value =
+      serde_json::from_slice(config).map_err(|e| format!("bad terrain config: {e}"))?;
     let obj = cfg.as_object().ok_or("terrain config is not an object")?;
 
     let int = |key: &str| -> Result<i32, String> {
-      obj.get(key).and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| format!("config is missing {key}"))
+      obj
+        .get(key)
+        .and_then(Value::as_i64)
+        .map(|v| v as i32)
+        .ok_or_else(|| format!("config is missing {key}"))
     };
-    let params = TerrainParams { sea_level: int("sea_level")?, min_y: int("min_y")?, max_y: int("min_y")? + int("height")? };
+    let params = TerrainParams {
+      sea_level: int("sea_level")?,
+      min_y:     int("min_y")?,
+      max_y:     int("min_y")? + int("height")?,
+    };
 
-    let functions = obj.get("functions").and_then(Value::as_object).ok_or("config is missing functions")?;
+    let functions =
+      obj.get("functions").and_then(Value::as_object).ok_or("config is missing functions")?;
     let noises = obj.get("noises").and_then(Value::as_object).ok_or("config is missing noises")?;
     let roots = obj.get("roots").and_then(Value::as_object).ok_or("config is missing roots")?;
 
@@ -252,11 +287,15 @@ impl Terrain {
       compiler.root(v).map_err(|e| format!("{name}: {e}"))
     };
 
-    // Older exports only have the smooth density; the jagged one is the better estimate.
+    // Older exports only have the smooth density; the jagged one is the better
+    // estimate.
     let flat = root("initial_density_without_jaggedness")?;
-    let estimate = if roots.contains_key("initial_density") { root("initial_density")? } else { flat };
-    let sloped_cheese = if roots.contains_key("sloped_cheese") { Some(root("sloped_cheese")?) } else { None };
-    let final_density = if roots.contains_key("final_density") { Some(root("final_density")?) } else { None };
+    let estimate =
+      if roots.contains_key("initial_density") { root("initial_density")? } else { flat };
+    let sloped_cheese =
+      if roots.contains_key("sloped_cheese") { Some(root("sloped_cheese")?) } else { None };
+    let final_density =
+      if roots.contains_key("final_density") { Some(root("final_density")?) } else { None };
     let temperature = root("temperature")?;
     let humidity = root("vegetation")?;
     let continentalness = root("continents")?;
@@ -284,16 +323,15 @@ impl Terrain {
     })
   }
 
-  pub fn scratch(&self) -> Scratch {
-    self.graph.scratch()
-  }
+  pub fn scratch(&self) -> Scratch { self.graph.scratch() }
 
   /// The 2D estimate of the density.
   pub fn density(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> f64 {
     self.graph.eval(self.estimate, Point { x, y, z }, s)
   }
 
-  /// The six climate values at a block position, quantized like `Climate.TargetPoint`.
+  /// The six climate values at a block position, quantized like
+  /// `Climate.TargetPoint`.
   pub fn climate(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> [i64; 6] {
     let p = Point { x, y, z };
     let q = |v: f64| ((v as f32) * 10000.0f32) as i64;
@@ -307,25 +345,29 @@ impl Terrain {
     ]
   }
 
-  /// The biome at a block position, as `MultiNoiseBiomeSource.getNoiseBiome` would pick it.
+  /// The biome at a block position, as `MultiNoiseBiomeSource.getNoiseBiome`
+  /// would pick it.
   pub fn biome_at(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> BiomeInfo {
     // Biomes are stored per 4x4x4 blocks and sampled at the cell's corner.
     self.biomes.nearest(self.climate(s, (x >> 2) << 2, (y >> 2) << 2, (z >> 2) << 2))
   }
 
-  /// First air block above the 2D estimate of the terrain at a column. Scans down from the build
-  /// limit in steps (the last one always lands on the world floor, so a step larger than the
-  /// terrain's depth cannot skip it), then bisects the step that crossed the threshold (the
-  /// density only falls with height inside one step, so that is safe).
+  /// First air block above the 2D estimate of the terrain at a column. Scans
+  /// down from the build limit in steps (the last one always lands on the
+  /// world floor, so a step larger than the terrain's depth cannot skip it),
+  /// then bisects the step that crossed the threshold (the density only falls
+  /// with height inside one step, so that is safe).
   fn estimate_top(&self, s: &mut Scratch, x: i32, z: i32) -> Option<i32> {
     let TerrainParams { min_y, max_y, .. } = self.params;
 
-    // Terrain at the very top means this is not a world shaped like the overworld.
+    // Terrain at the very top means this is not a world shaped like the
+    // overworld.
     if self.density(s, x, max_y - 1, z) > SURFACE_THRESHOLD {
       return None;
     }
 
-    let mut above = max_y; // known to be at or below the threshold, or the build limit
+    let mut above = max_y; // known to be at or below the threshold, or the
+                           // build limit
     let mut y = max_y - 1;
     loop {
       if self.density(s, x, y, z) > SURFACE_THRESHOLD {
@@ -349,8 +391,9 @@ impl Terrain {
     }
   }
 
-  /// The density the game generates terrain from, at a noise cell corner: the surface shape under
-  /// the overworld's top and bottom slides (`NoiseRouterData.slideOverworld`).
+  /// The density the game generates terrain from, at a noise cell corner: the
+  /// surface shape under the overworld's top and bottom slides
+  /// (`NoiseRouterData.slideOverworld`).
   fn corner_density(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> f64 {
     let TerrainParams { min_y, max_y, .. } = self.params;
     if let Some(root) = self.final_density {
@@ -369,20 +412,28 @@ impl Terrain {
     0.1171875 + bottom * (d - 0.1171875)
   }
 
-  /// Height of the first air block above the terrain at a column, as the game generates it: the
-  /// density interpolated between the corners of the noise cell around the column, so this agrees
-  /// with `getBaseHeight` apart from caves. `None` if there is no terrain.
+  /// Height of the first air block above the terrain at a column, as the game
+  /// generates it: the density interpolated between the corners of the noise
+  /// cell around the column, so this agrees with `getBaseHeight` apart from
+  /// caves. `None` if there is no terrain.
   pub fn surface_top(&self, s: &mut Scratch, x: i32, z: i32) -> Option<i32> {
     self.surface_top_cached(s, &mut CornerCache::default(), x, z)
   }
 
-  fn surface_top_cached(&self, s: &mut Scratch, cache: &mut CornerCache, x: i32, z: i32) -> Option<i32> {
+  fn surface_top_cached(
+    &self,
+    s: &mut Scratch,
+    cache: &mut CornerCache,
+    x: i32,
+    z: i32,
+  ) -> Option<i32> {
     let TerrainParams { min_y, max_y, .. } = self.params;
     let estimate = self.estimate_top(s, x, z)?;
 
     // Cell rows are aligned to the world, not to the build limit.
     let base = min_y.div_euclid(CELL_H) * CELL_H;
-    let rows = (max_y - base + CELL_H - 1) / CELL_H; // the topmost row sits at or above the limit
+    let rows = (max_y - base + CELL_H - 1) / CELL_H; // the topmost row sits at
+                                                     // or above the limit
 
     let (x0, z0) = (x.div_euclid(CELL_W) * CELL_W, z.div_euclid(CELL_W) * CELL_W);
     let (fx, fz) = ((x - x0) as f64 / CELL_W as f64, (z - z0) as f64 / CELL_W as f64);
@@ -401,7 +452,8 @@ impl Terrain {
       sum
     };
 
-    // Start a margin above the estimate, higher if the density is still positive there.
+    // Start a margin above the estimate, higher if the density is still
+    // positive there.
     let mut top = (((estimate + SEARCH_MARGIN) - base + CELL_H - 1) / CELL_H).clamp(1, rows);
     while density(top) > SURFACE_THRESHOLD {
       if top >= rows {
@@ -414,7 +466,8 @@ impl Terrain {
     for row in (0..top).rev() {
       let lower = density(row);
       if lower > SURFACE_THRESHOLD {
-        // Density is linear in y inside the cell: find the highest block still above the threshold.
+        // Density is linear in y inside the cell: find the highest block still
+        // above the threshold.
         for k in (0..CELL_H).rev() {
           let t = k as f64 / CELL_H as f64;
           if lower + t * (upper - lower) > SURFACE_THRESHOLD {
@@ -429,7 +482,16 @@ impl Terrain {
   }
 
   /// Density at one cell corner, memoized for the tile being sampled.
-  fn corner(&self, s: &mut Scratch, cache: &mut CornerCache, x: i32, z: i32, row: i32, y: i32, rows: i32) -> f64 {
+  fn corner(
+    &self,
+    s: &mut Scratch,
+    cache: &mut CornerCache,
+    x: i32,
+    z: i32,
+    row: i32,
+    y: i32,
+    rows: i32,
+  ) -> f64 {
     let column = cache.columns.entry((x, z)).or_insert_with(|| vec![f64::NAN; rows as usize + 1]);
     let v = column[row as usize];
     if !v.is_nan() {
@@ -440,7 +502,8 @@ impl Terrain {
     v
   }
 
-  /// Evaluates one of the exported root functions by its config name, for tests and debugging.
+  /// Evaluates one of the exported root functions by its config name, for tests
+  /// and debugging.
   pub fn eval_root(&self, name: &str, s: &mut Scratch, x: i32, y: i32, z: i32) -> Option<f64> {
     let root = match name {
       "initial_density_without_jaggedness" => self.flat,
@@ -458,12 +521,14 @@ impl Terrain {
     Some(self.graph.eval(root, Point { x, y, z }, s))
   }
 
-  /// Index and fitness of the nearest biome point to a quantized climate target.
+  /// Index and fitness of the nearest biome point to a quantized climate
+  /// target.
   pub fn nearest_biome(&self, target: [i64; 6]) -> (usize, i64) {
     self.biomes.nearest_index(target)
   }
 
-  /// Samples the surface of the 16 x 16 columns of a level-`level` section column.
+  /// Samples the surface of the 16 x 16 columns of a level-`level` section
+  /// column.
   pub fn sample_tile(&self, s: &mut Scratch, level: u32, sx: i32, sz: i32) -> Tile {
     let mut tile = Tile::empty();
     let mut cache = CornerCache::default();
@@ -496,9 +561,10 @@ impl Terrain {
 }
 
 impl Tile {
-  /// Turns the surface of steep ground into stone in the biomes whose surface rules ask for it, like
-  /// vanilla's `steep` condition: the columns on either side of one (clamped to the tile, as vanilla
-  /// clamps to the chunk) differ by 4 blocks over 2 blocks of run, along either axis.
+  /// Turns the surface of steep ground into stone in the biomes whose surface
+  /// rules ask for it, like vanilla's `steep` condition: the columns on
+  /// either side of one (clamped to the tile, as vanilla clamps to the chunk)
+  /// differ by 4 blocks over 2 blocks of run, along either axis.
   fn expose_cliffs(&mut self, level: u32, steep_biome: &[bool; 256]) {
     let limit = STEEP_SLOPE * 2 * (1i32 << level);
     let mut out = self.surface;
@@ -510,8 +576,13 @@ impl Tile {
         }
 
         let height = |x: usize, z: usize| self.top[z * 16 + x];
-        let pairs = [(height(x.saturating_sub(1), z), height((x + 1).min(15), z)), (height(x, z.saturating_sub(1)), height(x, (z + 1).min(15)))];
-        let steep = pairs.iter().any(|&(a, b)| a != NO_TERRAIN && b != NO_TERRAIN && (a as i32 - b as i32).abs() >= limit);
+        let pairs = [
+          (height(x.saturating_sub(1), z), height((x + 1).min(15), z)),
+          (height(x, z.saturating_sub(1)), height(x, (z + 1).min(15))),
+        ];
+        let steep = pairs.iter().any(|&(a, b)| {
+          a != NO_TERRAIN && b != NO_TERRAIN && (a as i32 - b as i32).abs() >= limit
+        });
         if steep {
           out[col] = Surface::Stone as u8;
         }
