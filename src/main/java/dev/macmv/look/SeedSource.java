@@ -1,6 +1,5 @@
 package dev.macmv.look;
 
-import dev.macmv.look.mixin.MultiNoiseBiomeSourceAccessor;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import net.minecraft.client.Minecraft;
@@ -8,17 +7,11 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.server.level.ServerChunkCache;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
-import net.minecraft.world.level.chunk.ChunkGenerator;
-import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
-import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 
 /**
  * Terrain for the coarse levels, reconstructed from the seed. Singleplayer only: it describes the
@@ -212,31 +205,20 @@ public final class SeedSource implements VoxelSource {
     // The sections of an enumerated source are only asked for during a sweep.
     VoxelWorld.requestSweep();
 
-    IntegratedServer server = mc.getSingleplayerServer();
     ClientLevel client = mc.level;
-    if (server == null || client == null || client.dimension() != Level.OVERWORLD) return;
+    if (client == null || client.dimension() != Level.OVERWORLD) return;
 
-    ServerLevel level = server.getLevel(client.dimension());
-    if (level == null) return;
-    ServerChunkCache cache = level.getChunkSource();
-    ChunkGenerator generator = cache.getGenerator();
-    if (!(generator instanceof NoiseBasedChunkGenerator noise)
-        || !(generator.getBiomeSource() instanceof MultiNoiseBiomeSource biomes)) {
-      return;
-    }
+    IntegratedServer server = mc.getSingleplayerServer();
+    if (server == null) return;
+    WorldDescriptor world = WorldDescriptor.of(server);
+    if (world == null) return;
 
     try {
       NativeLib.load();
-      NoiseGeneratorSettings settings = noise.generatorSettings().value();
-      byte[] config =
-          TerrainExport.export(
-              server.registryAccess(), settings, ((MultiNoiseBiomeSourceAccessor) (Object) biomes).look$parameters());
-      long seed = server.getWorldData().worldGenOptions().seed();
-      handle = NativeLib.terrainCreate(seed, config, Lod.outer(0) + WANT_MARGIN, Integer.getInteger("look.seedThreads", 0));
+      handle = NativeLib.terrainCreate(world.seed(), world.config(), Lod.outer(0) + WANT_MARGIN, Integer.getInteger("look.seedThreads", 0));
       treeBlocks = resolveTreeBlocks(NativeLib.terrainTreeBlocks(handle));
-      LookMod.LOGGER.info("Seed terrain engine started ({} bytes of config, {} tree blocks)", config.length, treeBlocks.length);
+      LookMod.LOGGER.info("Seed terrain engine started ({} bytes of config, {} tree blocks)", world.config().length, treeBlocks.length);
     } catch (RuntimeException | LinkageError e) {
-      // An unusual world (legacy noise, a modded density function): just no predicted terrain.
       LookMod.LOGGER.warn("Predicted terrain is unavailable for this world: {}", e.toString());
       handle = 0;
     }
