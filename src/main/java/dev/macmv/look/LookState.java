@@ -8,7 +8,7 @@ import net.minecraft.network.chat.Component;
  *
  * <ul>
  *   <li>Toggle renderer: voxel renderer or vanilla's chunk renderer.
- *   <li>Cycle debug view: off, step-count heatmap of the voxel pass, then pyramid levels tinted.
+ *   <li>Cycle debug view: off, step-count heatmap of the voxel pass, then pyramid levels tinted, then no mipmaps, then unlit.
  *       Timing stats are always on screen.
  *   <li>Reload: throw away all voxel data and rebuild it from the loaded chunks.
  * </ul>
@@ -18,10 +18,10 @@ import net.minecraft.network.chat.Component;
  */
 public final class LookState {
   public static boolean voxelEnabled = true;
-  /** 0 off, 1 step-count heatmap, 2 pyramid level tint. */
+  /** 0 off, 1 step-count heatmap, 2 pyramid level tint, 3 no mipmaps, 4 unlit (albedo only). */
   public static int debug = 0;
 
-  private static final String[] DEBUG_NAMES = {"off", "step heatmap", "LOD levels"};
+  private static final String[] DEBUG_NAMES = {"off", "step heatmap", "LOD levels", "no mipmaps", "unlit"};
 
   private LookState() {}
 

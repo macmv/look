@@ -14,7 +14,7 @@ uniform int uLevels;       // levels in the LOD pyramid
 uniform float uBase;       // blocks covered by level 0 (horizontally); level k covers up to uBase * 2^k
 uniform ivec3 uLevel[MAX_LEVELS];  // per level: lowest section y, section rows, first row in uIndirection
 uniform float uMaxDist;
-uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level
+uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
 uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
 uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
@@ -195,7 +195,7 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     if (b.w < 0.5) break;
 
     float texelsPerBlock = max(length(a.zw * uAtlasSize), length(b.xy * uAtlasSize));
-    float lod = clamp(log2(max(t * uPixelAngle * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
+    float lod = uDebug == 3 ? 0.0 : clamp(log2(max(t * uPixelAngle * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
     // Stay half a texel of the chosen mip inside the sprite, or the bilinear filter at a block's edge
     // pulls in the neighboring sprite of the atlas. The tiling puts an edge every block, so it shows.
     float margin = clamp(0.5 * exp2(lod) / texelsPerBlock, 0.001, 0.5);
@@ -405,6 +405,7 @@ void main() {
   vec3 lit = vec3(curved.x * uSkyDarken) + blockRgb;
   lit *= shade * ao;
   lit = min(lit, vec3(1.0));
+  if (uDebug == 4) lit = vec3(1.0);
 
   if (uDebug == 2) {
     vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
