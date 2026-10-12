@@ -50,6 +50,10 @@ that (`HF_LEVELS`) are a ray-marched heightfield (`HeightField`) fed by tiles fr
   pushes (`invalidate`) and/or is pulled (`enumerated`); `fill` returns a count, `UNAVAILABLE`, or
   `PENDING`. Implementations: `WorldSource` (loaded client chunks), `SeedSource` (generated from
   the seed via native), `HillsSource`, and `LayeredSource` (real chunks over generated terrain).
+- `WorldDescriptor` (seed plus `TerrainExport` config) is how `SeedSource` learns the world. In
+  singleplayer it is read from the integrated server; in multiplayer the server half (`LookCommon`,
+  common code, must not touch client classes) sends it as a `WorldDescriptorPayload` on join and
+  `ClientWorldDescriptor` receives it. The client regenerates terrain locally; nothing is cached.
 - `BlockClassifier`, `TintMap`, `LightMap` turn block ids/models/biomes/light into the u16 voxel ids
   and tables the shader reads. `TerrainExport` serializes the vanilla worldgen config for Rust.
 - `docs/LOADING.md` documents the tile / section / slot / GPU-visibility life cycles and what a
