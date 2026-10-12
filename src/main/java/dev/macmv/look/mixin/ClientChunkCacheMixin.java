@@ -1,11 +1,14 @@
 package dev.macmv.look.mixin;
 
+import dev.macmv.look.LightMap;
 import dev.macmv.look.WorldSource;
 import java.util.function.Consumer;
 import net.minecraft.client.multiplayer.ClientChunkCache;
+import net.minecraft.core.SectionPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.ChunkPos;
 import org.spongepowered.asm.mixin.Mixin;
@@ -20,6 +23,12 @@ public abstract class ClientChunkCacheMixin {
   @Inject(method = "drop", at = @At("HEAD"))
   private void look$drop(ChunkPos pos, CallbackInfo ci) {
     WorldSource.INSTANCE.unloadChunk(pos);
+  }
+
+  /** Vanilla's light engine changed a section: refresh our copy of its light. */
+  @Inject(method = "onLightUpdate", at = @At("HEAD"))
+  private void look$light(LightLayer layer, SectionPos pos, CallbackInfo ci) {
+    LightMap.mark(pos.x(), pos.y(), pos.z());
   }
 
   /** Hands the voxel world the raw section bytes of a chunk packet before vanilla consumes them. */

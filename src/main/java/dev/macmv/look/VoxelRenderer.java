@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.nio.FloatBuffer;
 import java.nio.charset.StandardCharsets;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL33C;
 import org.lwjgl.system.MemoryStack;
@@ -33,6 +34,8 @@ public final class VoxelRenderer {
   private static int uMaxLod;
   private static int uPixelAngle;
   private static int uMinY;
+  private static int uSkyDarken;
+  private static int uAmbientLight;
 
   private VoxelRenderer() {}
 
@@ -98,6 +101,9 @@ public final class VoxelRenderer {
     VoxelWorld.bind();
 
     GL33C.glUniform1i(uDebug, LookState.debug);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLightIndirection"), LightMap.UNIT_INDIRECTION);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLight"), LightMap.UNIT_LIGHT);
+    uploadLighting();
 
     RenderStats.beginGpu();
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
@@ -109,6 +115,24 @@ public final class VoxelRenderer {
     GlStateManager._glUseProgram(0);
 
     RenderStats.endVoxelFrame();
+  }
+
+  /** Sky darkening for the time of day and weather, and the dimension's ambient light. */
+  private static void uploadLighting() {
+    ClientLevel level = Minecraft.getInstance().level;
+    float partial = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
+
+    float skyDarken = 1f;
+    float ambient = 0f;
+    if (level != null) {
+      ambient = level.dimensionType().ambientLight();
+      if (level.dimensionType().hasSkyLight() && !level.dimensionType().hasCeiling()) {
+        skyDarken = level.getSkyDarken(partial);
+      }
+    }
+
+    GL33C.glUniform1f(uSkyDarken, skyDarken);
+    GL33C.glUniform1f(uAmbientLight, ambient);
   }
 
   private static void init() {
@@ -139,6 +163,8 @@ public final class VoxelRenderer {
     uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");
     uMaxLod = GL33C.glGetUniformLocation(program, "uMaxLod");
     uPixelAngle = GL33C.glGetUniformLocation(program, "uPixelAngle");
+    uSkyDarken = GL33C.glGetUniformLocation(program, "uSkyDarken");
+    uAmbientLight = GL33C.glGetUniformLocation(program, "uAmbientLight");
     uMinY = GL33C.glGetUniformLocation(program, "uMinY");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.

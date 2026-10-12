@@ -26,6 +26,10 @@ uniform vec2 uAtlasSize;          // atlas size in texels
 uniform float uMaxLod;            // highest mip level of the atlas
 uniform int uMinY;               // lowest block y of the level, for the tint's lower biome
 uniform float uPixelAngle;        // radians covered by one pixel
+uniform usampler3D uLightIndirection;  // level 0 section -> light slot + 1, 0 when unknown, see LightMap
+uniform usamplerBuffer uLight;    // 4096 u8 per slot: sky light << 4 | block light
+uniform float uSkyDarken;         // vanilla's sky brightness for the time of day and weather, 0.2..1
+uniform float uAmbientLight;      // dimension ambient light, lifts the darkest light levels
 
 in vec2 vNdc;
 out vec4 fragColor;
@@ -64,7 +68,18 @@ bool occludes(int lvl, ivec3 vc) {
   ivec3 l = vc & 15;
   uint id = texelFetch(uBricks, int(slot - 1u) * 4096 + (l.y * 16 + l.z) * 16 + l.x).r;
   if (id == 0u) return false;
-  return (texelFetch(uColors, int(id)).r >> 24) != 0u;
+  return ((texelFetch(uColors, int(id)).r >> 24) & 1u) != 0u;
+}
+
+// Sky and block light (0..15) at a block, level 0. Unknown sections count as open sky.
+vec2 lightAt(ivec3 b) {
+  ivec3 sec = b >> 4;
+  if (sec.y < uLevel[0].x || sec.y >= uLevel[0].x + uLevel[0].y) return vec2(15.0, 0.0);
+  uint slot = texelFetch(uLightIndirection, ivec3(sec.x & (uGrid.x - 1), sec.y - uLevel[0].x, sec.z & (uGrid.z - 1)), 0).r;
+  if (slot == 0u) return vec2(15.0, 0.0);
+  ivec3 l = b & 15;
+  uint v = texelFetch(uLight, int(slot - 1u) * 4096 + (l.y * 16 + l.z) * 16 + l.x).r;
+  return vec2(float(v >> 4), float(v & 15u));
 }
 
 // Vanilla's corner rule: 0 (darkest) to 3 (open).
@@ -77,7 +92,7 @@ float cornerAO(bool side1, bool side2, bool corner) {
 // `axis`. `p` is the hit point inside that voxel (0..1). Corner values come from the 8 voxels around
 // the face in the layer in front of it, interpolated like vanilla smooth lighting, with the quad
 // split along the diagonal that keeps the gradient from showing a seam.
-float ambientOcclusion(ivec3 voxel, int axis, vec3 d, vec3 p) {
+float ambientOcclusion(ivec3 voxel, int axis, vec3 d, vec3 p, out vec2 light) {
   ivec3 n = ivec3(0);
   n[axis] = d[axis] > 0.0 ? -1 : 1;
   ivec3 f = voxel + n;
@@ -89,19 +104,39 @@ float ambientOcclusion(ivec3 voxel, int axis, vec3 d, vec3 p) {
 
   bool um = occludes(0, f - eu), up = occludes(0, f + eu);
   bool vm = occludes(0, f - ev), vp = occludes(0, f + ev);
-  float a00 = cornerAO(um, vm, occludes(0, f - eu - ev));
-  float a10 = cornerAO(up, vm, occludes(0, f + eu - ev));
-  float a01 = cornerAO(um, vp, occludes(0, f - eu + ev));
-  float a11 = cornerAO(up, vp, occludes(0, f + eu + ev));
+  bool c00 = occludes(0, f - eu - ev), c10 = occludes(0, f + eu - ev);
+  bool c01 = occludes(0, f - eu + ev), c11 = occludes(0, f + eu + ev);
+  float a00 = cornerAO(um, vm, c00);
+  float a10 = cornerAO(up, vm, c10);
+  float a01 = cornerAO(um, vp, c01);
+  float a11 = cornerAO(up, vp, c11);
+
+  // Light at each corner: the average of the open voxels around it, like vanilla's smooth lighting.
+  vec2 l0 = lightAt(f);
+  vec2 lum = um ? vec2(0.0) : lightAt(f - eu), lup = up ? vec2(0.0) : lightAt(f + eu);
+  vec2 lvm = vm ? vec2(0.0) : lightAt(f - ev), lvp = vp ? vec2(0.0) : lightAt(f + ev);
+  vec2 l00 = (um && vm) || c00 ? vec2(0.0) : lightAt(f - eu - ev);
+  vec2 l10 = (up && vm) || c10 ? vec2(0.0) : lightAt(f + eu - ev);
+  vec2 l01 = (um && vp) || c01 ? vec2(0.0) : lightAt(f - eu + ev);
+  vec2 l11 = (up && vp) || c11 ? vec2(0.0) : lightAt(f + eu + ev);
+  vec2 k00 = (l0 + lum + lvm + l00) / (1.0 + float(!um) + float(!vm) + float(!((um && vm) || c00)));
+  vec2 k10 = (l0 + lup + lvm + l10) / (1.0 + float(!up) + float(!vm) + float(!((up && vm) || c10)));
+  vec2 k01 = (l0 + lum + lvp + l01) / (1.0 + float(!um) + float(!vp) + float(!((um && vp) || c01)));
+  vec2 k11 = (l0 + lup + lvp + l11) / (1.0 + float(!up) + float(!vp) + float(!((up && vp) || c11)));
 
   float u = uv.x, v = uv.y;
   float ao;
   if (a00 + a11 > a01 + a10) {
     ao = u >= v ? a00 + u * (a10 - a00) + v * (a11 - a10)
                 : a00 + v * (a01 - a00) + u * (a11 - a01);
+    light = u >= v ? k00 + u * (k10 - k00) + v * (k11 - k10)
+                   : k00 + v * (k01 - k00) + u * (k11 - k01);
   } else {
-    ao = u + v <= 1.0 ? a00 + u * (a10 - a00) + v * (a01 - a00)
-                      : a11 + (1.0 - u) * (a01 - a11) + (1.0 - v) * (a10 - a11);
+    bool low = u + v <= 1.0;
+    ao = low ? a00 + u * (a10 - a00) + v * (a01 - a00)
+             : a11 + (1.0 - u) * (a01 - a11) + (1.0 - v) * (a10 - a11);
+    light = low ? k00 + u * (k10 - k00) + v * (k01 - k00)
+                : k11 + (1.0 - u) * (k01 - k11) + (1.0 - v) * (k10 - k11);
   }
   return 0.55 + 0.15 * ao;
 }
@@ -342,17 +377,32 @@ void main() {
   // Flat per-face shading, same factors vanilla uses for its directional light.
   float shade = axis == 1 ? (d.y < 0.0 ? 1.0 : 0.5) : (axis == 0 ? 0.6 : 0.8);
 
+  // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
+  vec2 light = vec2(1.0, 0.0);
+  float ao = 1.0;
   if (level == 0) {
     // Fade out over the second half of level 0, where the LOD switch happens.
     float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
     vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
-    shade *= mix(1.0, ambientOcclusion(voxel, axis, d, p), fade);
+    vec2 l;
+    float a = ambientOcclusion(voxel, axis, d, p, l);
+    ao = mix(1.0, a, fade);
+    light = mix(vec2(1.0, 0.0), l / 15.0, fade);
   }
+
+  // Vanilla's light curve, lifted by the dimension's ambient light.
+  vec2 curved = mix(light / (4.0 - 3.0 * light), vec2(1.0), uAmbientLight);
+  float b = curved.y;
+  vec3 blockRgb = vec3(b, b * ((b * 0.6 + 0.4) * 0.6 + 0.4), b * ((b * b * 0.6 + 0.4) * 0.6 + 0.4));
+
+  vec3 lit = vec3(curved.x * uSkyDarken) + blockRgb;
+  lit *= shade * ao;
+  lit = min(lit, vec3(1.0));
 
   if (uDebug == 2) {
     vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
     albedo = mix(albedo, tint, 0.6);
   }
 
-  fragColor = vec4(albedo * shade, 1.0);
+  fragColor = vec4(albedo * lit, 1.0);
 }

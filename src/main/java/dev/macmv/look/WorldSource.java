@@ -62,6 +62,7 @@ public final class WorldSource implements VoxelSource {
   public void ingestWire(int cx, int cz, FriendlyByteBuf buf) {
     if (!VoxelWorld.trackLevel()) return;
     TintMap.invalidate(cx, cz);
+    LightMap.markColumn(cx, cz);
     WireChunk chunk = WireChunk.parse(new FriendlyByteBuf(buf.duplicate()), VoxelWorld.sectionCount());
     if (chunk == null) wire.remove(ChunkPos.asLong(cx, cz));
     else wire.put(ChunkPos.asLong(cx, cz), chunk);
@@ -73,6 +74,7 @@ public final class WorldSource implements VoxelSource {
   public void unloadChunk(ChunkPos pos) {
     wire.remove(pos.toLong());
     TintMap.invalidate(pos.x, pos.z);
+    LightMap.dropColumn(pos.x, pos.z);
     VoxelWorld.dropColumn(0, pos.x, pos.z);
   }
 
