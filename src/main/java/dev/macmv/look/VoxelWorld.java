@@ -787,6 +787,7 @@ public final class VoxelWorld {
 
     // 1. The bookkeeping alone.
     bad.addAll(table.checkInvariants());
+    bad.addAll(HeightField.checkInvariants());
 
     // 2. States against the table: a LOADED section owns its cell, nobody else owns a cell.
     int loaded = 0;

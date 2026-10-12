@@ -51,18 +51,22 @@ public final class HeightField {
   private static final int JUMP_TILES = 24;
   private static final long NO_KEY = Long.MIN_VALUE;
 
-  private static final class Level {
+  static final class Level {
     /** Per window cell: the key of the tile held there, or {@link #NO_KEY}. */
     final long[] resident = new long[WINDOW_TILES * WINDOW_TILES];
     final long[] requested = new long[WINDOW_TILES * WINDOW_TILES];
     final int[] requestedAt = new int[WINDOW_TILES * WINDOW_TILES];
-    /** Whether the cell's maximum currently lets rays in. */
-    final boolean[] shown = new boolean[WINDOW_TILES * WINDOW_TILES];
+    final TileCell[] state = new TileCell[WINDOW_TILES * WINDOW_TILES];
+    /** The maximum the GPU holds for each cell once the queued uploads and hides have been flushed. */
+    final short[] gpuMax = new short[WINDOW_TILES * WINDOW_TILES];
     int cursor;
     int camTileX = Integer.MIN_VALUE;
     int camTileZ;
     /** The GPU still shows tiles of before a jump or a world change: reset its maxima to NONE. */
     boolean clearGpu = true;
+    /** Illegal {@link TileCell} transitions seen, and the first one. */
+    int violations;
+    String firstViolation;
 
     Level() {
       reset();
@@ -71,14 +75,52 @@ public final class HeightField {
     void reset() {
       Arrays.fill(resident, NO_KEY);
       Arrays.fill(requested, NO_KEY);
-      Arrays.fill(shown, false);
+      Arrays.fill(state, TileCell.EMPTY);
+      Arrays.fill(gpuMax, NONE);
       cursor = 0;
       camTileX = Integer.MIN_VALUE;
       clearGpu = true;
     }
+
+    /** The only way a cell changes state. An illegal edge is counted, not fatal: it is a glitch, not a crash. */
+    void move(int cell, TileCell to) {
+      TileCell from = state[cell];
+      if (!from.canGo(to) && violations++ == 0) firstViolation = "cell " + cell + ": " + from + " -> " + to;
+      state[cell] = to;
+    }
+
+    /**
+     * What is wrong with the cells, empty if all is well. Each state implies what the cell holds, and
+     * after the queued GPU writes land the GPU shows a cell exactly when it is SHOWN.
+     */
+    List<String> checkInvariants(List<Upload> pendingUploads, List<int[]> pendingHides, int level) {
+      List<String> bad = new ArrayList<>();
+      if (violations > 0) bad.add(violations + " illegal transitions, first " + firstViolation);
+
+      short[] gpu = gpuMax.clone();
+      if (clearGpu) Arrays.fill(gpu, NONE);
+      // Mirror flush(): hides first, then uploads, in queue order.
+      for (int[] h : pendingHides) if (h[0] == level) gpu[h[1]] = NONE;
+      for (Upload u : pendingUploads) if (u.level == level) gpu[u.cellZ * WINDOW_TILES + u.cellX] = u.max;
+
+      int held = 0;
+      for (int cell = 0; cell < state.length && bad.size() < 8; cell++) {
+        TileCell s = state[cell];
+        if (s.holdsTile() != (resident[cell] != NO_KEY) && s != TileCell.REQUESTED) {
+          bad.add("cell " + cell + " is " + s + " but resident key is " + resident[cell]);
+        }
+        if (s == TileCell.EMPTY && requested[cell] != NO_KEY) bad.add("cell " + cell + " is EMPTY but requested " + requested[cell]);
+        if (s == TileCell.REQUESTED && requested[cell] == NO_KEY) bad.add("cell " + cell + " is REQUESTED but asked for nothing");
+        if (resident[cell] != NO_KEY) held++;
+        boolean visible = gpu[cell] != NONE;
+        if (visible != (s == TileCell.SHOWN)) bad.add("cell " + cell + " is " + s + " but the GPU maximum is " + gpu[cell]);
+      }
+      if (held != residentCount[level]) bad.add("holds " + held + " tiles but counted " + residentCount[level]);
+      return bad;
+    }
   }
 
-  private record Upload(int level, int cellX, int cellZ, byte[] data, short max) {}
+  record Upload(int level, int cellX, int cellZ, byte[] data, short max) {}
 
   private static final Level[] levels = new Level[LEVELS];
   private static final List<Upload> uploads = new ArrayList<>();
@@ -125,6 +167,15 @@ public final class HeightField {
     return heightTex != 0;
   }
 
+  /** Checks every level's cells against their states and the GPU writes queued; empty if all is well. */
+  public static List<String> checkInvariants() {
+    List<String> bad = new ArrayList<>();
+    for (int i = 0; i < LEVELS; i++) {
+      for (String line : levels[i].checkInvariants(uploads, hides, i)) bad.add("far level " + i + ": " + line);
+    }
+    return bad;
+  }
+
   /** A line for the debug HUD: tiles held per level. */
   public static String statsLine() {
     return "far tiles: " + Arrays.toString(residentCount);
@@ -141,6 +192,7 @@ public final class HeightField {
     int requests = 0;
 
     for (int i = 0; i < LEVELS; i++) {
+      final int level = i;
       Level l = levels[i];
       int j = engineLevel(i);
       int tileBlocks = TILE << j;
@@ -152,7 +204,6 @@ public final class HeightField {
           || Math.abs(cz - l.camTileZ) > JUMP_TILES) {
         // Teleported (or just started): none of the window is where it was.
         l.reset();
-        final int level = i;
         uploads.removeIf(u -> u.level == level);
         hides.removeIf(h -> h[0] == level);
         residentCount[i] = 0;
@@ -180,10 +231,13 @@ public final class HeightField {
         if (l.resident[cell] == key) continue;
 
         // What the cell holds is another tile's: keep rays out of it until the right one arrives.
-        if (l.shown[cell]) {
-          l.shown[cell] = false;
+        if (l.state[cell] == TileCell.SHOWN) {
+          // An upload of the old tile may still be queued; it would show the cell after the hide.
+          final int hidden = cell;
+          uploads.removeIf(u -> u.level == level && u.cellZ * WINDOW_TILES + u.cellX == hidden);
           hides.add(new int[] {i, cell});
         }
+        if (l.state[cell] == TileCell.SHOWN || l.state[cell] == TileCell.BLANK) l.move(cell, TileCell.STALE);
 
         if (l.requested[cell] == key && frame - l.requestedAt[cell] < RETRY_FRAMES) continue;
         if (requests >= REQUESTS_PER_FRAME) {
@@ -192,6 +246,7 @@ public final class HeightField {
           break;
         }
         NativeLib.terrainHeightfieldRequest(handle, j, sx, sz);
+        l.move(cell, TileCell.REQUESTED);
         l.requested[cell] = key;
         l.requestedAt[cell] = frame;
         requests++;
@@ -227,7 +282,7 @@ public final class HeightField {
 
     if (l.resident[cell] == NO_KEY) residentCount[i]++;
     l.resident[cell] = pack(sx, sz);
-    l.shown[cell] = max != NONE;
+    l.move(cell, max != NONE ? TileCell.SHOWN : TileCell.BLANK);
   }
 
   private static long pack(int sx, int sz) {
@@ -253,12 +308,14 @@ public final class HeightField {
     for (int i = 0; i < LEVELS; i++) {
       if (levels[i].clearGpu) {
         levels[i].clearGpu = false;
+        Arrays.fill(levels[i].gpuMax, NONE);
         hideLayer(i);
       }
     }
 
     for (int[] h : hides) {
       writeTileMax(h[0], h[1] % WINDOW_TILES, h[1] / WINDOW_TILES, NONE);
+      levels[h[0]].gpuMax[h[1]] = NONE;
     }
     hides.clear();
 
@@ -279,6 +336,7 @@ public final class HeightField {
           GL33C.GL_TEXTURE_2D_ARRAY, 0, u.cellX * TILE, u.cellZ * TILE, u.level, TILE, TILE, 1,
           GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, attrs);
       writeTileMax(u.level, u.cellX, u.cellZ, u.max);
+      levels[u.level].gpuMax[u.cellZ * WINDOW_TILES + u.cellX] = u.max;
     }
     uploads.clear();
     GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);
