@@ -3,12 +3,14 @@
   "minVersion": "0.8",
   "package": "dev.macmv.look.mixin",
   "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "MultiNoiseBiomeSourceAccessor"
+  ],
   "client": [
     "ClientChunkCacheMixin",
     "GuiMixin",
     "LevelRendererMixin",
     "LiquidBlockRendererMixin",
-    "MultiNoiseBiomeSourceAccessor",
     "OptionsMixin",
     "WeightedBakedModelAccessor"
   ],

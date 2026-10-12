@@ -5,14 +5,15 @@
   "name": "Look",
   "description": "Replaces the chunk renderer with a voxel raycaster.",
   "license": "MIT",
-  "environment": "client",
+  "environment": "*",
   "entrypoints": {
+    "main": ["dev.macmv.look.LookCommon"],
     "client": ["dev.macmv.look.LookMod"]
   },
   "mixins": [
     {
       "config": "look.mixins.json",
-      "environment": "client"
+      "environment": "*"
     }
   ],
   "depends": {

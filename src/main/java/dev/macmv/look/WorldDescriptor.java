@@ -39,7 +39,7 @@ public record WorldDescriptor(long seed, byte[] config) {
       return new WorldDescriptor(server.getWorldData().worldGenOptions().seed(), config);
     } catch (RuntimeException e) {
       // An unusual world (legacy noise, a modded density function): just no predicted terrain.
-      LookMod.LOGGER.warn("Predicted terrain is unavailable for this world: {}", e.toString());
+      LookCommon.LOGGER.warn("Predicted terrain is unavailable for this world: {}", e.toString());
       return null;
     }
   }
