@@ -162,6 +162,12 @@ public final class VoxelWorld {
 
   // Vanilla's block atlas, re-queried whenever resources reload.
   private static Object atlasMarker;
+  /**
+   * Sampler object for the atlas unit. Vanilla flips the atlas texture's min filter between NEAREST
+   * and NEAREST_MIPMAP_LINEAR from frame to frame; with NEAREST, textureLod ignores the level, so
+   * far blocks flickered between sharp and blurred. A sampler overrides the texture's own state.
+   */
+  private static int atlasSampler;
   private static float atlasWidth = 1;
   private static float atlasHeight = 1;
   private static int atlasMaxLevel;
@@ -643,6 +649,15 @@ public final class VoxelWorld {
     // Units above vanilla's cached range, so binding straight through GL cannot desync its cache.
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_ATLAS);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_2D, atlasId());
+    if (atlasSampler == 0) {
+      atlasSampler = GL33C.glGenSamplers();
+      GL33C.glSamplerParameteri(atlasSampler, GL33C.GL_TEXTURE_MIN_FILTER, GL33C.GL_NEAREST_MIPMAP_LINEAR);
+      GL33C.glSamplerParameteri(atlasSampler, GL33C.GL_TEXTURE_MAG_FILTER, GL33C.GL_NEAREST);
+      GL33C.glSamplerParameteri(atlasSampler, GL33C.GL_TEXTURE_WRAP_S, GL33C.GL_CLAMP_TO_EDGE);
+      GL33C.glSamplerParameteri(atlasSampler, GL33C.GL_TEXTURE_WRAP_T, GL33C.GL_CLAMP_TO_EDGE);
+    }
+    GL33C.glSamplerParameterf(atlasSampler, GL33C.GL_TEXTURE_MAX_LOD, atlasMaxLevel);
+    GL33C.glBindSampler(UNIT_ATLAS, atlasSampler);
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TINT);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, TintMap.texture());
     LightMap.bind();
