@@ -1,5 +1,6 @@
 package dev.macmv.look;
 
+import dev.macmv.look.net.ClientWorldDescriptor;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import net.minecraft.client.Minecraft;
@@ -14,10 +15,11 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 
 /**
- * Terrain for the coarse levels, reconstructed from the seed. Singleplayer only: it describes the
- * integrated server's overworld noise generator to the native engine (see {@link TerrainExport}),
- * which samples it, one column per voxel, on its own threads, so it needs nothing from the network
- * and works arbitrarily far from the player.
+ * Terrain for the coarse levels, reconstructed from the seed. It describes the overworld noise
+ * generator to the native engine (see {@link WorldDescriptor}), from the integrated server in
+ * singleplayer or from what the server sent on joining. The engine samples it, one column per
+ * voxel, on its own threads, so it needs no terrain from the network and works arbitrarily far from
+ * the player.
  *
  * <p>All the work is in {@code native/} (see {@code terrain.rs} for what the prediction is and how
  * good it is, within a fraction of a block of vanilla's surface on average, caves included, and {@code engine.rs} for the
@@ -57,7 +59,7 @@ public final class SeedSource implements VoxelSource {
 
   private SeedSource() {}
 
-  /** Whether there is a generator to sample (singleplayer, overworld, noise based). */
+  /** Whether there is a generator to sample (overworld, noise based, and described to us). */
   public boolean available() {
     return handle != 0;
   }
@@ -201,16 +203,21 @@ public final class SeedSource implements VoxelSource {
   }
 
   private void resolve(Minecraft mc) {
+    ClientLevel client = mc.level;
+    if (client == null || client.dimension() != Level.OVERWORLD) {
+      resolved = true;
+      return;
+    }
+
+    // Singleplayer reads the generator directly. Otherwise the server describes it to us when we
+    // join, a moment after the level exists; keep asking until then (forever, if it lacks this mod).
+    IntegratedServer server = mc.getSingleplayerServer();
+    WorldDescriptor world = server != null ? WorldDescriptor.of(server) : ClientWorldDescriptor.received();
+    if (world == null && server == null) return;
+
     resolved = true;
     // The sections of an enumerated source are only asked for during a sweep.
     VoxelWorld.requestSweep();
-
-    ClientLevel client = mc.level;
-    if (client == null || client.dimension() != Level.OVERWORLD) return;
-
-    IntegratedServer server = mc.getSingleplayerServer();
-    if (server == null) return;
-    WorldDescriptor world = WorldDescriptor.of(server);
     if (world == null) return;
 
     try {
