@@ -66,6 +66,8 @@ processResources {
 
 test {
   useJUnitPlatform()
+  // The heightfield scene builds a few hundred MB of texture data.
+  maxHeapSize = '3g'
 
   // The render tests need a GL context: `xvfb-run -a ./gradlew test` on a machine without a display.
   // -PupdateGolden rewrites the checked-in images instead of comparing against them.

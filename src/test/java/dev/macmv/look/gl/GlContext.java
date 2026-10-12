@@ -23,6 +23,7 @@ import org.lwjgl.opengl.GL33C;
  * (Mesa's llvmpipe gives software GL 4.x there).
  */
 final class GlContext implements AutoCloseable {
+  /** Size of the framebuffer; a render may use any part of it. */
   final int width;
   final int height;
   private final long window;
@@ -85,8 +86,14 @@ final class GlContext implements AutoCloseable {
 
   /** Clears to {@code sky}, runs the raycast pass and reads the result back (top row first). */
   BufferedImage render(VoxelRenderer.Frame frame, TestScene scene, float[] sky) {
+    return render(frame, scene, sky, width, height);
+  }
+
+  /** Same, at {@code w} x {@code h} pixels, which must fit in the framebuffer. */
+  BufferedImage render(VoxelRenderer.Frame frame, TestScene scene, float[] sky, int w, int h) {
+    if (w > width || h > height) throw new IllegalArgumentException("larger than the framebuffer");
     GL33C.glBindFramebuffer(GL33C.GL_FRAMEBUFFER, fbo);
-    GL33C.glViewport(0, 0, width, height);
+    GL33C.glViewport(0, 0, w, h);
     GL33C.glColorMask(true, true, true, true);
     GL33C.glDepthMask(true);
     GL33C.glClearColor(sky[0], sky[1], sky[2], 1f);
@@ -100,13 +107,13 @@ final class GlContext implements AutoCloseable {
     int err = GL33C.glGetError();
     if (err != 0) throw new IllegalStateException("GL error after draw: 0x" + Integer.toHexString(err));
 
-    ByteBuffer px = BufferUtils.createByteBuffer(width * height * 4);
-    GL33C.glReadPixels(0, 0, width, height, GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, px);
+    ByteBuffer px = BufferUtils.createByteBuffer(w * h * 4);
+    GL33C.glReadPixels(0, 0, w, h, GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, px);
 
-    BufferedImage img = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        int i = ((height - 1 - y) * width + x) * 4;
+    BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+    for (int y = 0; y < h; y++) {
+      for (int x = 0; x < w; x++) {
+        int i = ((h - 1 - y) * w + x) * 4;
         int r = px.get(i) & 255, g = px.get(i + 1) & 255, b = px.get(i + 2) & 255;
         img.setRGB(x, y, r << 16 | g << 8 | b);
       }
