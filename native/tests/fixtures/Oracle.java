@@ -35,7 +35,11 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
+import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSourceParameterLists;
+import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.DensityFunction;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
 import net.minecraft.world.level.levelgen.NoiseRouter;
@@ -44,29 +48,21 @@ import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
 import net.minecraft.world.level.levelgen.synth.NormalNoise;
 
 public class Oracle {
-  // The surface search, exactly as the native side does it.
-  static final double THRESHOLD = 0.0;
-  static final int BIAS = 7;
-
-  static Integer surfaceTop(DensityFunction d, int x, int z, int step, int minY, int maxY) {
-    if (d.compute(new DensityFunction.SinglePointContext(x, maxY - 1, z)) > THRESHOLD) return null;
-    int above = maxY;
-    int y = maxY - 1;
-    while (true) {
-      if (d.compute(new DensityFunction.SinglePointContext(x, y, z)) > THRESHOLD) {
-        int solid = y;
-        int air = above;
-        while (air - solid > 1) {
-          int mid = (solid + air) >> 1;
-          if (d.compute(new DensityFunction.SinglePointContext(x, mid, z)) > THRESHOLD) solid = mid;
-          else air = mid;
-        }
-        return Math.min(solid + 1 + BIAS, maxY);
-      }
-      if (y <= minY) return null;
-      above = y;
-      y = Math.max(y - step, minY);
+  /** A copy of a record with one component replaced, for swapping the router's final density. */
+  @SuppressWarnings("unchecked")
+  static <T extends Record> T with(T record, String component, Object value) throws Exception {
+    var comps = record.getClass().getRecordComponents();
+    Object[] args = new Object[comps.length];
+    Class<?>[] types = new Class<?>[comps.length];
+    for (int i = 0; i < comps.length; i++) {
+      var m = comps[i].getAccessor();
+      m.setAccessible(true);
+      args[i] = comps[i].getName().equals(component) ? value : m.invoke(record);
+      types[i] = comps[i].getType();
     }
+    var ctor = record.getClass().getDeclaredConstructor(types);
+    ctor.setAccessible(true);
+    return (T) ctor.newInstance(args);
   }
 
   static JsonArray longs(long... v) {
@@ -198,22 +194,44 @@ public class Oracle {
     }
     root.add("climate", climate);
 
-    // The surface search.
-    JsonArray surface = new JsonArray();
     int minY = settings.noiseSettings().minY();
     int maxY = minY + settings.noiseSettings().height();
-    for (int i = 0; i < 300; i++) {
-      int x = rnd.nextInt(60000) - 30000, z = rnd.nextInt(60000) - 30000;
-      int step = i % 3 == 0 ? 16 : i % 3 == 1 ? 32 : 128;
+
+    // The sloped cheese (surface shape with the 3D noise), wired like the game wires the router, by
+    // making it the final density of a copy of the settings.
+    DensityFunction sloped = new net.minecraft.world.level.levelgen.DensityFunctions.HolderHolder(
+        lookup.lookupOrThrow(Registries.DENSITY_FUNCTION)
+            .getOrThrow(ResourceKey.create(Registries.DENSITY_FUNCTION, ResourceLocation.parse("minecraft:overworld/sloped_cheese"))));
+    NoiseGeneratorSettings slopedSettings = with(settings, "noiseRouter", with(settings.noiseRouter(), "finalDensity", sloped));
+    DensityFunction slopedWired = RandomState.create(slopedSettings, lookup.lookupOrThrow(Registries.NOISE), seed).router().finalDensity();
+    JsonArray slopedValues = new JsonArray();
+    for (int i = 0; i < 400; i++) {
+      int x = rnd.nextInt(40000) - 20000, y = rnd.nextInt(384) - 64, z = rnd.nextInt(40000) - 20000;
+      JsonObject o = new JsonObject();
+      o.addProperty("root", "sloped_cheese");
+      o.addProperty("x", x);
+      o.addProperty("y", y);
+      o.addProperty("z", z);
+      o.addProperty("v", slopedWired.compute(new DensityFunction.SinglePointContext(x, y, z)));
+      slopedValues.add(o);
+    }
+    root.add("sloped", slopedValues);
+
+    // The game's own surface heights (first air above the highest solid block, caves included), to
+    // measure the prediction against.
+    var multiNoise = MultiNoiseBiomeSource.createFromList(biomes);
+    var generator = new NoiseBasedChunkGenerator(multiNoise, Holder.direct(settings));
+    LevelHeightAccessor heights = LevelHeightAccessor.create(minY, maxY - minY);
+    JsonArray vanilla = new JsonArray();
+    for (int i = 0; i < 600; i++) {
+      int x = rnd.nextInt(16000) - 8000, z = rnd.nextInt(16000) - 8000;
       JsonObject o = new JsonObject();
       o.addProperty("x", x);
       o.addProperty("z", z);
-      o.addProperty("step", step);
-      Integer top = surfaceTop(router.initialDensityWithoutJaggedness(), x, z, step, minY, maxY);
-      if (top != null) o.addProperty("top", top);
-      surface.add(o);
+      o.addProperty("h", generator.getBaseHeight(x, z, Heightmap.Types.OCEAN_FLOOR_WG, heights, rs));
+      vanilla.add(o);
     }
-    root.add("surface", surface);
+    root.add("vanilla_heights", vanilla);
 
     Files.writeString(out, gson.toJson(root));
     System.out.println("wrote " + out + " (" + Files.size(out) + " bytes), biomes " + index.size() + ", points " + biomes.values().size());

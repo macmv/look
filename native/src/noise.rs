@@ -80,6 +80,13 @@ impl ImprovedNoise {
   }
 
   pub fn noise(&self, x: f64, y: f64, z: f64) -> f64 {
+    self.noise_fudged(x, y, z, 0.0, 0.0)
+  }
+
+  /// `noise(x, y, z, yScale, yMax)`: the variant the old blended noise uses, which snaps the
+  /// vertical position used for the gradients down to a multiple of `y_fudge` (smearing the noise
+  /// along y) while the interpolation weight still follows the real position.
+  pub fn noise_fudged(&self, x: f64, y: f64, z: f64, y_fudge: f64, y_max: f64) -> f64 {
     let d = x + self.xo;
     let e = y + self.yo;
     let f = z + self.zo;
@@ -90,6 +97,13 @@ impl ImprovedNoise {
     let yr = e - j as f64;
     let zr = f - k as f64;
 
+    let yr_grad = if y_fudge != 0.0 {
+      let m = if y_max >= 0.0 && y_max < yr { y_max } else { yr };
+      yr - (m / y_fudge + 1.0e-7f32 as f64).floor() * y_fudge
+    } else {
+      yr
+    };
+
     let a = self.p(i);
     let b = self.p(i + 1);
     let aa = self.p(a + j);
@@ -97,14 +111,14 @@ impl ImprovedNoise {
     let ba = self.p(b + j);
     let bb = self.p(b + j + 1);
 
-    let d000 = Self::grad_dot(self.p(aa + k), xr, yr, zr);
-    let d100 = Self::grad_dot(self.p(ba + k), xr - 1.0, yr, zr);
-    let d010 = Self::grad_dot(self.p(ab + k), xr, yr - 1.0, zr);
-    let d110 = Self::grad_dot(self.p(bb + k), xr - 1.0, yr - 1.0, zr);
-    let d001 = Self::grad_dot(self.p(aa + k + 1), xr, yr, zr - 1.0);
-    let d101 = Self::grad_dot(self.p(ba + k + 1), xr - 1.0, yr, zr - 1.0);
-    let d011 = Self::grad_dot(self.p(ab + k + 1), xr, yr - 1.0, zr - 1.0);
-    let d111 = Self::grad_dot(self.p(bb + k + 1), xr - 1.0, yr - 1.0, zr - 1.0);
+    let d000 = Self::grad_dot(self.p(aa + k), xr, yr_grad, zr);
+    let d100 = Self::grad_dot(self.p(ba + k), xr - 1.0, yr_grad, zr);
+    let d010 = Self::grad_dot(self.p(ab + k), xr, yr_grad - 1.0, zr);
+    let d110 = Self::grad_dot(self.p(bb + k), xr - 1.0, yr_grad - 1.0, zr);
+    let d001 = Self::grad_dot(self.p(aa + k + 1), xr, yr_grad, zr - 1.0);
+    let d101 = Self::grad_dot(self.p(ba + k + 1), xr - 1.0, yr_grad, zr - 1.0);
+    let d011 = Self::grad_dot(self.p(ab + k + 1), xr, yr_grad - 1.0, zr - 1.0);
+    let d111 = Self::grad_dot(self.p(bb + k + 1), xr - 1.0, yr_grad - 1.0, zr - 1.0);
 
     let u = smoothstep(xr);
     let v = smoothstep(yr);
@@ -201,5 +215,93 @@ impl NormalNoise {
   pub fn value(&self, x: f64, y: f64, z: f64) -> f64 {
     const SCALE: f64 = 1.018_126_888_217_522_7;
     (self.first.value(x, y, z) + self.second.value(x * SCALE, y * SCALE, z * SCALE)) * self.value_factor
+  }
+}
+
+/// `BlendedNoise` (`old_blended_noise`): the 3D terrain noise. Two 16 octave limit noises are
+/// blended by an 8 octave selector noise, so some places are smooth and others rough. Unlike the
+/// other noises it is seeded the legacy way: octaves are drawn one after the other from one random
+/// source, highest frequency first, instead of by name.
+pub struct BlendedNoise {
+  /// Highest frequency first, like `PerlinNoise.getOctaveNoise`.
+  min_limit: Vec<ImprovedNoise>,
+  max_limit: Vec<ImprovedNoise>,
+  main: Vec<ImprovedNoise>,
+  xz_multiplier: f64,
+  y_multiplier: f64,
+  xz_factor: f64,
+  y_factor: f64,
+  smear_scale_multiplier: f64,
+}
+
+impl BlendedNoise {
+  pub fn new(
+    rng: &mut Xoroshiro,
+    xz_scale: f64,
+    y_scale: f64,
+    xz_factor: f64,
+    y_factor: f64,
+    smear_scale_multiplier: f64,
+  ) -> Self {
+    let mut octaves = |n: usize| (0..n).map(|_| ImprovedNoise::new(rng)).collect::<Vec<_>>();
+    let min_limit = octaves(16);
+    let max_limit = octaves(16);
+    let main = octaves(8);
+    BlendedNoise {
+      min_limit,
+      max_limit,
+      main,
+      xz_multiplier: 684.412 * xz_scale,
+      y_multiplier: 684.412 * y_scale,
+      xz_factor,
+      y_factor,
+      smear_scale_multiplier,
+    }
+  }
+
+  pub fn value(&self, bx: f64, by: f64, bz: f64) -> f64 {
+    let d = bx * self.xz_multiplier;
+    let e = by * self.y_multiplier;
+    let f = bz * self.xz_multiplier;
+    let g = d / self.xz_factor;
+    let h = e / self.y_factor;
+    let i = f / self.xz_factor;
+    let j = self.y_multiplier * self.smear_scale_multiplier;
+    let k = j / self.y_factor;
+
+    let mut n = 0.0;
+    let mut o = 1.0;
+    for noise in &self.main {
+      n += noise.noise_fudged(wrap(g * o), wrap(h * o), wrap(i * o), k * o, h * o) / o;
+      o /= 2.0;
+    }
+
+    let q = (n / 10.0 + 1.0) / 2.0;
+    let skip_min = q >= 1.0;
+    let skip_max = q <= 0.0;
+    let mut l = 0.0;
+    let mut m = 0.0;
+    o = 1.0;
+    for r in 0..16 {
+      let (s, t, u, v) = (wrap(d * o), wrap(e * o), wrap(f * o), j * o);
+      if !skip_min {
+        l += self.min_limit[r].noise_fudged(s, t, u, v, e * o) / o;
+      }
+      if !skip_max {
+        m += self.max_limit[r].noise_fudged(s, t, u, v, e * o) / o;
+      }
+      o /= 2.0;
+    }
+
+    let lo = l / 512.0;
+    let hi = m / 512.0;
+    let blended = if q < 0.0 {
+      lo
+    } else if q > 1.0 {
+      hi
+    } else {
+      lo + q * (hi - lo)
+    };
+    blended / 128.0
   }
 }

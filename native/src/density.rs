@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::noise::NormalNoise;
+use crate::noise::{BlendedNoise, NormalNoise};
 use crate::rng::PositionalFactory;
 
 type Id = u32;
@@ -37,6 +37,7 @@ enum Node {
   ShiftedNoise { noise: u32, sx: Id, sy: Id, sz: Id, xz: f64, y: f64 },
   Shift { noise: u32, mode: ShiftMode },
   Spline(u32),
+  Blended(u32),
   RangeChoice { input: Id, min: f64, max: f64, in_range: Id, out_of_range: Id },
   /// Memoized on (x, z).
   Memo2D { arg: Id, slot: u32 },
@@ -98,6 +99,7 @@ pub struct Graph {
   nodes: Vec<Node>,
   splines: Vec<Spline>,
   noises: Vec<NormalNoise>,
+  blended: Vec<BlendedNoise>,
   memo_slots: usize,
 }
 
@@ -190,6 +192,7 @@ impl Graph {
         self.noises[*noise as usize].value(x as f64 * 0.25, y as f64 * 0.25, z as f64 * 0.25) * 4.0
       }
       Node::Spline(i) => self.spline(*i, p, s) as f64,
+      Node::Blended(i) => self.blended[*i as usize].value(p.x as f64, p.y as f64, p.z as f64),
       Node::RangeChoice { input, min, max, in_range, out_of_range } => {
         let v = self.node(*input, p, s);
         if v >= *min && v < *max {
@@ -292,7 +295,7 @@ impl<'a> Compiler<'a> {
       functions,
       noise_params,
       noise_factory,
-      graph: Graph { nodes: Vec::new(), splines: Vec::new(), noises: Vec::new(), memo_slots: 0 },
+      graph: Graph { nodes: Vec::new(), splines: Vec::new(), noises: Vec::new(), blended: Vec::new(), memo_slots: 0 },
       by_name: HashMap::new(),
       noise_ids: HashMap::new(),
     }
@@ -438,6 +441,20 @@ impl<'a> Compiler<'a> {
           SplineValue::Const(c) => Node::Const(c as f64),
           SplineValue::Nested(i) => Node::Spline(i),
         }
+      }
+      "old_blended_noise" => {
+        // The game seeds it from the name "minecraft:terrain", whatever else the world uses.
+        let mut rng = self.noise_factory.from_hash_of("minecraft:terrain");
+        let noise = BlendedNoise::new(
+          &mut rng,
+          Self::num(obj, "xz_scale")?,
+          Self::num(obj, "y_scale")?,
+          Self::num(obj, "xz_factor")?,
+          Self::num(obj, "y_factor")?,
+          Self::num(obj, "smear_scale_multiplier")?,
+        );
+        self.graph.blended.push(noise);
+        Node::Blended((self.graph.blended.len() - 1) as u32)
       }
       "flat_cache" | "cache_2d" => Node::Memo2D { arg: self.arg(obj, "argument")?, slot: self.slot() },
       "cache_once" => Node::MemoPoint { arg: self.arg(obj, "argument")?, slot: self.slot() },

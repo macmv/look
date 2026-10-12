@@ -38,7 +38,7 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  * <ul>
  *   <li>{@code sea_level}, {@code min_y}, {@code height} from the noise settings;
  *   <li>{@code roots}: the density functions the generator evaluates (surface density, with and
- *       without jagged peaks, and the six
+ *       without jagged peaks, the full sloped cheese with the 3D noise, and the six
  *       climate parameters), in the same format as the game's data files;
  *   <li>{@code functions}: the registry density functions those refer to, by name, and
  *       {@code noises}: the noise parameters they use;
@@ -90,6 +90,9 @@ public final class TerrainExport {
     JsonObject roots = new JsonObject();
     root(roots, "initial_density_without_jaggedness", router.initialDensityWithoutJaggedness());
     root(roots, "initial_density", withJaggedness(router));
+    // The full terrain shape with the 3D noise, if the registry has it (vanilla overworld does).
+    DensityFunction sloped = slopedCheese();
+    if (sloped != null) root(roots, "sloped_cheese", sloped);
     root(roots, "temperature", router.temperature());
     root(roots, "vegetation", router.vegetation());
     root(roots, "continents", router.continents());
@@ -127,6 +130,11 @@ public final class TerrainExport {
     } catch (RuntimeException e) {
       return router.initialDensityWithoutJaggedness();
     }
+  }
+
+  private DensityFunction slopedCheese() {
+    var key = ResourceKey.create(Registries.DENSITY_FUNCTION, ResourceLocation.parse("minecraft:overworld/sloped_cheese"));
+    return functionRegistry.get(key).isPresent() ? named("minecraft:overworld/sloped_cheese") : null;
   }
 
   private DensityFunction named(String name) {

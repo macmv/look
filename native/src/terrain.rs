@@ -1,17 +1,21 @@
 //! Predicted terrain from the world seed: where the surface is and what it is made of, sampled one
 //! column per voxel and expanded into bricks on demand.
 //!
-//! The surface height comes from the noise router's `initial_density_without_jaggedness`, the
-//! function the game itself uses to estimate the surface before a chunk exists: a smooth 2D shape
-//! (continents, erosion, mountains, rivers) plus a vertical gradient, so the surface is the highest
-//! point where it exceeds a threshold. When the config has an `initial_density` root it also includes
-//! the jagged peaks term (see `TerrainExport.java`), otherwise it is the smooth shape only. It does
-//! not know about caves, overhangs, surface rules, trees or structures. A block is picked from the
-//! biome at the surface.
+//! The surface height is vanilla's own: the highest block where the final density is positive. The
+//! density is the router's `sloped_cheese` (continents, erosion and ridges through the terrain
+//! splines, jagged peaks, and the 3D `old_blended_noise`) under the overworld's top and bottom
+//! slides, and, like the game, it is only evaluated at the corners of 4 x 8 x 4 block noise cells
+//! and interpolated trilinearly in between. It does not know about caves, aquifers, surface rules,
+//! trees or structures. A block is picked from the biome at the surface.
 //!
-//! Calibrated against `NoiseBasedChunkGenerator.getBaseHeight` on two seeds: with a threshold of 0
-//! and +7 blocks the surface is within about 3.5 blocks of vanilla's on average (rms 6). The worst
-//! columns are jagged peaks, up to ~50 blocks off.
+//! The corners are expensive (the blended noise is 40 octaves of Perlin noise), so the search for
+//! the surface starts from a cheap 2D estimate (`initial_density`, the shape without the 3D noise)
+//! and only evaluates corners near it. Coarse levels, whose voxels are much wider than a cell, skip
+//! the interpolation and sample the density at the voxel's center.
+//!
+//! `tests/oracle.rs` measures it against `NoiseBasedChunkGenerator.getBaseHeight`.
+
+use std::collections::HashMap;
 
 use serde_json::Value;
 
@@ -19,19 +23,20 @@ use crate::biome::{flags, BiomeIndex, BiomeInfo};
 use crate::density::{Compiler, Graph, Point, Root, Scratch};
 use crate::rng::Xoroshiro;
 
-/// Density above which a point counts as terrain. Vanilla's preliminary surface uses 0.390625, but
-/// 0 sits closer to the real boundary. It must stay above the world-top slide (about -0.08).
+/// Density above which a point counts as terrain. It must stay above the world-top slide (about
+/// -0.08).
 const SURFACE_THRESHOLD: f64 = 0.0;
-/// Blocks added to the found surface. Without the 3D noise and jaggedness terms the estimate is
-/// consistently this much lower than the real terrain.
-const SURFACE_BIAS: i32 = 7;
+/// Size of a noise cell in blocks: the density is only computed at cell corners.
+const CELL_W: i32 = 4;
+const CELL_H: i32 = 8;
+/// How far above the 2D estimate the search for the surface starts, in blocks. The 3D noise moves
+/// the surface by up to roughly this much.
+const SEARCH_MARGIN: i32 = 48;
 /// Rise per block of run (between neighboring columns) above which grass and snow cannot hold on and
 /// the bare rock shows.
 const STEEP_SLOPE: f32 = 1.2;
 /// Vanilla cools a biome by this much per block above y 80, and snows below a temperature of 0.15.
 const LAPSE_PER_BLOCK: f32 = 0.05 / 40.0;
-/// Smallest vertical step of the scan for the surface. Larger voxels scan with their own size.
-const MIN_STEP: i32 = 16;
 
 pub const NO_TERRAIN: i16 = i16::MIN;
 pub const BRICK_VOXELS: usize = 16 * 16 * 16;
@@ -197,10 +202,22 @@ pub struct TerrainParams {
   pub max_y: i32,
 }
 
+/// Densities at noise cell corners, by column and cell row, for the columns of one tile (which
+/// share corners). `NaN` marks a corner not computed yet.
+#[derive(Default)]
+struct CornerCache {
+  columns: HashMap<(i32, i32), Vec<f64>>,
+}
+
 pub struct Terrain {
   pub params: TerrainParams,
   graph: Graph,
-  initial_density: Root,
+  /// Cheap 2D estimate of the surface shape (no 3D noise), to know where to look.
+  estimate: Root,
+  /// The same without the jagged peaks, only kept for tests.
+  flat: Root,
+  /// The surface shape with the 3D noise, when the world has one.
+  sloped_cheese: Option<Root>,
   temperature: Root,
   humidity: Root,
   continentalness: Root,
@@ -234,8 +251,9 @@ impl Terrain {
     };
 
     // Older exports only have the smooth density; the jagged one is the better estimate.
-    let initial_density =
-      if roots.contains_key("initial_density") { root("initial_density")? } else { root("initial_density_without_jaggedness")? };
+    let flat = root("initial_density_without_jaggedness")?;
+    let estimate = if roots.contains_key("initial_density") { root("initial_density")? } else { flat };
+    let sloped_cheese = if roots.contains_key("sloped_cheese") { Some(root("sloped_cheese")?) } else { None };
     let temperature = root("temperature")?;
     let humidity = root("vegetation")?;
     let continentalness = root("continents")?;
@@ -249,7 +267,9 @@ impl Terrain {
     Ok(Terrain {
       params,
       graph,
-      initial_density,
+      estimate,
+      flat,
+      sloped_cheese,
       temperature,
       humidity,
       continentalness,
@@ -264,8 +284,9 @@ impl Terrain {
     self.graph.scratch()
   }
 
+  /// The 2D estimate of the density.
   pub fn density(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> f64 {
-    self.graph.eval(self.initial_density, Point { x, y, z }, s)
+    self.graph.eval(self.estimate, Point { x, y, z }, s)
   }
 
   /// The six climate values at a block position, quantized like `Climate.TargetPoint`.
@@ -288,11 +309,11 @@ impl Terrain {
     self.biomes.nearest(self.climate(s, (x >> 2) << 2, (y >> 2) << 2, (z >> 2) << 2))
   }
 
-  /// Height of the first air block above the terrain at a column: blocks below it are solid.
-  /// Scans down from the build limit in steps (the last one always lands on the world floor, so a
-  /// step larger than the terrain's depth cannot skip it), then bisects the step that crossed the
-  /// threshold (the density only falls with height inside one step, so that is safe).
-  pub fn surface_top(&self, s: &mut Scratch, x: i32, z: i32, step: i32) -> Option<i32> {
+  /// First air block above the 2D estimate of the terrain at a column. Scans down from the build
+  /// limit in steps (the last one always lands on the world floor, so a step larger than the
+  /// terrain's depth cannot skip it), then bisects the step that crossed the threshold (the
+  /// density only falls with height inside one step, so that is safe).
+  fn estimate_top(&self, s: &mut Scratch, x: i32, z: i32) -> Option<i32> {
     let TerrainParams { min_y, max_y, .. } = self.params;
 
     // Terrain at the very top means this is not a world shaped like the overworld.
@@ -314,20 +335,110 @@ impl Terrain {
             air = mid;
           }
         }
-        return Some((solid + 1 + SURFACE_BIAS).min(max_y));
+        return Some(solid + 1);
       }
       if y <= min_y {
         return None;
       }
       above = y;
-      y = (y - step).max(min_y);
+      y = (y - 16).max(min_y);
     }
+  }
+
+  /// The density the game generates terrain from, at a noise cell corner: the surface shape under
+  /// the overworld's top and bottom slides (`NoiseRouterData.slideOverworld`).
+  fn corner_density(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> f64 {
+    let TerrainParams { min_y, max_y, .. } = self.params;
+    let root = self.sloped_cheese.unwrap_or(self.estimate);
+    let d = self.graph.eval(root, Point { x, y, z }, s);
+
+    let gradient = |from_y: i32, to_y: i32, from: f64, to: f64| {
+      let t = ((y - from_y) as f64 / (to_y - from_y) as f64).clamp(0.0, 1.0);
+      from + t * (to - from)
+    };
+    let top = gradient(max_y - 80, max_y - 64, 1.0, 0.0);
+    let d = -0.078125 + top * (d + 0.078125);
+    let bottom = gradient(min_y, min_y + 24, 0.0, 1.0);
+    0.1171875 + bottom * (d - 0.1171875)
+  }
+
+  /// Height of the first air block above the terrain at a column, as the game generates it: the
+  /// density interpolated between the corners of the noise cell around the column, so this agrees
+  /// with `getBaseHeight` apart from caves. `None` if there is no terrain.
+  pub fn surface_top(&self, s: &mut Scratch, x: i32, z: i32) -> Option<i32> {
+    self.surface_top_cached(s, &mut CornerCache::default(), x, z)
+  }
+
+  fn surface_top_cached(&self, s: &mut Scratch, cache: &mut CornerCache, x: i32, z: i32) -> Option<i32> {
+    let TerrainParams { min_y, max_y, .. } = self.params;
+    let estimate = self.estimate_top(s, x, z)?;
+
+    // Cell rows are aligned to the world, not to the build limit.
+    let base = min_y.div_euclid(CELL_H) * CELL_H;
+    let rows = (max_y - base + CELL_H - 1) / CELL_H; // the topmost row sits at or above the limit
+
+    let (x0, z0) = (x.div_euclid(CELL_W) * CELL_W, z.div_euclid(CELL_W) * CELL_W);
+    let (fx, fz) = ((x - x0) as f64 / CELL_W as f64, (z - z0) as f64 / CELL_W as f64);
+    // Corners the column sits exactly on do not need their neighbors.
+    let xs: &[(i32, f64)] = if fx == 0.0 { &[(0, 1.0)] } else { &[(0, 1.0 - fx), (CELL_W, fx)] };
+    let zs: &[(i32, f64)] = if fz == 0.0 { &[(0, 1.0)] } else { &[(0, 1.0 - fz), (CELL_W, fz)] };
+
+    let mut density = |row: i32| -> f64 {
+      let y = base + row * CELL_H;
+      let mut sum = 0.0;
+      for &(dz, wz) in zs {
+        for &(dx, wx) in xs {
+          sum += wx * wz * self.corner(s, cache, x0 + dx, z0 + dz, row, y, rows);
+        }
+      }
+      sum
+    };
+
+    // Start a margin above the estimate, higher if the density is still positive there.
+    let mut top = (((estimate + SEARCH_MARGIN) - base + CELL_H - 1) / CELL_H).clamp(1, rows);
+    while density(top) > SURFACE_THRESHOLD {
+      if top >= rows {
+        return None;
+      }
+      top = (top + 2).min(rows);
+    }
+
+    let mut upper = density(top);
+    for row in (0..top).rev() {
+      let lower = density(row);
+      if lower > SURFACE_THRESHOLD {
+        // Density is linear in y inside the cell: find the highest block still above the threshold.
+        for k in (0..CELL_H).rev() {
+          let t = k as f64 / CELL_H as f64;
+          if lower + t * (upper - lower) > SURFACE_THRESHOLD {
+            return Some((base + row * CELL_H + k + 1).clamp(min_y, max_y));
+          }
+        }
+        return Some(base + row * CELL_H + 1);
+      }
+      upper = lower;
+    }
+    None
+  }
+
+  /// Density at one cell corner, memoized for the tile being sampled.
+  fn corner(&self, s: &mut Scratch, cache: &mut CornerCache, x: i32, z: i32, row: i32, y: i32, rows: i32) -> f64 {
+    let column = cache.columns.entry((x, z)).or_insert_with(|| vec![f64::NAN; rows as usize + 1]);
+    let v = column[row as usize];
+    if !v.is_nan() {
+      return v;
+    }
+    let v = self.corner_density(s, x, y, z);
+    column[row as usize] = v;
+    v
   }
 
   /// Evaluates one of the exported root functions by its config name, for tests and debugging.
   pub fn eval_root(&self, name: &str, s: &mut Scratch, x: i32, y: i32, z: i32) -> Option<f64> {
     let root = match name {
-      "initial_density_without_jaggedness" => self.initial_density,
+      "initial_density_without_jaggedness" => self.flat,
+      "initial_density" => self.estimate,
+      "sloped_cheese" => self.sloped_cheese?,
       "temperature" => self.temperature,
       "vegetation" => self.humidity,
       "continents" => self.continentalness,
@@ -347,9 +458,9 @@ impl Terrain {
   /// Samples the surface of the 16 x 16 columns of a level-`level` section column.
   pub fn sample_tile(&self, s: &mut Scratch, level: u32, sx: i32, sz: i32) -> Tile {
     let mut tile = Tile::empty();
+    let mut cache = CornerCache::default();
     let size = 1i64 << level;
     let half = size >> 1;
-    let step = MIN_STEP.max(size as i32);
     let x0 = (sx as i64) << (level + 4);
     let z0 = (sz as i64) << (level + 4);
     let TerrainParams { min_y, max_y, sea_level } = self.params;
@@ -358,7 +469,7 @@ impl Terrain {
       for x in 0..16usize {
         let bx = (x0 + x as i64 * size + half) as i32;
         let bz = (z0 + z as i64 * size + half) as i32;
-        let Some(top) = self.surface_top(s, bx, bz, step) else { continue };
+        let Some(top) = self.surface_top_cached(s, &mut cache, bx, bz) else { continue };
 
         let by = top.clamp(min_y, max_y - 1);
         let biome = self.biome_at(s, bx, by, bz);

@@ -97,6 +97,20 @@ fn density_functions_match() {
 }
 
 #[test]
+fn sloped_cheese_matches() {
+  let f = fixture();
+  let t = terrain(&f);
+  let mut s = t.scratch();
+
+  for case in f["sloped"].as_array().unwrap() {
+    let (x, y, z) = (case["x"].as_i64().unwrap() as i32, case["y"].as_i64().unwrap() as i32, case["z"].as_i64().unwrap() as i32);
+    let want = case["v"].as_f64().unwrap();
+    let got = t.eval_root("sloped_cheese", &mut s, x, y, z).unwrap();
+    assert!(close(got, want), "sloped_cheese at ({x}, {y}, {z}): {got} != {want}");
+  }
+}
+
+#[test]
 fn climate_and_biomes_match() {
   let f = fixture();
   let t = terrain(&f);
@@ -114,18 +128,33 @@ fn climate_and_biomes_match() {
   }
 }
 
+/// How far the prediction is from the game's own surface heights (`getBaseHeight`, caves included).
 #[test]
-fn surface_heights_match() {
+fn surface_heights_match_vanilla() {
   let f = fixture();
   let t = terrain(&f);
   let mut s = t.scratch();
 
-  for case in f["surface"].as_array().unwrap() {
+  let mut errors = Vec::new();
+  for case in f["vanilla_heights"].as_array().unwrap() {
     let (x, z) = (case["x"].as_i64().unwrap() as i32, case["z"].as_i64().unwrap() as i32);
-    let step = case["step"].as_i64().unwrap() as i32;
-    let want = case.get("top").map(|v| v.as_i64().unwrap() as i32);
-    assert_eq!(t.surface_top(&mut s, x, z, step), want, "surface at ({x}, {z}) step {step}");
+    let want = case["h"].as_i64().unwrap() as i32;
+    let got = t.surface_top(&mut s, x, z).unwrap();
+    errors.push((got - want).abs());
   }
+  errors.sort();
+  let n = errors.len();
+  let mean = errors.iter().sum::<i32>() as f64 / n as f64;
+  println!(
+    "surface error vs vanilla over {n} columns: mean {mean:.3}, median {}, p90 {}, p99 {}, max {}",
+    errors[n / 2],
+    errors[n * 9 / 10],
+    errors[n * 99 / 100],
+    errors[n - 1]
+  );
+  let exact = errors.iter().filter(|&&e| e == 0).count();
+  println!("exact: {exact} of {n}");
+  assert!(mean < 1.0, "mean surface error {mean}");
 }
 
 /// Not a check: prints how fast the port is. `cargo test --release --test oracle bench -- --ignored --nocapture`
@@ -154,7 +183,7 @@ fn bench_tiles() {
   let start = Instant::now();
   let mut tops = Vec::new();
   for i in 0..n {
-    tops.push(t.surface_top(&mut s, (i * 37) % 9000 - 4500, (i * 91) % 9000 - 4500, 16).unwrap_or(64));
+    tops.push(t.surface_top(&mut s, (i * 37) % 9000 - 4500, (i * 91) % 9000 - 4500).unwrap_or(64));
   }
   let surface = start.elapsed().as_secs_f64() / n as f64;
   let start = Instant::now();
