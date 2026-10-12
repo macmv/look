@@ -23,7 +23,8 @@ After finishing a chunk of work:
 
 # Project notes
 
-- Fabric 1.21.1, Mojang mappings, no Fabric API dependency. Keep it that way unless needed.
+- Fabric 1.21.1, Mojang mappings. Fabric API is a dependency for networking only (the server sends
+  its terrain description to clients); do not lean on it for rendering or world access.
 - Raycasting is done in the fragment shader; Rust (`native/`) owns CPU-side voxel data and talks to
   Java over JNI with coarse calls and direct buffers. Java owns all GL calls.
 - Go through `GlStateManager` / `RenderSystem` for GL state vanilla caches, so its cache stays valid.
