@@ -11,8 +11,6 @@ import net.minecraft.network.chat.Component;
  *   <li>Cycle debug view: off, step-count heatmap of the voxel pass, then pyramid levels tinted, then no mipmaps, then unlit.
  *       Timing stats are always on screen.
  *   <li>Reload: throw away all voxel data and rebuild it from the loaded chunks.
- *   <li>Toggle sub-voxel heights (default F10): predicted terrain on the coarse levels rises in
- *       eighths of a voxel, or in whole voxels like before.
  * </ul>
  *
  * Vanilla keeps compiling section meshes while the voxel renderer is on, and the voxel world keeps
@@ -20,8 +18,6 @@ import net.minecraft.network.chat.Component;
  */
 public final class LookState {
   public static boolean voxelEnabled = true;
-  /** Whether the surface voxels of predicted terrain are drawn at their fill height. */
-  public static boolean subVoxel = true;
   /** 0 off, 1 step-count heatmap, 2 pyramid level tint, 3 no mipmaps, 4 unlit (albedo only). */
   public static int debug = 0;
 
@@ -46,11 +42,6 @@ public final class LookState {
     while (LookKeys.TOGGLE_DEBUG.consumeClick()) {
       debug = (debug + 1) % DEBUG_NAMES.length;
       mc.gui.setOverlayMessage(Component.literal("Look debug view: " + DEBUG_NAMES[debug]), false);
-    }
-
-    while (LookKeys.TOGGLE_SUBVOXEL.consumeClick()) {
-      subVoxel = !subVoxel;
-      mc.gui.setOverlayMessage(Component.literal("Look sub-voxel heights: " + (subVoxel ? "on" : "off")), false);
     }
 
     while (LookKeys.RELOAD.consumeClick()) {

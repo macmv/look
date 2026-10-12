@@ -20,7 +20,6 @@ uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and fi
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
 uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water), a: kind (0 none, 1 + surface, 7 water)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
-uniform int uSubVoxel;     // 1: surface voxels are drawn at their fill height, 0: whole or not at all
 uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
 uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
@@ -575,10 +574,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
         // otherwise it passes over and on.
         bool inside = true;
         uint fill = raw >> FILL_SHIFT;
-        if (fill != 0u && uSubVoxel == 0) {
-          // Off: round to a whole voxel, which is what sampling at the voxel's center gave.
-          inside = fill >= 4u;
-        } else if (fill != 0u) {
+        if (fill != 0u) {
           float h = float(fill) / 8.0;
           if (local.y > h) {
             inside = false;

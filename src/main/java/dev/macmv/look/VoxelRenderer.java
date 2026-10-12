@@ -30,7 +30,6 @@ public final class VoxelRenderer {
   private static int uLevel;
   private static int uMaxDist;
   private static int uDebug;
-  private static int uSubVoxel;
   private static int uHfEnabled;
   private static int uHfIds;
   private static int uAtlasSize;
@@ -105,7 +104,6 @@ public final class VoxelRenderer {
     VoxelWorld.bind();
 
     GL33C.glUniform1i(uDebug, LookState.debug);
-    GL33C.glUniform1i(uSubVoxel, LookState.subVoxel ? 1 : 0);
     int[] hfIds = SeedSource.INSTANCE.voxelIds();
     boolean hf = SeedSource.INSTANCE.available() && HeightField.active() && hfIds.length == 14;
     GL33C.glUniform1i(uHfEnabled, hf ? 1 : 0);
@@ -177,7 +175,6 @@ public final class VoxelRenderer {
     uLevel = GL33C.glGetUniformLocation(program, "uLevel");
     uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
     uDebug = GL33C.glGetUniformLocation(program, "uDebug");
-    uSubVoxel = GL33C.glGetUniformLocation(program, "uSubVoxel");
     uHfEnabled = GL33C.glGetUniformLocation(program, "uHfEnabled");
     uHfIds = GL33C.glGetUniformLocation(program, "uHfIds");
     uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");

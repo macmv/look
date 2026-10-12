@@ -29,4 +29,3 @@ Rebindable in Options > Controls > Look:
 
 - F7: toggle voxel / vanilla renderer (vanilla meshes are always kept up to date, so it is instant)
 - F8: toggle step-count heatmap (timing stats are always on screen, in both renderers)
-- F10: toggle sub-voxel terrain heights on the coarse levels
