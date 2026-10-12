@@ -36,6 +36,8 @@ enum Node {
   Noise { noise: u32, xz: f64, y: f64 },
   ShiftedNoise { noise: u32, sx: Id, sy: Id, sz: Id, xz: f64, y: f64 },
   Shift { noise: u32, mode: ShiftMode },
+  /// `rarity * |noise(pos / rarity)|`, with the rarity picked from the input (the cave shapes).
+  WeirdScaled { input: Id, noise: u32, tunnels: bool },
   Spline(u32),
   Blended(u32),
   RangeChoice { input: Id, min: f64, max: f64, in_range: Id, out_of_range: Id },
@@ -190,6 +192,35 @@ impl Graph {
           ShiftMode::Both => (p.x, p.y, p.z),
         };
         self.noises[*noise as usize].value(x as f64 * 0.25, y as f64 * 0.25, z as f64 * 0.25) * 4.0
+      }
+      Node::WeirdScaled { input, noise, tunnels } => {
+        let v = self.node(*input, p, s);
+        let rarity = if *tunnels {
+          // RarityValueMapper.TUNNELS
+          if v < -0.5 {
+            0.75
+          } else if v < 0.0 {
+            1.0
+          } else if v < 0.5 {
+            1.5
+          } else {
+            2.0
+          }
+        } else {
+          // RarityValueMapper.CAVES
+          if v < -0.75 {
+            0.5
+          } else if v < -0.5 {
+            0.75
+          } else if v < 0.0 {
+            1.0
+          } else if v < 0.5 {
+            1.5
+          } else {
+            2.0
+          }
+        };
+        rarity * self.noises[*noise as usize].value(p.x as f64 / rarity, p.y as f64 / rarity, p.z as f64 / rarity).abs()
       }
       Node::Spline(i) => self.spline(*i, p, s) as f64,
       Node::Blended(i) => self.blended[*i as usize].value(p.x as f64, p.y as f64, p.z as f64),
@@ -428,6 +459,18 @@ impl<'a> Compiler<'a> {
       "shift_a" => Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::A },
       "shift_b" => Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::B },
       "shift" => Node::Shift { noise: self.noise(Self::text(obj, "argument")?)?, mode: ShiftMode::Both },
+      "weird_scaled_sampler" => {
+        let mapper = Self::text(obj, "rarity_value_mapper")?;
+        Node::WeirdScaled {
+          input: self.arg(obj, "input")?,
+          noise: self.noise(Self::text(obj, "noise")?)?,
+          tunnels: match mapper {
+            "type_1" => true,
+            "type_2" => false,
+            other => return Err(format!("unknown rarity value mapper {other}")),
+          },
+        }
+      }
       "range_choice" => Node::RangeChoice {
         input: self.arg(obj, "input")?,
         min: Self::num(obj, "min_inclusive")?,

@@ -38,7 +38,7 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  * <ul>
  *   <li>{@code sea_level}, {@code min_y}, {@code height} from the noise settings;
  *   <li>{@code roots}: the density functions the generator evaluates (surface density, with and
- *       without jagged peaks, the full sloped cheese with the 3D noise, and the six
+ *       without jagged peaks, the full sloped cheese with the 3D noise, the final density with caves, and the six
  *       climate parameters), in the same format as the game's data files;
  *   <li>{@code functions}: the registry density functions those refer to, by name, and
  *       {@code noises}: the noise parameters they use;
@@ -93,6 +93,8 @@ public final class TerrainExport {
     // The full terrain shape with the 3D noise, if the registry has it (vanilla overworld does).
     DensityFunction sloped = slopedCheese();
     if (sloped != null) root(roots, "sloped_cheese", sloped);
+    // What the game actually generates from, with the caves and the world's top and bottom slides.
+    root(roots, "final_density", router.finalDensity());
     root(roots, "temperature", router.temperature());
     root(roots, "vegetation", router.vegetation());
     root(roots, "continents", router.continents());

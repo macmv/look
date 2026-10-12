@@ -23,7 +23,7 @@ import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
  * and works arbitrarily far from the player.
  *
  * <p>All the work is in {@code native/} (see {@code terrain.rs} for what the prediction is and how
- * good it is, within about a block of vanilla's surface on average, and {@code engine.rs} for the
+ * good it is, within a fraction of a block of vanilla's surface on average, caves included, and {@code engine.rs} for the
  * threading). This class only forwards: it asks for the tile under a section the first time the
  * section is wanted, answers {@link #PENDING} until the tile is done, and then tells the world
  * which sections to ask again for.

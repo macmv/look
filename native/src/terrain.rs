@@ -5,8 +5,8 @@
 //! density is the router's `sloped_cheese` (continents, erosion and ridges through the terrain
 //! splines, jagged peaks, and the 3D `old_blended_noise`) under the overworld's top and bottom
 //! slides, and, like the game, it is only evaluated at the corners of 4 x 8 x 4 block noise cells
-//! and interpolated trilinearly in between. It does not know about caves, aquifers, surface rules,
-//! trees or structures. A block is picked from the biome at the surface.
+//! and interpolated trilinearly in between. The router's `final_density` adds the caves on top. It does not
+//! know about aquifers, surface rules, trees or structures. A block is picked from the biome at the surface.
 //!
 //! The corners are expensive (the blended noise is 40 octaves of Perlin noise), so the search for
 //! the surface starts from a cheap 2D estimate (`initial_density`, the shape without the 3D noise)
@@ -218,6 +218,8 @@ pub struct Terrain {
   flat: Root,
   /// The surface shape with the 3D noise, when the world has one.
   sloped_cheese: Option<Root>,
+  /// What the game generates from: the sloped cheese with the caves and the world's slides.
+  final_density: Option<Root>,
   temperature: Root,
   humidity: Root,
   continentalness: Root,
@@ -254,6 +256,7 @@ impl Terrain {
     let flat = root("initial_density_without_jaggedness")?;
     let estimate = if roots.contains_key("initial_density") { root("initial_density")? } else { flat };
     let sloped_cheese = if roots.contains_key("sloped_cheese") { Some(root("sloped_cheese")?) } else { None };
+    let final_density = if roots.contains_key("final_density") { Some(root("final_density")?) } else { None };
     let temperature = root("temperature")?;
     let humidity = root("vegetation")?;
     let continentalness = root("continents")?;
@@ -270,6 +273,7 @@ impl Terrain {
       estimate,
       flat,
       sloped_cheese,
+      final_density,
       temperature,
       humidity,
       continentalness,
@@ -349,6 +353,9 @@ impl Terrain {
   /// the overworld's top and bottom slides (`NoiseRouterData.slideOverworld`).
   fn corner_density(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> f64 {
     let TerrainParams { min_y, max_y, .. } = self.params;
+    if let Some(root) = self.final_density {
+      return self.graph.eval(root, Point { x, y, z }, s);
+    }
     let root = self.sloped_cheese.unwrap_or(self.estimate);
     let d = self.graph.eval(root, Point { x, y, z }, s);
 
@@ -439,6 +446,7 @@ impl Terrain {
       "initial_density_without_jaggedness" => self.flat,
       "initial_density" => self.estimate,
       "sloped_cheese" => self.sloped_cheese?,
+      "final_density" => self.final_density?,
       "temperature" => self.temperature,
       "vegetation" => self.humidity,
       "continents" => self.continentalness,

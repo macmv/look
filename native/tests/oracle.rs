@@ -154,7 +154,7 @@ fn surface_heights_match_vanilla() {
   );
   let exact = errors.iter().filter(|&&e| e == 0).count();
   println!("exact: {exact} of {n}");
-  assert!(mean < 1.0, "mean surface error {mean}");
+  assert!(mean < 0.3, "mean surface error {mean}");
 }
 
 /// Not a check: prints how fast the port is. `cargo test --release --test oracle bench -- --ignored --nocapture`
