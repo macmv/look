@@ -23,3 +23,35 @@ After finishing a chunk of work:
   Java over JNI with coarse calls and direct buffers. Java owns all GL calls.
 - Go through `GlStateManager` / `RenderSystem` for GL state vanilla caches, so its cache stays valid.
 - Prefer `@Inject` over `@Overwrite` / `@Redirect` in mixins, to coexist with other mods.
+
+## Architecture
+
+Fabric 1.21.1 client mod replacing the chunk renderer with a voxel raycaster: one fullscreen
+triangle, raycast in `assets/look/shaders/voxel.fsh`, depth written so vanilla entities, particles,
+and weather still draw on top. `LevelRendererMixin` cancels vanilla's opaque section layers.
+Vanilla meshes are still built, so F7 (toggle) is instant.
+
+**Level-of-detail pyramid** (`Lod`): level `k` has voxels `2^k` blocks wide, chosen in the shader by
+horizontal Chebyshev distance. Every level is a same-size ring of sections, so memory per level is
+constant and reach doubles per level. Only the first `Lod.LEVELS` are voxel bricks; the levels past
+that (`HF_LEVELS`) are a ray-marched heightfield (`HeightField`) fed by tiles from the native engine.
+
+**Java side** (`dev.macmv.look`): Java owns all GL.
+- `VoxelWorld` is the core: per-level residency of 16^3 sections (`SectionState` machine), the
+  `BrickTable` slot allocator for the GPU brick buffer, and the indirection grid the shader walks.
+  `VoxelWorld.verify` (F4) cross-checks GPU bytes and refills against what was uploaded.
+- `VoxelSource` is the producer interface, assigned per level with `VoxelWorld.setSource`. A source
+  pushes (`invalidate`) and/or is pulled (`enumerated`); `fill` returns a count, `UNAVAILABLE`, or
+  `PENDING`. Implementations: `WorldSource` (loaded client chunks), `SeedSource` (generated from
+  the seed via native), `HillsSource`, and `LayeredSource` (real chunks over generated terrain).
+- `BlockClassifier`, `TintMap`, `LightMap` turn block ids/models/biomes/light into the u16 voxel ids
+  and tables the shader reads. `TerrainExport` serializes the vanilla worldgen config for Rust.
+- `docs/LOADING.md` documents the tile / section / slot / GPU-visibility life cycles and what a
+  Vulkan port would change; read it before touching residency or slot reuse.
+
+**Native side** (`native/`, crate `look_native`): pure Rust voxel data and a port of vanilla
+overworld terrain generation (`rng`, `noise`, `density`, `biome`, `terrain`), plus `engine` (worker
+threads producing tiles per level/section column) and `brick` (occupancy masks). `lib.rs` is the
+thin JNI layer: coarse calls with direct buffers, and `guard` turns panics into Java
+`RuntimeException`s, so never let a panic cross the boundary. `NativeLib.java` declares the
+bindings and extracts the bundled library. JNI symbol names must match the Java class/method names.
