@@ -9,6 +9,7 @@ pub mod engine;
 pub mod noise;
 pub mod rng;
 pub mod terrain;
+pub mod trees;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

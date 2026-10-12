@@ -71,6 +71,36 @@ impl Xoroshiro {
     (self.next_long() >> 11) as f64 * 1.110_223_024_625_156_5e-16
   }
 
+  /// `nextFloat`: 24 random bits scaled into `[0, 1)`.
+  pub fn next_float(&mut self) -> f32 { (self.next_long() >> 40) as f32 * 5.960_464_5e-8_f32 }
+
+  /// `nextBoolean`: the lowest bit of the next long.
+  pub fn next_bool(&mut self) -> bool { self.next_long() & 1 != 0 }
+
+  /// `Mth.randomBetweenInclusive`.
+  pub fn between(&mut self, min: i32, max: i32) -> i32 { self.next_int_bound(max - min + 1) + min }
+
+  /// `setSeed`: starts over from a 64 bit seed, widened like `from_seed`.
+  pub fn set_seed(&mut self, seed: i64) { *self = Self::from_seed(seed); }
+
+  /// `WorldgenRandom.setDecorationSeed`: the per chunk seed that every
+  /// feature's seed derives from. `x` and `z` are the chunk's lowest block
+  /// coordinates.
+  pub fn set_decoration_seed(&mut self, world_seed: i64, x: i32, z: i32) -> i64 {
+    self.set_seed(world_seed);
+    let m = (self.next_long() | 1) as i64;
+    let n = (self.next_long() | 1) as i64;
+    let seed = (x as i64).wrapping_mul(m).wrapping_add((z as i64).wrapping_mul(n)) ^ world_seed;
+    self.set_seed(seed);
+    seed
+  }
+
+  /// `WorldgenRandom.setFeatureSeed`: `index` is the feature's place in its
+  /// decoration step's list.
+  pub fn set_feature_seed(&mut self, decoration_seed: i64, index: i32, step: i32) {
+    self.set_seed(decoration_seed.wrapping_add(index as i64).wrapping_add((10000 * step) as i64));
+  }
+
   /// `forkPositional`: a factory that derives independent sources from names.
   pub fn fork_positional(&mut self) -> PositionalFactory {
     let lo = self.next_long();
