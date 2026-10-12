@@ -20,7 +20,7 @@ uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and fi
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
 uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water), a: kind (0 none, 1 + surface, 7 water)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
-uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
+uniform int uDebug;        // 5: no biome tint, 6: mip level fixed at 2, 7: alpha test off, 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
 uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
 uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
@@ -197,6 +197,7 @@ bool gHfTintOn = false;
 // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
 vec3 tintColor(float tint, vec2 column, float lowLayer, vec3 farTint) {
   if (tint < -0.5) {
+    if (uDebug == 5) return vec3(1.0);
     if (gHfTintOn && tint > -1.5) return gHfTint;
     if (farTint.z >= 0.0 && tint > -1.5) return textureLod(uTint, farTint, 0.0).rgb;
     return textureLod(uTint, vec3(column, lowLayer + (tint < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
@@ -239,7 +240,7 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     if (b.w < 0.5) break;
 
     float texelsPerBlock = max(length(a.zw * uAtlasSize), length(b.xy * uAtlasSize));
-    float lod = uDebug == 3 ? 0.0 : clamp(log2(max(r * texelsPerBlock, 1e-6)), 0.0, uMaxLod);
+    float lod = uDebug == 3 ? 0.0 : (uDebug == 6 ? min(2.0, uMaxLod) : clamp(log2(max(r * texelsPerBlock, 1e-6)), 0.0, uMaxLod));
     // Stay half a texel of the chosen mip inside the sprite, or the bilinear filter at a block's edge
     // pulls in the neighboring sprite of the atlas. The tiling puts an edge every block, so it shows.
     float margin = clamp(0.5 * exp2(lod) / texelsPerBlock, 0.001, 0.5);
@@ -259,7 +260,7 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     alpha = layer == 0 ? s.a : max(alpha, s.a);
   }
 
-  if (alpha < 0.5) {
+  if (alpha < 0.5 && uDebug != 7) {
     // No layers at all means no model data: use the map color. Otherwise it is a see-through texel.
     if (texelFetch(uFaces, base + 1).w < 0.5) {
       uint c = texelFetch(uColors, int(id)).r;

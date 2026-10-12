@@ -176,7 +176,7 @@ public final class SeedSource implements VoxelSource {
           TerrainExport.export(
               server.registryAccess(), settings, ((MultiNoiseBiomeSourceAccessor) (Object) biomes).look$parameters());
       long seed = server.getWorldData().worldGenOptions().seed();
-      handle = NativeLib.terrainCreate(seed, config, Lod.outer(0) + WANT_MARGIN, 0);
+      handle = NativeLib.terrainCreate(seed, config, Lod.outer(0) + WANT_MARGIN, Integer.getInteger("look.seedThreads", 0));
       LookMod.LOGGER.info("Seed terrain engine started ({} bytes of config)", config.length);
     } catch (RuntimeException | LinkageError e) {
       // An unusual world (legacy noise, a modded density function): just no predicted terrain.

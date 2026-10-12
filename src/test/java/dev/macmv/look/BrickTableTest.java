@@ -286,6 +286,7 @@ class BrickTableTest {
   }
 
   private static void check(BrickTable t, int slots, String where) {
+    assertEquals(java.util.List.of(), t.checkInvariants(), "invariants, " + where);
     Map<Integer, Integer> pointing = new HashMap<>();
     Set<Integer> privateSlots = new HashSet<>();
     for (int cell = 0; cell < CELLS; cell++) {

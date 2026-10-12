@@ -167,6 +167,8 @@ public final class VoxelWorld {
   private static int atlasMaxLevel;
 
   private static ByteBuffer brickScratch;
+  /** Hash of what was last written to each brick slot, to compare against the GPU in {@link #verify}. */
+  private static long[] slotHash = new long[0];
   private static IntBuffer colorScratch;
   private static IntBuffer cellScratch;
 
@@ -738,12 +740,134 @@ public final class VoxelWorld {
     dirtyCells.add(cell);
 
     if (placed.upload()) {
+      slotHash[placed.slot()] = hash(brickScratch);
       GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, brickBuf);
       brickScratch.clear();
       GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) placed.slot() * BRICK_BYTES, brickScratch);
     }
 
     setState(key, SectionState.LOADED);
+  }
+
+  /** FNV-style hash of a brick's bytes (absolute reads, native order). */
+  private static long hash(ByteBuffer brick) {
+    long h = 0xcbf29ce484222325L;
+    for (int i = 0; i < BRICK_BYTES; i += 8) {
+      h ^= brick.getLong(i);
+      h *= 0x100000001b3L;
+      h ^= h >>> 29;
+    }
+    return h;
+  }
+
+  /**
+   * Checks every layer against the one before it and logs the result: the slot bookkeeping against
+   * itself, the section states against the slots, the GPU's indirection texture and brick buffer
+   * against the CPU mirror, and what each source produces now against what was uploaded. Slow
+   * (reads GPU memory back, refills every resident section); meant to be run by hand while the
+   * picture is flickering.
+   *
+   * @return a one-line summary
+   */
+  public static String verify() {
+    if (!glReady || level == null) return "not ready";
+    List<String> bad = new ArrayList<>();
+
+    // 1. The bookkeeping alone.
+    bad.addAll(table.checkInvariants());
+
+    // 2. States against the table: a LOADED section owns its cell, nobody else owns a cell.
+    int loaded = 0;
+    int ownerless = 0;
+    for (Map.Entry<Long, SectionState> e : states.entrySet()) {
+      long key = e.getKey();
+      boolean owns = table.owns(cellIndex(key), key);
+      if (e.getValue() == SectionState.LOADED) {
+        loaded++;
+        if (!owns) ownerless++;
+      } else if (owns && e.getValue() != SectionState.WAITING && e.getValue() != SectionState.LOADING) {
+        bad.add("section " + describe(key) + " is " + e.getValue() + " but owns a slot");
+      }
+    }
+    if (ownerless > 0) bad.add(ownerless + " LOADED sections do not own their cell");
+
+    // 3. The GPU's indirection texture against the table.
+    int cells = GRID_XZ * totalRows * GRID_XZ;
+    IntBuffer gpuCells = ByteBuffer.allocateDirect(cells * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
+    int prevUnit = GlStateManager._getActiveTexture();
+    int cellMismatch = 0;
+    int brickMismatch = 0;
+    try {
+      GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_INDIRECTION);
+      GL33C.glBindTexture(GL33C.GL_TEXTURE_3D, indirectionTex);
+      GL33C.glGetTexImage(GL33C.GL_TEXTURE_3D, 0, GL33C.GL_RED_INTEGER, GL33C.GL_UNSIGNED_INT, gpuCells);
+      for (int cell = 0; cell < cells; cell++) {
+        int x = cell % GRID_XZ;
+        int z = (cell / GRID_XZ) % GRID_XZ;
+        int y = cell / (GRID_XZ * GRID_XZ);
+        int gpu = gpuCells.get((z * totalRows + y) * GRID_XZ + x);
+        if (gpu != table.indirection(cell) && !dirtyCells.contains(cell)) {
+          if (cellMismatch++ < 5) bad.add("cell " + cell + ": GPU " + gpu + ", CPU " + table.indirection(cell));
+        }
+      }
+
+      // 4. The GPU's brick buffer against the hash taken when each slot was written.
+      ByteBuffer back = ByteBuffer.allocateDirect(BRICK_BYTES).order(ByteOrder.nativeOrder());
+      boolean[] seen = new boolean[table.capacity()];
+      for (int cell = 0; cell < cells; cell++) {
+        int slot = table.indirection(cell) - 1;
+        if (slot < 0 || seen[slot]) continue;
+        seen[slot] = true;
+        back.clear();
+        GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, brickBuf);
+        GL33C.glGetBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) slot * BRICK_BYTES, back);
+        if (hash(back) != slotHash[slot] && brickMismatch++ < 5) bad.add("slot " + slot + ": GPU bytes differ from what was written");
+      }
+    } finally {
+      GL33C.glActiveTexture(prevUnit);
+    }
+
+    // 5. What the sources say now against what is resident. A source that is not deterministic, or
+    // whose output depends on something that changed without an invalidate, shows up here.
+    ByteBuffer fresh = ByteBuffer.allocateDirect(BRICK_BYTES).order(ByteOrder.nativeOrder());
+    int[] changed = new int[Lod.LEVELS];
+    int pending = 0;
+    int gone = 0;
+    for (Map.Entry<Long, SectionState> e : new ArrayList<>(states.entrySet())) {
+      long key = e.getKey();
+      if (e.getValue() != SectionState.LOADED) continue;
+      int lvl = SectionKey.level(key);
+      int solid = sources[lvl].fill(lvl, SectionKey.x(key), SectionKey.y(key), SectionKey.z(key), fresh);
+      if (solid == VoxelSource.PENDING) {
+        pending++;
+        continue;
+      }
+      int slot = table.indirection(cellIndex(key)) - 1;
+      if (solid < 0 || solid == 0 || slot < 0) {
+        gone++;
+        continue;
+      }
+      boolean same;
+      int uniform = table.uniformOf(slot);
+      if (uniform >= 0) same = solid == BRICK_VOXELS && (fresh.getShort(0) & 0xFFFF) == uniform;
+      else same = hash(fresh) == slotHash[slot];
+      if (!same) {
+        if (changed[lvl]++ < 3) bad.add("section " + describe(key) + " now fills differently from what was uploaded");
+      }
+    }
+
+    for (String line : bad) LookMod.LOGGER.warn("verify: {}", line);
+    int changedTotal = Arrays.stream(changed).sum();
+    String summary =
+        String.format(
+            "%d problems | %d loaded | cells off %d | bricks off %d | refill differs %d %s | pending %d | gone %d",
+            bad.size(), loaded, cellMismatch, brickMismatch, changedTotal, Arrays.toString(changed), pending, gone);
+    LookMod.LOGGER.info("verify: {}", summary);
+    return summary;
+  }
+
+  private static String describe(long key) {
+    return "L" + SectionKey.level(key) + " (" + SectionKey.x(key) + ", " + SectionKey.y(key) + ", " + SectionKey.z(key) + ")";
   }
 
   /** The voxel id {@link #brickScratch} is entirely filled with, or -1 if it is mixed. */
@@ -762,6 +886,7 @@ public final class VoxelWorld {
     int wanted = 32768;
     int capacity = Math.max(1, Math.min(wanted, maxTexels / BRICK_VOXELS));
     table.initSlots(capacity);
+    slotHash = new long[capacity];
 
     brickScratch = ByteBuffer.allocateDirect(BRICK_BYTES).order(ByteOrder.nativeOrder());
     colorScratch =

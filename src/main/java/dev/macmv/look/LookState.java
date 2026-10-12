@@ -18,10 +18,10 @@ import net.minecraft.network.chat.Component;
  */
 public final class LookState {
   public static boolean voxelEnabled = true;
-  /** 0 off, 1 step-count heatmap, 2 pyramid level tint, 3 no mipmaps, 4 unlit (albedo only). */
+  /** 0 off, 1 step-count heatmap, 2 pyramid level tint, 3 no mipmaps, 4 unlit (albedo only), 5 no biome tint, 6 mip level fixed at 2, 7 alpha test off. */
   public static int debug = 0;
 
-  private static final String[] DEBUG_NAMES = {"off", "step heatmap", "LOD levels", "no mipmaps", "unlit"};
+  private static final String[] DEBUG_NAMES = {"off", "step heatmap", "LOD levels", "no mipmaps", "unlit", "no biome tint", "mip level fixed at 2", "alpha test off"};
 
   private LookState() {}
 
@@ -33,6 +33,17 @@ public final class LookState {
   /** Call once per frame on the render thread. Key presses are only delivered with no screen open. */
   public static void poll() {
     Minecraft mc = Minecraft.getInstance();
+
+    while (LookKeys.VERIFY.consumeClick()) {
+      String summary;
+      try {
+        summary = VoxelWorld.verify();
+      } catch (RuntimeException e) {
+        LookMod.LOGGER.error("verify failed", e);
+        summary = "failed: " + e;
+      }
+      mc.gui.getChat().addMessage(Component.literal("Look verify: " + summary));
+    }
 
     while (LookKeys.TOGGLE_RENDERER.consumeClick()) {
       voxelEnabled = !voxelEnabled;

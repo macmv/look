@@ -168,4 +168,52 @@ final class BrickTable {
     }
     freeSlots[freeCount++] = slot;
   }
+
+  /**
+   * Checks the bookkeeping against itself and returns what is wrong, empty if all is well. Cells
+   * and owners agree, every used slot is referenced as often as it claims (once for a private
+   * brick), no referenced slot is also free, and no slot is free twice.
+   */
+  java.util.List<String> checkInvariants() {
+    java.util.List<String> bad = new java.util.ArrayList<>();
+    int[] refs = new int[capacity];
+
+    for (int cell = 0; cell < indirection.length; cell++) {
+      boolean hasOwner = owner[cell] != NO_OWNER;
+      if ((indirection[cell] != 0) != hasOwner) {
+        bad.add("cell " + cell + ": indirection " + indirection[cell] + " but owner " + owner[cell]);
+      }
+      int slot = indirection[cell] - 1;
+      if (slot >= capacity) bad.add("cell " + cell + " points past the pool: slot " + slot);
+      else if (slot >= 0) refs[slot]++;
+    }
+
+    boolean[] free = new boolean[capacity];
+    for (int i = 0; i < freeCount; i++) {
+      int slot = freeSlots[i];
+      if (free[slot]) bad.add("slot " + slot + " is free twice");
+      free[slot] = true;
+    }
+
+    for (int slot = 0; slot < capacity; slot++) {
+      if (free[slot]) {
+        if (refs[slot] != 0) bad.add("slot " + slot + " is free but " + refs[slot] + " cells use it");
+        if (slotUniform[slot] >= 0) bad.add("slot " + slot + " is free but marked uniform " + slotUniform[slot]);
+        continue;
+      }
+      if (slotUniform[slot] >= 0) {
+        if (refs[slot] != slotRefs[slot]) {
+          bad.add("shared slot " + slot + ": " + refs[slot] + " cells but refcount " + slotRefs[slot]);
+        }
+        Integer back = uniformSlots.get(slotUniform[slot]);
+        if (back == null || back != slot) bad.add("shared slot " + slot + " is missing from the uniform lookup");
+      } else if (refs[slot] != 1) {
+        bad.add("private slot " + slot + " is used by " + refs[slot] + " cells");
+      }
+    }
+    for (Map.Entry<Integer, Integer> e : uniformSlots.entrySet()) {
+      if (slotUniform[e.getValue()] != e.getKey()) bad.add("uniform lookup " + e.getKey() + " -> slot " + e.getValue() + " is stale");
+    }
+    return bad;
+  }
 }
