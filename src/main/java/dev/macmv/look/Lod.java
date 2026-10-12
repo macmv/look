@@ -24,7 +24,7 @@ public final class Lod {
   public static final int MAX_LEVELS = 8;
 
   /** Levels stored as voxel bricks. */
-  public static final int LEVELS = 3;
+  public static final int LEVELS = 2;
   /** Levels after those, drawn from a heightfield. */
   public static final int HF_LEVELS = 5;
   public static final int TOTAL_LEVELS = LEVELS + HF_LEVELS;
