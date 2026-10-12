@@ -150,7 +150,7 @@ uint hash3(ivec3 p) {
   return v.x;
 }
 
-// Row of the face table to use for voxel `id` at `cell` (voxel coordinates of its level). Blocks with
+// Row of the face table to use for voxel `id` at `cell` (block coordinates). Blocks with
 // several weighted variants, like the rotations of grass, get one picked from the position, so the
 // choice is stable and neighbors differ. Variant 0 is row `id`, the others are consecutive extra rows.
 int variantRow(uint id, ivec3 cell) {
@@ -173,14 +173,17 @@ int variantRow(uint id, ivec3 cell) {
 }
 
 // Surface color of voxel `id` where the ray hits face `axis`. `local` is the hit point inside the
-// voxel (0..1) and t the ray distance. Returns false for transparent texels (leaves etc.), so the
-// caller keeps marching. `column` is the world column of the voxel's center, for biome tint, and
-// `cell` its coordinate in voxels of its level, for picking a variant.
-bool surface(uint id, ivec3 cell, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, vec3 farTint, out vec3 albedo) {
+// voxel (0..1) and t the ray distance in blocks. Returns false for transparent texels (leaves etc.),
+// so the caller keeps marching. `column` is the world column of the voxel's center, for biome tint,
+// and `corner` its min corner in blocks, with `vs` blocks per voxel: the face shows the block texture
+// tiled once per block, so a coarse voxel looks like a patch of ordinary blocks, not one huge block.
+bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, float t, vec2 column, float lowLayer, vec3 farTint, out vec3 albedo) {
   // Face order matches Direction: down, up, north, south, west, east.
   int face = axis == 0 ? (d.x > 0.0 ? 4 : 5) : (axis == 1 ? (d.y > 0.0 ? 0 : 1) : (d.z > 0.0 ? 2 : 3));
   vec2 ab = axis == 0 ? local.yz : (axis == 1 ? local.xz : local.xy);
-  ab = clamp(ab, 0.001, 0.999);
+  // The block inside the voxel that was hit, for picking variants and jittering color.
+  ivec3 cell = corner + clamp(ivec3(floor(local * vs)), ivec3(0), ivec3(int(vs) - 1));
+  ab = clamp(fract(ab * vs), 0.001, 0.999);
 
   int base = variantRow(id, cell) * FACE_ROW_TEXELS + face * 4;
   vec3 rgb = vec3(0.0);
@@ -224,6 +227,11 @@ bool surface(uint id, ivec3 cell, int axis, vec3 d, vec3 local, float t, vec2 co
   }
 
   albedo = rgb;
+  if (vs > 1.5) {
+    // Every block a little different, fading out once a pixel spans a block or more (it would only shimmer).
+    float r = float(hash3(cell + ivec3(7, 13, 29)) >> 8u) / 16777216.0;
+    albedo *= 1.0 + (r - 0.5) * 0.16 * clamp(1.0 - t * uPixelAngle, 0.0, 1.0);
+  }
   return true;
 }
 
@@ -303,7 +311,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
           }
         }
 
-        if (surface(id, voxel >> lvl, axis, d, local, tc / vs, column, lowLayer, farTint, albedo)) {
+        if (surface(id, voxel, vs, axis, d, local, tc, column, lowLayer, farTint, albedo)) {
           tHit = tc;
           hitId = id;
           hitAxis = axis;

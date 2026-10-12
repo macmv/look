@@ -25,6 +25,11 @@ const SURFACE_THRESHOLD: f64 = 0.0;
 /// Blocks added to the found surface. Without the 3D noise and jaggedness terms the estimate is
 /// consistently this much lower than the real terrain.
 const SURFACE_BIAS: i32 = 7;
+/// Rise per block of run (between neighboring columns) above which grass and snow cannot hold on and
+/// the bare rock shows.
+const STEEP_SLOPE: f32 = 1.2;
+/// Vanilla cools a biome by this much per block above y 80, and snows below a temperature of 0.15.
+const LAPSE_PER_BLOCK: f32 = 0.05 / 40.0;
 /// Smallest vertical step of the scan for the surface. Larger voxels scan with their own size.
 const MIN_STEP: i32 = 16;
 
@@ -364,7 +369,47 @@ impl Terrain {
         tile.grass[col] = biome.grass;
       }
     }
+    tile.expose_cliffs(level, sea_level);
     tile
+  }
+}
+
+impl Tile {
+  /// Turns grass and snow on steep ground into stone, judged from the neighboring columns of the
+  /// tile (the edge columns only see the neighbors they have). A voxel is `2^level` blocks wide, so
+  /// the same terrain reads as steeper the coarser the level.
+  fn expose_cliffs(&mut self, level: u32, sea_level: i32) {
+    let run = (1i32 << level) as f32;
+    let mut out = self.surface;
+    for z in 0..16usize {
+      for x in 0..16usize {
+        let col = z * 16 + x;
+        let top = self.top[col];
+        let kind = self.surface[col];
+        if top == NO_TERRAIN || (top as i32) <= sea_level {
+          continue;
+        }
+        if kind != Surface::Grass as u8 && kind != Surface::Snow as u8 {
+          continue;
+        }
+
+        let mut rise = 0i32;
+        for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+          let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+          if !(0..16).contains(&nx) || !(0..16).contains(&nz) {
+            continue;
+          }
+          let n = self.top[nz as usize * 16 + nx as usize];
+          if n != NO_TERRAIN {
+            rise = rise.max((n as i32 - top as i32).abs());
+          }
+        }
+        if rise as f32 / run >= STEEP_SLOPE {
+          out[col] = Surface::Stone as u8;
+        }
+      }
+    }
+    self.surface = out;
   }
 }
 
@@ -374,7 +419,8 @@ pub fn surface_of(biome: BiomeInfo, top: i32, sea_level: i32) -> Surface {
   if f & (flags::OCEAN | flags::RIVER) != 0 || top <= sea_level {
     return if biome.temperature < 0.2 { Surface::Gravel } else { Surface::Sand };
   }
-  if biome.temperature <= 0.15 {
+  // Higher ground is colder, so snow reaches lower on cold biomes' mountains.
+  if biome.temperature - (top - 80).max(0) as f32 * LAPSE_PER_BLOCK <= 0.15 {
     return Surface::Snow;
   }
   if f & (flags::BEACH | flags::DESERT) != 0 {
