@@ -383,3 +383,33 @@ fn engine_drops_tiles_that_are_out_of_range() {
   assert_eq!(engine.stats().0, 0, "and it is no longer pending, so it can be asked for again");
   assert!(engine.request(1, 50, 50));
 }
+
+#[test]
+fn heightfield_tiles_are_handed_over_once() {
+  use look_native::{
+    engine::{Engine, HF_FLAG},
+    terrain::HF_BYTES,
+  };
+  use std::time::{Duration, Instant};
+
+  let f = fixture();
+  let engine = Engine::new(terrain(&f), 24, 2);
+  engine.set_camera(0, 0);
+  assert!(engine.request_heightfield(1, 3, 4));
+  assert!(!engine.request_heightfield(1, 3, 4), "already queued");
+
+  let mut keys = vec![0u64; 4];
+  let start = Instant::now();
+  let mut n = 0;
+  while n == 0 && start.elapsed() < Duration::from_secs(20) {
+    std::thread::sleep(Duration::from_millis(20));
+    n = engine.poll(&mut keys);
+  }
+  assert_eq!(n, 1);
+  assert_ne!(keys[0] & HF_FLAG, 0, "the key says it is a heightfield tile");
+
+  let mut out = [0u8; HF_BYTES];
+  assert!(engine.take_heightfield(1, 3, 4, &mut out));
+  assert!(!engine.take_heightfield(1, 3, 4, &mut out), "a tile is taken only once");
+  assert!(engine.request_heightfield(1, 3, 4), "and can be asked for again");
+}

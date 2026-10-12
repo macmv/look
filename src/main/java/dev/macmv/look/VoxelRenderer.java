@@ -31,6 +31,8 @@ public final class VoxelRenderer {
   private static int uMaxDist;
   private static int uDebug;
   private static int uSubVoxel;
+  private static int uHfEnabled;
+  private static int uHfIds;
   private static int uAtlasSize;
   private static int uMaxLod;
   private static int uPixelAngle;
@@ -104,6 +106,13 @@ public final class VoxelRenderer {
 
     GL33C.glUniform1i(uDebug, LookState.debug);
     GL33C.glUniform1i(uSubVoxel, LookState.subVoxel ? 1 : 0);
+    int[] hfIds = SeedSource.INSTANCE.voxelIds();
+    boolean hf = SeedSource.INSTANCE.available() && HeightField.active() && hfIds.length == 14;
+    GL33C.glUniform1i(uHfEnabled, hf ? 1 : 0);
+    if (hf) GL33C.glUniform1iv(uHfIds, hfIds);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfHeight"), HeightField.UNIT_HEIGHT);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfAttr"), HeightField.UNIT_ATTR);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfTiles"), HeightField.UNIT_TILES);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLightIndirection"), LightMap.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLight"), LightMap.UNIT_LIGHT);
     uploadLighting();
@@ -169,6 +178,8 @@ public final class VoxelRenderer {
     uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
     uDebug = GL33C.glGetUniformLocation(program, "uDebug");
     uSubVoxel = GL33C.glGetUniformLocation(program, "uSubVoxel");
+    uHfEnabled = GL33C.glGetUniformLocation(program, "uHfEnabled");
+    uHfIds = GL33C.glGetUniformLocation(program, "uHfIds");
     uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");
     uMaxLod = GL33C.glGetUniformLocation(program, "uMaxLod");
     uPixelAngle = GL33C.glGetUniformLocation(program, "uPixelAngle");

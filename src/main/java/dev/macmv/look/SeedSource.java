@@ -34,7 +34,7 @@ public final class SeedSource implements VoxelSource {
   /** Tiles this many sections beyond a level's window are not worth computing or keeping. */
   private static final int WANT_MARGIN = 6;
   /** Finished tiles reported to the world per frame, to keep the render thread's share small. */
-  private static final int KEYS_PER_POLL = 256;
+  private static final int KEYS_PER_POLL = 512;
 
   /** What the top of a column is made of, in the order native/src/terrain.rs expects. */
   private static final Block[][] SURFACES = {
@@ -69,7 +69,7 @@ public final class SeedSource implements VoxelSource {
   public String statsLine() {
     if (handle == 0) return null;
     NativeLib.terrainStats(handle, stats);
-    return String.format("seed tiles: %d queued, %d kept, %d computed", stats[0], stats[1], stats[2]);
+    return String.format("seed tiles: %d queued, %d kept, %d computed; %s", stats[0], stats[1], stats[2], HeightField.statsLine());
   }
 
   // --- VoxelSource -----------------------------------------------------------------------------
@@ -90,6 +90,15 @@ public final class SeedSource implements VoxelSource {
     handle = 0;
     resolved = false;
     ids = new int[0];
+    HeightField.reset();
+  }
+
+  /**
+   * The voxel ids of the predicted terrain (see {@link #pushIds}): per surface kind the top and filler
+   * id, then stone and the water stand-in. Empty until the engine runs.
+   */
+  public int[] voxelIds() {
+    return ids;
   }
 
   @Override
@@ -99,12 +108,20 @@ public final class SeedSource implements VoxelSource {
     if (handle == 0) return;
 
     pushIds();
-    if (mc.player != null) NativeLib.terrainCamera(handle, mc.player.getBlockX(), mc.player.getBlockZ());
+    if (mc.player != null) {
+      NativeLib.terrainCamera(handle, mc.player.getBlockX(), mc.player.getBlockZ());
+      HeightField.update(handle, mc.player.getBlockX(), mc.player.getBlockZ());
+    }
 
     keys.clear();
     int n = NativeLib.terrainPoll(handle, keys);
     for (int i = 0; i < n; i++) {
       long key = keys.getLong(i * 8);
+      if (key < 0) {
+        // A tile of the far heightfield, not of a voxel level.
+        HeightField.finished(handle, key & Long.MAX_VALUE);
+        continue;
+      }
       int level = SectionKey.level(key);
       int sx = SectionKey.x(key);
       int sz = SectionKey.z(key);

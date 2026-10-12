@@ -109,6 +109,20 @@ public final class NativeLib {
    */
   public static native int terrainFarTint(long handle, int level, int sx, int sz, ByteBuffer out);
 
+  /**
+   * Queues a tile of the far heightfield (see {@link HeightField}): the same computation as a voxel
+   * tile, but its key comes back from {@link #terrainPoll} with the sign bit set, and it is forgotten
+   * once taken. Returns whether it was newly queued.
+   */
+  public static native boolean terrainHeightfieldRequest(long handle, int level, int sx, int sz);
+
+  /**
+   * Takes a finished heightfield tile: writes 256 native-endian i16 heights, then 256 RGBA texels
+   * (grass color, then the kind of the column) into {@code out} (direct, at least 1536 bytes). Returns
+   * false if the tile is not finished.
+   */
+  public static native boolean terrainHeightfieldTake(long handle, int level, int sx, int sz, ByteBuffer out);
+
   /** Fills {@code out} with {tiles queued or running, tiles kept, tiles computed so far}. */
   public static native void terrainStats(long handle, long[] out);
 }

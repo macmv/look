@@ -21,13 +21,23 @@ use std::{
   time::{Duration, Instant},
 };
 
-use crate::terrain::{Ids, Terrain, Tile, BRICK_VOXELS};
+use crate::terrain::{Ids, Terrain, Tile, BRICK_VOXELS, HF_BYTES};
 
 /// Keys pack a tile like `SectionKey.java` does: level in bits 60..62, x in
 /// 22..43, z in 0..21.
 pub fn pack_key(level: u32, sx: i32, sz: i32) -> u64 {
   ((level as u64) << 60) | ((sx as u64 & 0x3F_FFFF) << 22) | (sz as u64 & 0x3F_FFFF)
 }
+
+/// Set on the keys of tiles that feed the far heightfield instead of voxel
+/// bricks. Such a tile is handed over once (see `Engine::take_heightfield`) and
+/// then forgotten.
+pub const HF_FLAG: u64 = 1 << 63;
+
+/// Sections (of the tile's own level) a heightfield tile may be from the camera
+/// before it is dropped. The heightfield window is 128 tiles wide, so a little
+/// over half of that.
+const HF_WANT_SECTIONS: i64 = 68;
 
 pub fn unpack_key(key: u64) -> (u32, i32, i32) {
   let level = ((key >> 60) & 7) as u32;
@@ -94,7 +104,8 @@ struct Shared {
 impl Shared {
   fn wanted(&self, key: u64, extra_sections: i64) -> bool {
     let (level, _, _) = unpack_key(key);
-    let limit = (self.want_sections + extra_sections) * (16i64 << level);
+    let want = if key & HF_FLAG != 0 { HF_WANT_SECTIONS } else { self.want_sections };
+    let limit = (want + extra_sections) * (16i64 << level);
     distance(key, self.cam_x.load(Ordering::Relaxed), self.cam_z.load(Ordering::Relaxed)) <= limit
   }
 }
@@ -151,7 +162,16 @@ impl Engine {
   /// Queues a tile unless it exists or is already queued. Returns true if it
   /// was queued now.
   pub fn request(&self, level: u32, sx: i32, sz: i32) -> bool {
-    let key = pack_key(level, sx, sz);
+    self.request_key(pack_key(level, sx, sz))
+  }
+
+  /// Like `request`, for a tile of the far heightfield: the key it finishes
+  /// under has `HF_FLAG` set.
+  pub fn request_heightfield(&self, level: u32, sx: i32, sz: i32) -> bool {
+    self.request_key(pack_key(level, sx, sz) | HF_FLAG)
+  }
+
+  fn request_key(&self, key: u64) -> bool {
     if self.shared.tiles.lock().unwrap().contains_key(&key) {
       return false;
     }
@@ -232,6 +252,16 @@ impl Engine {
   pub fn far_tint(&self, level: u32, sx: i32, sz: i32, out: &mut [u8]) -> Option<usize> {
     let tile = self.shared.tiles.lock().unwrap().get(&pack_key(level, sx, sz)).cloned()?;
     Some(tile.write_far_tint(level, out))
+  }
+
+  /// Writes a finished heightfield tile as texels (see
+  /// `Tile::write_heightfield`) and forgets it, so the far field costs no
+  /// memory here once the GPU has it. False if the tile is not finished.
+  pub fn take_heightfield(&self, level: u32, sx: i32, sz: i32, out: &mut [u8; HF_BYTES]) -> bool {
+    let key = pack_key(level, sx, sz) | HF_FLAG;
+    let Some(tile) = self.shared.tiles.lock().unwrap().remove(&key) else { return false };
+    tile.write_heightfield(self.shared.terrain.params.sea_level, out);
+    true
   }
 
   /// (queued or running, finished tiles kept, tiles computed since start)

@@ -11,6 +11,8 @@ block entities, particles, clouds and weather draw on top.
 - `src/main/resources/assets/look/shaders/` -- raycast shaders (currently a debug plane at y=64)
 - `src/main/java/dev/macmv/look/NativeLib.java` -- JNI bindings, extracts the bundled library
 - `native/` -- Rust crate (voxel brick / occupancy building). `cargo test` works standalone.
+- `src/main/java/dev/macmv/look/HeightField.java` -- far terrain (past the voxel levels) as a ray-marched
+  heightfield, fed by tiles from the native terrain engine
 
 ## Building
 

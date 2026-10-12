@@ -223,6 +223,43 @@ impl Tile {
   }
 }
 
+/// Height of a heightfield texel that has no terrain.
+pub const NO_HEIGHT: i16 = i16::MIN;
+/// Kind code of a water heightfield texel. Land is `1 + Surface`, 0 is no
+/// terrain.
+pub const HF_WATER: u8 = 7;
+/// Bytes of one heightfield tile: 256 native-endian i16 heights, then 256 RGBA
+/// texels.
+pub const HF_BYTES: usize = 256 * 2 + 256 * 4;
+
+impl Tile {
+  /// Writes the tile as heightfield texels, for ray marching terrain that is
+  /// too far for voxels: per column the height of the surface (the sea level
+  /// over water, `NO_HEIGHT` without terrain), then per column RGBA where rgb
+  /// is the biome's grass color and alpha the kind (0 none, `1 + Surface`,
+  /// `HF_WATER`).
+  pub fn write_heightfield(&self, sea_level: i32, out: &mut [u8; HF_BYTES]) {
+    for col in 0..256 {
+      let top = self.top[col];
+      let (height, kind) = if top == NO_TERRAIN {
+        (NO_HEIGHT, 0)
+      } else if (top as i32) < sea_level {
+        (sea_level as i16, HF_WATER)
+      } else {
+        (top, 1 + self.surface[col])
+      };
+      out[col * 2..col * 2 + 2].copy_from_slice(&height.to_ne_bytes());
+
+      let rgb = self.grass[col];
+      let o = 512 + col * 4;
+      out[o] = (rgb >> 16) as u8;
+      out[o + 1] = (rgb >> 8) as u8;
+      out[o + 2] = rgb as u8;
+      out[o + 3] = kind;
+    }
+  }
+}
+
 /// Bit position of the fill height in a brick's u16 texels, above the voxel id.
 /// Shared with `BlockClassifier.FILL_SHIFT` and the shader.
 pub const FILL_SHIFT: u32 = 13;
@@ -706,6 +743,24 @@ mod tests {
     assert_eq!(col[7], 13 | (7 << FILL_SHIFT));
     assert_eq!(col[8], 0);
     assert_eq!(col[2], 13);
+  }
+
+  #[test]
+  fn heightfield_texels_carry_height_kind_and_color() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 100;
+    tile.surface[0] = Surface::Snow as u8;
+    tile.grass[0] = 0x112233;
+    tile.top[1] = 40; // under the sea
+    let mut out = [0u8; HF_BYTES];
+    tile.write_heightfield(63, &mut out);
+
+    assert_eq!(i16::from_ne_bytes([out[0], out[1]]), 100);
+    assert_eq!(&out[512..516], &[0x11, 0x22, 0x33, 1 + Surface::Snow as u8]);
+    assert_eq!(i16::from_ne_bytes([out[2], out[3]]), 63);
+    assert_eq!(out[512 + 4 + 3], HF_WATER);
+    assert_eq!(i16::from_ne_bytes([out[4], out[5]]), NO_HEIGHT);
+    assert_eq!(out[512 + 8 + 3], 0);
   }
 
   #[test]

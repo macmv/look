@@ -207,6 +207,41 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainRequest<'l>(
   guard(&mut env, |_| Ok(engine(handle)?.request(level as u32, sx, sz) as jboolean))
 }
 
+/// Queues a tile of the far heightfield. Its key comes back from `terrainPoll`
+/// with the sign bit set. Returns true if it was newly queued.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainHeightfieldRequest<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  level: jint,
+  sx: jint,
+  sz: jint,
+) -> jboolean {
+  guard(&mut env, |_| Ok(engine(handle)?.request_heightfield(level as u32, sx, sz) as jboolean))
+}
+
+/// Takes a finished heightfield tile: writes `terrain::HF_BYTES` bytes
+/// (heights, then RGBA) into `out` and forgets the tile. Returns whether the
+/// tile was ready.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainHeightfieldTake<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  level: jint,
+  sx: jint,
+  sz: jint,
+  out: JByteBuffer<'l>,
+) -> jboolean {
+  guard(&mut env, |env| {
+    let (ptr, _) = buffer_ptr::<[u8; terrain::HF_BYTES]>(env, &out, terrain::HF_BYTES)?;
+    // SAFETY: as in terrainPoll.
+    let out = unsafe { &mut *ptr };
+    Ok(engine(handle)?.take_heightfield(level as u32, sx, sz, out) as jboolean)
+  })
+}
+
 /// Writes the keys of tiles finished since the last call into `out` (u64 each,
 /// native order) and returns how many.
 #[no_mangle]

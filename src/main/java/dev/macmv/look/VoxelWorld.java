@@ -568,6 +568,7 @@ public final class VoxelWorld {
       processWaiting();
       flushCells();
       TintMap.flush(UNIT_TINT);
+      HeightField.flush();
       LightMap.update();
 
       if (BlockClassifier.takeColorsDirty()) uploadColors();
@@ -643,6 +644,7 @@ public final class VoxelWorld {
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TINT);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, TintMap.texture());
     LightMap.bind();
+    HeightField.bind();
   }
 
   private static int atlasId() {

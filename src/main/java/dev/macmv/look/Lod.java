@@ -13,13 +13,21 @@ package dev.macmv.look;
  * where {@code B} is {@link #BASE_BLOCKS}. In sections of the level's own size that is the same
  * window for every level: a square ring from {@code BASE_CHUNKS / 2} to {@code BASE_CHUNKS}
  * sections around the camera (level 0 has no hole). So every level costs about the same memory, and
- * the total reach doubles with each added level: 8 levels at the default base of 16 chunks reach
- * 2048 chunks.
+ * the total reach doubles with each added level.
+ *
+ * <p>Only the first {@link #LEVELS} levels are voxel bricks. The levels past them follow the same
+ * distance rule but are a heightfield instead (see {@link HeightField}), whose texels are four times
+ * finer than a voxel of that level would be, at a fraction of the memory. Together the two kinds
+ * reach 2048 chunks at the default base.
  */
 public final class Lod {
   public static final int MAX_LEVELS = 8;
 
-  public static final int LEVELS = MAX_LEVELS;
+  /** Levels stored as voxel bricks. */
+  public static final int LEVELS = 3;
+  /** Levels after those, drawn from a heightfield. */
+  public static final int HF_LEVELS = 5;
+  public static final int TOTAL_LEVELS = LEVELS + HF_LEVELS;
   /** Radius of level 0 in chunks. The wrapping grid limits it, see {@link VoxelWorld#GRID_XZ}. */
   public static final int BASE_CHUNKS = 16;
   public static final float BASE_BLOCKS = BASE_CHUNKS * 16f;
@@ -46,6 +54,6 @@ public final class Lod {
 
   /** Farthest distance in blocks the pyramid can represent. */
   public static float maxDist() {
-    return BASE_BLOCKS * (1 << (LEVELS - 1));
+    return BASE_BLOCKS * (1 << (TOTAL_LEVELS - 1));
   }
 }

@@ -1,6 +1,7 @@
 #version 330 core
 
 const int MAX_LEVELS = 8;
+const int HF_LEVELS = 5;      // Lod.HF_LEVELS: pyramid levels past the voxel ones, drawn from a heightfield
 
 // uView / uProj are vanilla's matrices for this frame. Rays are expressed relative to the camera's
 // block (uCamBlock), so float precision stays good no matter how far from the origin we are.
@@ -14,6 +15,11 @@ uniform int uLevels;       // levels in the LOD pyramid
 uniform float uBase;       // blocks covered by level 0 (horizontally); level k covers up to uBase * 2^k
 uniform ivec3 uLevel[MAX_LEVELS];  // per level: lowest section y, section rows, first row in uIndirection
 uniform float uMaxDist;
+uniform int uHfEnabled;    // 1: levels past uLevels are drawn from the heightfield
+uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and filler id, then stone and water
+uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
+uniform sampler2DArray uHfAttr;     // rgb: biome grass color, a: kind (0 none, 1 + surface, 7 water)
+uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
 uniform int uSubVoxel;     // 1: surface voxels are drawn at their fill height, 0: whole or not at all
 uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
@@ -44,6 +50,9 @@ const int TINT_SIZE = 512;     // TintMap.SIZE
 const int TINT_FAR_FIRST = 5;  // TintMap.FAR_FIRST
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
 const int META_START = (8192 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
+const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level - 2) blocks wide
+const int HF_NONE = -32768;      // HeightField.NONE
+const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
 const int QUAD_HDR_START = META_START + 8192 * META_TEXELS;  // BlockClassifier.HDR_START / 4
 const int QUAD_POOL_START = QUAD_HDR_START + 8192 * 3;       // BlockClassifier.POOL_START / 4
@@ -64,7 +73,7 @@ uint readSlot(int lvl, ivec3 sec) {
 int levelAt(vec3 rel) {
   float h = max(abs(rel.x), abs(rel.z));
   if (h < uBase) return 0;
-  return min(uLevels - 1, 1 + int(floor(log2(h / uBase))));
+  return min(uLevels + HF_LEVELS - 1, 1 + int(floor(log2(h / uBase))));
 }
 
 // True when the level-`lvl` voxel at integer coordinate `vc` (in voxels of that level) occludes light.
@@ -181,10 +190,15 @@ int variantRow(uint id, ivec3 cell) {
   return v == 0 ? int(id) : int(m.x) + v - 1;
 }
 
+// Grass color of a heightfield hit, which has no loaded chunk and no tint layer to read it from.
+vec3 gHfTint = vec3(1.0);
+bool gHfTintOn = false;
+
 // Multiplier for a face table tint: -1 grass, -2 foliage (from the biome tint texture), else a 0xRRGGBB constant.
 // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
 vec3 tintColor(float tint, vec2 column, float lowLayer, vec3 farTint) {
   if (tint < -0.5) {
+    if (gHfTintOn && tint > -1.5) return gHfTint;
     if (farTint.z >= 0.0 && tint > -1.5) return textureLod(uTint, farTint, 0.0).rgb;
     return textureLod(uTint, vec3(column, lowLayer + (tint < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
   }
@@ -352,6 +366,139 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
   return found;
 }
 
+// Ray march over the far heightfield (see HeightField.java): texels are columns, solid below their
+// height, walked in 2D one tile at a time (tiles the ray passes over are skipped by their highest
+// texel), then texel by texel inside a tile. `t` is where the ray enters the first far level; the
+// level only grows from there. A hit comes out like one from the voxel trace.
+bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, inout int steps, out vec3 hitNormal, out int hitKind) {
+  vec3 invD = 1.0 / d;
+  float y0 = float(uCamBlock.y) + o.y;   // ray height at t = 0, in blocks
+  int last = uLevels + HF_LEVELS - 1;
+  // A level's window is 128 tiles wide, one short of what its ring needs when the camera is not
+  // tile aligned, so every level hands over to the next one tile early (the next level's tiles start
+  // well inside its ring), and the last one just ends.
+  float reach = uBase * float(1 << last) - 16.0 * float(1 << (last - HF_FINER));
+  ivec2 s = ivec2(d.x > 0.0 ? 1 : -1, d.z > 0.0 ? 1 : -1);
+  int axis = 1;
+
+  for (int it = 0; it < 640; it++) {
+    if (t > uMaxDist) return false;
+    steps++;
+
+    vec3 rel = o + d * t;
+    float h = max(abs(rel.x), abs(rel.z));
+    if (h >= reach) return false;
+    float ry = y0 + d.y * t;
+    if (ry > 400.0 && d.y >= 0.0) return false;   // above the world and climbing
+    if (ry < -100.0 && d.y <= 0.0) return false;
+
+    int lvl = levelAt(rel);
+    if (lvl < last && h >= uBase * float(1 << lvl) - 16.0 * float(1 << (lvl - HF_FINER))) lvl++;
+    int layer = lvl - uLevels;
+    int sh = lvl - HF_FINER;                 // a texel is 1 << sh blocks wide
+    float T = float(1 << sh);
+    float eps = EPS * T + t * 2e-7;
+
+    ivec2 camCell = uCamBlock.xz >> sh;
+    vec2 camRem = vec2(uCamBlock.xz & ((1 << sh) - 1));   // blocks into the camera's cell
+    ivec2 c = ivec2(floor((rel.xz + camRem) / T));          // cell relative to the camera's
+    ivec2 tile = (camCell + c) >> 4;
+    int tmax = texelFetch(uHfTiles, ivec3(tile & (HF_WINDOW - 1), layer), 0).r;
+
+    // Where the ray leaves this tile.
+    ivec2 lo = (tile << 4) - camCell;
+    vec2 edge = vec2(lo) + vec2(d.x > 0.0 ? 16.0 : 0.0, d.z > 0.0 ? 16.0 : 0.0);
+    vec2 tEdge = (edge * T - camRem - o.xz) * invD.xz;
+    float te = min(tEdge.x, tEdge.y);
+
+    float ryExit = y0 + d.y * te;
+    if (tmax == HF_NONE || min(ry, ryExit) > float(tmax)) {
+      axis = tEdge.x < tEdge.y ? 0 : 2;
+      t = te + eps;
+      continue;
+    }
+
+    // Texel by texel until the ray leaves the tile.
+    vec2 next = (vec2(c) + vec2(d.x > 0.0 ? 1.0 : 0.0, d.z > 0.0 ? 1.0 : 0.0)) * T - camRem - o.xz;
+    vec2 tNext = next * invD.xz;
+    vec2 tDelta = abs(invD.xz) * T;
+    float tc = t;
+
+    for (int j = 0; j < 34; j++) {
+      steps++;
+      ivec2 ac = camCell + c;
+      int H = texelFetch(uHfHeight, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0).r;
+      if (H != HF_NONE) {
+        float fH = float(H);
+        float th = -1.0;
+        int hax = axis;
+        if (y0 + d.y * tc <= fH) {
+          th = tc;                       // entered below the surface: the side of this column
+        } else if (d.y < 0.0) {
+          float tTop = (fH - y0) / d.y;  // comes down onto the top before leaving the texel
+          if (tTop <= min(tNext.x, tNext.y)) {
+            th = max(tTop, tc);
+            hax = 1;
+          }
+        }
+
+        if (th >= 0.0) {
+          vec4 attr = texelFetch(uHfAttr, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0);
+          int kind = int(attr.a * 255.0 + 0.5);
+          if (kind > 0) {
+            vec3 p = o + d * th;
+            float yAbs = y0 + d.y * th;
+            float ty = floor(yAbs / T) * T;
+            vec2 lxz = clamp((vec2(uCamBlock.xz - ac * (1 << sh)) + p.xz) / T, 0.0, 1.0);
+            vec3 local = vec3(lxz.x, (yAbs - ty) / T, lxz.y);
+            ivec3 corner = ivec3(ac.x * (1 << sh), int(ty), ac.y * (1 << sh));
+
+            // The top is the surface block, under it a few blocks of filler, then stone.
+            float depth = fH - yAbs;
+            uint id;
+            if (kind == 7) {
+              id = uint(uHfIds[13]);
+            } else if (hax == 1 || depth < 1.0) {
+              id = uint(uHfIds[(kind - 1) * 2]);
+            } else if (depth < 4.0) {
+              id = uint(uHfIds[(kind - 1) * 2 + 1]);
+            } else {
+              id = uint(uHfIds[12]);
+            }
+
+            gHfTint = attr.rgb;
+            gHfTintOn = true;
+            bool ok = surface(id, corner, T, hax, d, local, th, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
+            gHfTintOn = false;
+            if (ok) {
+              tHit = th;
+              hitId = id;
+              hitAxis = hax;
+              hitVoxel = corner;
+              hitLevel = lvl;
+              hitKind = 0;
+              hitNormal = vec3(0.0);
+              hitNormal[hax] = d[hax] > 0.0 ? -1.0 : 1.0;
+              return true;
+            }
+          }
+        }
+      }
+
+      if (tNext.x < tNext.y) {
+        tc = tNext.x; tNext.x += tDelta.x; c.x += s.x; axis = 0;
+      } else {
+        tc = tNext.y; tNext.y += tDelta.y; c.y += s.y; axis = 2;
+      }
+      if (((camCell + c) >> 4) != tile) break;
+    }
+
+    t = tc + eps;
+  }
+
+  return false;
+}
+
 // Two-level DDA over the LOD pyramid: whole sections are skipped when empty, voxels are stepped
 // inside bricks. At level k every voxel is 2^k blocks wide and a section is 16 voxels, but the
 // stepping is the same, so all the lengths below are just scaled by the voxel size.
@@ -373,6 +520,11 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
 
     vec3 rel = o + d * t;
     int lvl = levelAt(rel);
+    if (lvl >= uLevels) {
+      // Past the voxel levels the ray never comes back to them: the rest is the heightfield.
+      if (uHfEnabled == 0) return false;
+      return traceHeightfield(o, d, t, tHit, hitId, hitAxis, hitVoxel, hitLevel, albedo, steps, hitNormal, hitKind);
+    }
     float vs = float(1 << lvl);       // blocks per voxel
     int secShift = lvl + 4;           // block -> section
     // Float spacing grows with distance, so the nudge past a boundary has to as well.
