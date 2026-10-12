@@ -86,7 +86,6 @@ public final class VoxelWorld {
 
   private static final int BRICK_VOXELS = 16 * 16 * 16;
   private static final int BRICK_BYTES = BRICK_VOXELS * 2;
-  private static final long NO_OWNER = Long.MIN_VALUE;
   private static final long BUDGET_NANOS = 2_000_000L;
   /**
    * Extra sections kept past what a source can reach. Sections stay resident up to one section past
@@ -128,18 +127,8 @@ public final class VoxelWorld {
   private static final int[] levelRow0 = new int[Lod.LEVELS];
   private static int totalRows;
 
-  // CPU mirror of the indirection texture, plus which section owns each cell.
-  private static int[] indirection;
-  private static long[] owner;
-
-  private static int[] freeSlots;
-  private static int freeCount;
-  // Shared bricks of uniform sections: per slot the voxel id it is filled with (-1 for a private
-  // brick) and how many sections use it, plus the reverse lookup.
-  private static int[] slotUniform;
-  private static int[] slotRefs;
-  private static final Map<Integer, Integer> uniformSlots = new HashMap<>();
-  private static int capacity;
+  // CPU mirror of the indirection texture, which section owns each cell and the brick slots.
+  private static final BrickTable table = new BrickTable();
   private static boolean warnedFull;
 
   // Player position in sections of each level, and how far from it each level is built.
@@ -198,11 +187,11 @@ public final class VoxelWorld {
   }
 
   public static int usedSlots() {
-    return capacity - freeCount;
+    return table.used();
   }
 
   public static int capacity() {
-    return capacity;
+    return table.capacity();
   }
 
   /** Sections waiting to be rebuilt. */
@@ -401,7 +390,7 @@ public final class VoxelWorld {
     int level = SectionKey.level(key);
 
     // Resident sections get one section of slack so they do not flicker at the edge.
-    boolean resident = owner[cellIndex(key)] == key;
+    boolean resident = table.owns(cellIndex(key), key);
     if (inRange(level, SectionKey.x(key), SectionKey.z(key), resident ? 1 : 0)) {
       setState(key, SectionState.WAITING);
     } else {
@@ -433,11 +422,7 @@ public final class VoxelWorld {
   /** Frees the slot of a section, if it owns one, and queues the cell for upload. */
   private static void release(long key) {
     int cell = cellIndex(key);
-    if (owner[cell] != key) return;
-    if (indirection[cell] != 0) freeSlot(indirection[cell] - 1);
-    indirection[cell] = 0;
-    owner[cell] = NO_OWNER;
-    dirtyCells.add(cell);
+    if (table.release(key, cell)) dirtyCells.add(cell);
   }
 
   /**
@@ -503,11 +488,11 @@ public final class VoxelWorld {
 
   /** Gives starved sections another chance, as many as there are free slots. */
   private static void requeueStarved() {
-    if (freeCount == 0 || starved.isEmpty()) return;
+    if (table.freeCount() == 0 || starved.isEmpty()) return;
     List<Long> retry = new ArrayList<>();
     for (long key : starved) {
       retry.add(key);
-      if (retry.size() >= freeCount) break;
+      if (retry.size() >= table.freeCount()) break;
     }
     for (long key : retry) setState(key, SectionState.WAITING);
     warnedFull = false;
@@ -536,9 +521,7 @@ public final class VoxelWorld {
     totalRows = row;
 
     int cells = GRID_XZ * totalRows * GRID_XZ;
-    indirection = new int[cells];
-    owner = new long[cells];
-    Arrays.fill(owner, NO_OWNER);
+    table.resetCells(cells);
 
     states.clear();
     waiting.clear();
@@ -551,18 +534,8 @@ public final class VoxelWorld {
     orderPos = 0;
     viewValid = false;
     refreshPending = false;
-    resetSlots();
-    indirectionStale = true;
-  }
-
-  private static void resetSlots() {
-    if (freeSlots == null) return;
-    freeCount = 0;
-    for (int i = capacity - 1; i >= 0; i--) freeSlots[freeCount++] = i;
-    Arrays.fill(slotUniform, -1);
-    Arrays.fill(slotRefs, 0);
-    uniformSlots.clear();
     warnedFull = false;
+    indirectionStale = true;
   }
 
   // --- Per-frame update (GL) -------------------------------------------------------------------
@@ -647,7 +620,7 @@ public final class VoxelWorld {
       int x = cell % GRID_XZ;
       int z = (cell / GRID_XZ) % GRID_XZ;
       int y = cell / (GRID_XZ * GRID_XZ);
-      cellScratch.put(0, indirection[cell]);
+      cellScratch.put(0, table.indirection(cell));
       GL33C.glTexSubImage3D(
           GL33C.GL_TEXTURE_3D, 0, x, y, z, 1, 1, 1, GL33C.GL_RED_INTEGER, GL33C.GL_UNSIGNED_INT, cellScratch);
     }
@@ -745,59 +718,27 @@ public final class VoxelWorld {
     }
 
     int cell = cellIndex(key);
-
-    // Cannot happen while the view fits the grid, but never let two sections share a cell.
-    if (owner[cell] != NO_OWNER && owner[cell] != key) {
-      long other = owner[cell];
-      release(other);
-      if (states.containsKey(other)) setState(other, SectionState.OUT_OF_RANGE);
-    }
-
-    int own = owner[cell] == key && indirection[cell] != 0 ? indirection[cell] - 1 : -1;
     int uniform = solid == BRICK_VOXELS ? uniformId() : -1;
 
-    // The old slot is only given up once the new one is secured, so a starved section keeps
-    // showing what it had.
-    int slot;
-    boolean upload = true;
-    if (uniform >= 0) {
-      Integer shared = uniformSlots.get(uniform);
-      if (shared != null) {
-        slot = shared;
-        upload = false;
-      } else {
-        slot = allocSlot();
-        if (slot < 0) {
-          setState(key, SectionState.STARVED);
-          return;
-        }
-        slotUniform[slot] = uniform;
-        slotRefs[slot] = 0;
-        uniformSlots.put(uniform, slot);
-      }
-      if (own != slot) {
-        slotRefs[slot]++;
-        if (own >= 0) freeSlot(own);
-      }
-    } else if (own >= 0 && slotUniform[own] < 0) {
-      slot = own; // a private brick, rewritten in place
-    } else {
-      slot = allocSlot();
-      if (slot < 0) {
-        setState(key, SectionState.STARVED);
-        return;
-      }
-      if (own >= 0) freeSlot(own); // it was shared with other sections
+    BrickTable.Placement placed = table.place(key, cell, uniform);
+    if (placed.evicted() != BrickTable.NO_OWNER) {
+      dirtyCells.add(cell);
+      if (states.containsKey(placed.evicted())) setState(placed.evicted(), SectionState.OUT_OF_RANGE);
     }
-
-    owner[cell] = key;
-    indirection[cell] = slot + 1;
+    if (placed.slot() < 0) {
+      if (!warnedFull) {
+        LookMod.LOGGER.warn("Out of brick slots ({}); some terrain will be missing", table.capacity());
+        warnedFull = true;
+      }
+      setState(key, SectionState.STARVED);
+      return;
+    }
     dirtyCells.add(cell);
 
-    if (upload) {
+    if (placed.upload()) {
       GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, brickBuf);
       brickScratch.clear();
-      GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) slot * BRICK_BYTES, brickScratch);
+      GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) placed.slot() * BRICK_BYTES, brickScratch);
     }
 
     setState(key, SectionState.LOADED);
@@ -812,40 +753,13 @@ public final class VoxelWorld {
     return first & 0xFFFF;
   }
 
-  /** Takes a free slot, or returns -1 (warning once) if the pool is full. */
-  private static int allocSlot() {
-    if (freeCount == 0) {
-      if (!warnedFull) {
-        LookMod.LOGGER.warn("Out of brick slots ({}); some terrain will be missing", capacity);
-        warnedFull = true;
-      }
-      return -1;
-    }
-    return freeSlots[--freeCount];
-  }
-
-  /** Gives a slot back. A shared brick is only freed when its last section lets go. */
-  private static void freeSlot(int slot) {
-    int id = slotUniform[slot];
-    if (id >= 0) {
-      if (--slotRefs[slot] > 0) return;
-      uniformSlots.remove(id);
-      slotUniform[slot] = -1;
-    }
-    freeSlots[freeCount++] = slot;
-  }
-
   // --- GL resources ----------------------------------------------------------------------------
 
   private static void initGl() {
     int maxTexels = GL33C.glGetInteger(GL33C.GL_MAX_TEXTURE_BUFFER_SIZE);
     int wanted = 32768;
-    capacity = Math.max(1, Math.min(wanted, maxTexels / BRICK_VOXELS));
-
-    freeSlots = new int[capacity];
-    slotUniform = new int[capacity];
-    slotRefs = new int[capacity];
-    resetSlots();
+    int capacity = Math.max(1, Math.min(wanted, maxTexels / BRICK_VOXELS));
+    table.initSlots(capacity);
 
     brickScratch = ByteBuffer.allocateDirect(BRICK_BYTES).order(ByteOrder.nativeOrder());
     colorScratch =

@@ -17,6 +17,10 @@ dependencies {
   // Mojang mappings on purpose: they match NeoForge, which keeps a later port (or Connector) simple.
   mappings loom.officialMojangMappings()
   modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+
+  testImplementation platform('org.junit:junit-bom:5.10.2')
+  testImplementation 'org.junit.jupiter:junit-jupiter'
+  testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
   // Deliberately no Fabric API: the mod only needs mixins and raw GL.
 }
 
@@ -58,6 +62,10 @@ processResources {
   filesMatching('fabric.mod.json') {
     expand 'version': project.version
   }
+}
+
+test {
+  useJUnitPlatform()
 }
 
 tasks.withType(JavaCompile).configureEach {
