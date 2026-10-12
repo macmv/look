@@ -2,5 +2,6 @@
   "key.categories.look": "Look",
   "key.look.toggle_renderer": "Toggle voxel / vanilla renderer",
   "key.look.toggle_debug": "Cycle voxel debug view (off / step heatmap / LOD levels)",
-  "key.look.reload": "Reload voxel chunks"
+  "key.look.reload": "Reload voxel chunks",
+  "key.look.toggle_subvoxel": "Toggle sub-voxel terrain heights"
 }

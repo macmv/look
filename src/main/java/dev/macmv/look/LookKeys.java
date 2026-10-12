@@ -15,9 +15,12 @@ public final class LookKeys {
 
   public static final KeyMapping RELOAD =
       new KeyMapping("key.look.reload", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F9, CATEGORY);
+  public static final KeyMapping TOGGLE_SUBVOXEL =
+      new KeyMapping("key.look.toggle_subvoxel", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F10, CATEGORY);
+
   private LookKeys() {}
 
   public static KeyMapping[] all() {
-    return new KeyMapping[] {TOGGLE_RENDERER, TOGGLE_DEBUG, RELOAD};
+    return new KeyMapping[] {TOGGLE_RENDERER, TOGGLE_DEBUG, RELOAD, TOGGLE_SUBVOXEL};
   }
 }

@@ -30,6 +30,7 @@ public final class VoxelRenderer {
   private static int uLevel;
   private static int uMaxDist;
   private static int uDebug;
+  private static int uSubVoxel;
   private static int uAtlasSize;
   private static int uMaxLod;
   private static int uPixelAngle;
@@ -102,6 +103,7 @@ public final class VoxelRenderer {
     VoxelWorld.bind();
 
     GL33C.glUniform1i(uDebug, LookState.debug);
+    GL33C.glUniform1i(uSubVoxel, LookState.subVoxel ? 1 : 0);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLightIndirection"), LightMap.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLight"), LightMap.UNIT_LIGHT);
     uploadLighting();
@@ -166,6 +168,7 @@ public final class VoxelRenderer {
     uLevel = GL33C.glGetUniformLocation(program, "uLevel");
     uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
     uDebug = GL33C.glGetUniformLocation(program, "uDebug");
+    uSubVoxel = GL33C.glGetUniformLocation(program, "uSubVoxel");
     uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");
     uMaxLod = GL33C.glGetUniformLocation(program, "uMaxLod");
     uPixelAngle = GL33C.glGetUniformLocation(program, "uPixelAngle");

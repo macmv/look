@@ -14,6 +14,7 @@ uniform int uLevels;       // levels in the LOD pyramid
 uniform float uBase;       // blocks covered by level 0 (horizontally); level k covers up to uBase * 2^k
 uniform ivec3 uLevel[MAX_LEVELS];  // per level: lowest section y, section rows, first row in uIndirection
 uniform float uMaxDist;
+uniform int uSubVoxel;     // 1: surface voxels are drawn at their fill height, 0: whole or not at all
 uniform int uDebug;        // 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
 uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
@@ -421,7 +422,10 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
         // otherwise it passes over and on.
         bool inside = true;
         uint fill = raw >> FILL_SHIFT;
-        if (fill != 0u) {
+        if (fill != 0u && uSubVoxel == 0) {
+          // Off: round to a whole voxel, which is what sampling at the voxel's center gave.
+          inside = fill >= 4u;
+        } else if (fill != 0u) {
           float h = float(fill) / 8.0;
           if (local.y > h) {
             inside = false;
