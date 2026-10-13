@@ -170,6 +170,19 @@ Past the far cascade, shadows fade out into the unshadowed sun term. The heightf
 cheap long shadows (mountains at sunset): sample a coarse heightfield march toward the sun for
 pixels beyond the cascades. That is a later add-on.
 
+**Built (3.1 to 3.5).** `ShadowPass` renders two cascades (near 96 blocks wide at 512 texels, far
+512 wide at 1024) every frame, with voxel.fsh compiled a third time as `SHADOW_PASS` (a `main` that
+traces one ray per texel along `-uShadowDir` and writes the hit distance to an R32F texture). The
+light is the sun by day and the moon by night, kept 0.06 above the horizon. Lookups from `voxel.fsh`:
+`sunVisibility(pos, normal[, fallback])` (blocker search, then a rotated Poisson kernel whose width
+shrinks toward the occluder) and `sunVisibilityFast(pos)` (one tap, for volumetrics). `pos` is relative
+to `uCamBlock`. Raw maps are `uShadowMap0` / `uShadowMap1` on units 26 and 27; `shadowCoords(c, pos)`
+gives texel and ray distance. Past the far cascade the lookup returns the receiver's sky light, so
+caves stay dark and open terrain lit. The light model is `enhancedLight()`; `uSunLighting` is 0 in the
+Nether and End, which keep vanilla's light and skip the pass. Not done: rolling updates, the short
+exact contact ray, heightfield shadows past the cascades, night vision, a real blue-noise texture
+(interleaved gradient noise rotates the kernel instead).
+
 ### 3.6 Entities in shadows
 
 Entities are not in the voxel world. Options, cheapest first:

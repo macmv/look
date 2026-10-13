@@ -12,6 +12,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import dev.macmv.look.EnhancedTarget;
 import dev.macmv.look.FinalPost;
 import dev.macmv.look.PostChain;
+import dev.macmv.look.ShadowPass;
 import dev.macmv.look.VoxelRenderer;
 import java.awt.image.BufferedImage;
 import java.nio.ByteBuffer;
@@ -94,11 +95,20 @@ final class GlContext implements AutoCloseable {
 
   /** Same, at {@code w} x {@code h} pixels, which must fit in the framebuffer. */
   BufferedImage render(VoxelRenderer.Frame frame, TestScene scene, float[] sky, int w, int h) {
-    return render(frame, scene, sky, w, h, null);
+    return render(frame, scene, sky, w, h, false, null);
   }
 
   /** Same, and for an Enhanced frame also the final post pass with {@code post} (null skips it). */
   BufferedImage render(VoxelRenderer.Frame frame, TestScene scene, float[] sky, int w, int h, FinalPost.Params post) {
+    return render(frame, scene, sky, w, h, false, post);
+  }
+
+  /** With {@code shadows}, an Enhanced frame gets the sun shadow map and sun lighting, like the overworld. */
+  BufferedImage render(VoxelRenderer.Frame frame, TestScene scene, float[] sky, int w, int h, boolean shadows) {
+    return render(frame, scene, sky, w, h, shadows, null);
+  }
+
+  BufferedImage render(VoxelRenderer.Frame frame, TestScene scene, float[] sky, int w, int h, boolean shadows, FinalPost.Params post) {
     if (w > width || h > height) throw new IllegalArgumentException("larger than the framebuffer");
     GL33C.glBindFramebuffer(GL33C.GL_FRAMEBUFFER, fbo);
     GL33C.glViewport(0, 0, w, h);
@@ -109,6 +119,7 @@ final class GlContext implements AutoCloseable {
     GL33C.glClear(GL33C.GL_COLOR_BUFFER_BIT | GL33C.GL_DEPTH_BUFFER_BIT);
 
     scene.bind();
+    ShadowPass.render(frame, shadows);
     if (frame.atmosphere() == null) {
       VoxelRenderer.draw(frame);
     } else {
