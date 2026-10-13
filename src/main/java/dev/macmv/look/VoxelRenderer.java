@@ -125,6 +125,7 @@ public final class VoxelRenderer {
       // Own HDR target first, then resolve it into the main framebuffer. Vanilla draws on top of that.
       var main = Minecraft.getInstance().getMainRenderTarget();
       EnhancedTarget.begin(main.width, main.height);
+      FinalPost.capture(view, projection, camX, camY, camZ, frame.atmosphere().sunDir());
       draw(frame);
       main.bindWrite(true);
       EnhancedTarget.resolve();

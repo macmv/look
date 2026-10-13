@@ -419,11 +419,18 @@ entities are not in the buffer, see 1.2). On camera cuts and teleports, drop the
 Threshold + downsample/upsample chain on the HDR world pass output, added back before tonemapping.
 Only the voxel world blooms in the first version; entities draw after the resolve pass (9.1).
 
+Built (`PostChain`): threshold with a soft knee, 13-tap downsample chain, tent upsample, added in
+`resolve.fsh`. Bloom does not spill onto sky pixels, because the resolve pass discards pixels the world
+pass missed. Knobs in `EnhancedSettings`.
+
 ### 7.3 Auto-exposure
 
 Compute average (log) luminance on a small mip of the HDR image, smooth over time with different up
 and down rates, and apply as an exposure multiplier in the resolve pass. A fixed exposure while it is
 being built; the sun-vs-cave brightness swing is what it is for.
+
+Built (`PostChain`): log-luminance of a 128x128 reduction, mipmapped to one texel, smoothed on the GPU
+in a 1x1 ping-pong texture (no readback). Strength, key, limits and rates are in `EnhancedSettings`.
 
 ### 7.4 Color grading and tonemap options
 
@@ -443,6 +450,12 @@ or a few uniforms in the resolve pass. The Nether and End get their own presets 
 | Lens flare | Sun-screen-position sprites. Occlusion from one `trace` toward the sun (a single ray per frame) or a depth sample. |
 | Underwater / lava distortion | UV warp in final post when the camera is inside the fluid. |
 | Hurt, pumpkin, nausea overlays | Stay vanilla (GUI layer). |
+
+Built (`FinalPost`, `post.fsh`, hooked at the tail of `LevelRenderer.renderLevel`): vignette, chromatic
+aberration, grain, sharpening, depth of field (depth and focus from the world pass, so entities take the
+terrain's depth), motion blur, lens flare and underwater/lava warp, each with its own switch. Sharpening
+runs here, not in the resolve pass, until TAA exists. Tonemap, grading and the other resolve knobs
+live in `EnhancedSettings`.
 
 ## 8. Dimensions
 

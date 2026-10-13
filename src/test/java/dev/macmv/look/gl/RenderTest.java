@@ -3,7 +3,13 @@ package dev.macmv.look.gl;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import dev.macmv.look.EnhancedSettings;
+import dev.macmv.look.FinalPost;
 import dev.macmv.look.Lod;
+import dev.macmv.look.VoxelRenderer;
+import org.joml.Matrix4f;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
 import java.awt.image.BufferedImage;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -185,6 +191,16 @@ class RenderTest {
    */
   @Test
   void enhancedMatchesVanilla() {
+    var saved = saveSettings();
+    try {
+      EnhancedSettings.neutral();
+      matchesVanilla();
+    } finally {
+      restoreSettings(saved);
+    }
+  }
+
+  private void matchesVanilla() {
     try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
       for (double[] cam : new double[][] {{-17.5, 63.0, -9.5, 300, 22}, {-3.5, 56.5, -2.5, 300, 12}}) {
         var vanilla = scene.frame(W, H, cam[0], cam[1], cam[2], (float) cam[3], (float) cam[4], 70f, 0);
@@ -204,6 +220,171 @@ class RenderTest {
         }
         assertTrue(bad == 0, bad + " pixels differ between Vanilla and Enhanced");
       }
+    }
+  }
+
+  // --- Enhanced post processing ---------------------------------------------------------------
+
+  private static final float[] HILLS_CAM = {0.5f, 110.0f, 0.5f, 35f, 8f};
+
+  /** Runs {@code body} with every post effect off, then puts the settings back. */
+  private static BufferedImage withPost(Runnable setup, java.util.function.Supplier<BufferedImage> draw) {
+    var saved = saveSettings();
+    try {
+      EnhancedSettings.neutral();
+      setup.run();
+      return draw.get();
+    } finally {
+      restoreSettings(saved);
+    }
+  }
+
+  private static java.util.Map<java.lang.reflect.Field, Object> saveSettings() {
+    var saved = new java.util.HashMap<java.lang.reflect.Field, Object>();
+    try {
+      for (var f : EnhancedSettings.class.getFields()) {
+        if (java.lang.reflect.Modifier.isStatic(f.getModifiers()) && !java.lang.reflect.Modifier.isFinal(f.getModifiers())) {
+          Object v = f.get(null);
+          saved.put(f, v instanceof float[] a ? a.clone() : v);
+        }
+      }
+    } catch (IllegalAccessException e) {
+      throw new IllegalStateException(e);
+    }
+    return saved;
+  }
+
+  private static void restoreSettings(java.util.Map<java.lang.reflect.Field, Object> saved) {
+    try {
+      for (var e : saved.entrySet()) e.getKey().set(null, e.getValue());
+    } catch (IllegalAccessException ex) {
+      throw new IllegalStateException(ex);
+    }
+  }
+
+  private static FinalPost.Params postParams(VoxelRenderer.Frame f, int fluid, float[] sunDir, float turnDegrees) {
+    Matrix4f prev = new Matrix4f(f.projection()).mul(new Matrix4f(f.view()).rotateY((float) Math.toRadians(turnDegrees)));
+    double[] cam = {f.camX(), f.camY(), f.camZ()};
+    return new FinalPost.Params(f.view(), f.projection(), cam, prev, cam, sunDir, fluid, 1.5f, 3);
+  }
+
+  private BufferedImage hillsPost(java.util.function.Function<VoxelRenderer.Frame, FinalPost.Params> params) {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {
+      var vanilla = scene.frame(W, H, HILLS_CAM[0], HILLS_CAM[1], HILLS_CAM[2], HILLS_CAM[3], HILLS_CAM[4], 70f, 0);
+      var frame = scene.enhanced(vanilla);
+      return gl.render(frame, scene, SKY, W, H, params == null ? null : params.apply(frame));
+    }
+  }
+
+  /** Bloom with a low threshold, so the bright sunlit parts of the hills glow. */
+  @Test
+  void enhancedBloom() {
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.bloom = true;
+      EnhancedSettings.bloomThreshold = 0.45f;
+      EnhancedSettings.bloomKnee = 0.2f;
+      EnhancedSettings.bloomStrength = 0.4f;
+    }, () -> hillsPost(null));
+    Golden.check("enhanced_bloom", img);
+  }
+
+  /** ACES tonemap, a darker fixed exposure and a saturation / contrast / tint grade. */
+  @Test
+  void enhancedTonemapAndGrade() {
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.tonemap = EnhancedSettings.TONEMAP_ACES;
+      EnhancedSettings.exposureCompensation = 1.3f;
+      EnhancedSettings.grading = true;
+      EnhancedSettings.saturation = 1.4f;
+      EnhancedSettings.contrast = 1.15f;
+      EnhancedSettings.tint = new float[] {1.05f, 1.0f, 0.9f};
+    }, () -> hillsPost(null));
+    Golden.check("enhanced_tonemap_grade", img);
+  }
+
+  /** Auto-exposure on a well lit scene must settle on a multiplier inside its limits, and change the image. */
+  @Test
+  void enhancedAutoExposure() {
+    BufferedImage base = withPost(() -> {}, () -> hillsPost(null));
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.autoExposure = true;
+      EnhancedSettings.exposureStrength = 1f;
+      EnhancedSettings.exposureKey = 0.5f;
+      EnhancedSettings.exposureMax = 2f;
+    }, () -> hillsPost(null));
+    Golden.check("enhanced_auto_exposure", img);
+    long a = 0, b = 0;
+    for (int y = 0; y < H; y++) {
+      for (int x = 0; x < W; x++) {
+        a += base.getRGB(x, y) & 255;
+        b += img.getRGB(x, y) & 255;
+      }
+    }
+    assertTrue(a != b, "auto-exposure changed nothing");
+  }
+
+  /** Vignette, chromatic aberration, grain and sharpening together. */
+  @Test
+  void enhancedScreenEffects() {
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.vignette = true;
+      EnhancedSettings.vignetteStrength = 0.6f;
+      EnhancedSettings.chromaticAberration = true;
+      EnhancedSettings.chromaticStrength = 0.02f;
+      EnhancedSettings.filmGrain = true;
+      EnhancedSettings.grainStrength = 0.08f;
+      EnhancedSettings.sharpen = true;
+      EnhancedSettings.sharpenStrength = 0.6f;
+    }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 0f)));
+    Golden.check("enhanced_screen_effects", img);
+  }
+
+  @Test
+  void enhancedDepthOfField() {
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.depthOfField = true;
+      EnhancedSettings.dofRadius = 10f;
+      EnhancedSettings.dofStrength = 2f;
+    }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 0f)));
+    Golden.check("enhanced_dof", img);
+  }
+
+  @Test
+  void enhancedMotionBlur() {
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.motionBlur = true;
+      EnhancedSettings.motionBlurStrength = 1f;
+    }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 2.5f)));
+    Golden.check("enhanced_motion_blur", img);
+  }
+
+  @Test
+  void enhancedLensFlare() {
+    BufferedImage img = withPost(() -> {
+      EnhancedSettings.lensFlare = true;
+      EnhancedSettings.lensFlareStrength = 1f;
+    }, () -> hillsPost(f -> {
+      // The sun a bit right of and above the view center, in the sky over the hills.
+      Matrix4f invProj = new Matrix4f(f.projection()).invert();
+      Vector4f v = invProj.transform(new Vector4f(0.3f, 0.45f, 1f, 1f));
+      Vector3f d = new Vector3f(v.x / v.w, v.y / v.w, v.z / v.w);
+      new Matrix4f(f.view()).invert().transformDirection(d).normalize();
+      return postParams(f, 0, new float[] {d.x, d.y, d.z}, 0f);
+    }));
+    Golden.check("enhanced_lens_flare", img);
+  }
+
+  @Test
+  void enhancedUnderwaterDistortion() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.fluidDistortion = true;
+        EnhancedSettings.fluidDistortionStrength = 3f;
+      }, () -> {
+        var f = scene.enhanced(scene.frame(W, H, -3.5, 56.5, -2.5, 300f, 12f, 70f, 0));
+        return gl.render(f, scene, SKY, W, H, postParams(f, 1, new float[] {0f, 1f, 0f}, 0f));
+      });
+      Golden.check("enhanced_underwater", img);
     }
   }
 }

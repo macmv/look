@@ -1,5 +1,6 @@
 package dev.macmv.look.mixin;
 
+import dev.macmv.look.FinalPost;
 import dev.macmv.look.LookState;
 import dev.macmv.look.VoxelRenderer;
 import dev.macmv.look.WorldSource;
@@ -30,6 +31,12 @@ public abstract class LevelRendererMixin {
   private void look$blockChanged(
       BlockGetter level, BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci) {
     WorldSource.INSTANCE.blockChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
+  }
+
+  /** Enhanced final post: after the translucent layer, particles and weather, before the GUI. */
+  @Inject(method = "renderLevel", at = @At("TAIL"))
+  private void look$finalPost(CallbackInfo ci) {
+    FinalPost.runFrame();
   }
 
   /**
