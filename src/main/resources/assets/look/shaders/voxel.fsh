@@ -58,7 +58,8 @@ const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level
 const int HF_TREE = 8;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
 const int HF_NONE = -32768;      // HeightField.NONE
 const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
-const float HF_BLEND_TILES = 2.0;  // tiles before a level hands over that its heights blend toward the next
+const float HF_CEILING = 400.0;    // no heightfield column or tree stands above this
+const float HF_BLEND_TILES = 2.0; // tiles before a level hands over that its heights blend toward the next
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
 const int QUAD_HDR_START = META_START + 8192 * META_TEXELS;  // BlockClassifier.HDR_START / 4
 const int QUAD_POOL_START = QUAD_HDR_START + 8192 * 3;       // BlockClassifier.POOL_START / 4
@@ -573,6 +574,12 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     float ry = y0 + d.y * t;
     if (ry > 400.0 && d.y >= 0.0) return false;   // above the world and climbing
     if (ry < -100.0 && d.y <= 0.0) return false;
+    if (ry > HF_CEILING + 1.0 && d.y < 0.0) {
+      // Above every column and coming down: nothing to hit before the ray reaches the ceiling.
+      t = max((HF_CEILING - y0) / d.y, t) + EPS;
+      axis = 1;
+      continue;
+    }
 
     int lvl = levelAt(rel);
     if (lvl < last && h >= uBase * float(1 << lvl) - 16.0 * float(1 << (lvl - HF_FINER))) lvl++;
@@ -769,6 +776,19 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
     // Left the vertical extent of the level while heading away from it.
     if (sec.y < rows.x && d.y <= 0.0) return false;
     if (sec.y >= rows.x + rows.y && d.y >= 0.0) return false;
+
+    if (sec.y >= rows.x + rows.y) {
+      // Above every section of the level and coming down (a camera high up): every section on the way is
+      // empty, so go straight to the top of the level, or out of its horizontal window if that is first.
+      float top = float(((rows.x + rows.y) << secShift) - uCamBlock.y);
+      float tPlane = (top - o.y) * invD.y;
+      float R = uBase * float(1 << lvl);
+      vec2 tWall = (vec2(d.x > 0.0 ? R : -R, d.z > 0.0 ? R : -R) - o.xz) * invD.xz;
+      float tJump = min(tPlane, min(tWall.x, tWall.y));
+      axis = tJump == tPlane ? 1 : (tWall.x < tWall.y ? 0 : 2);
+      t = max(tJump, t) + eps;
+      continue;
+    }
 
     ivec3 secMin = sec << secShift;   // block
     uint slot = 0u;
