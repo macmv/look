@@ -20,6 +20,8 @@ After finishing a chunk of work:
 
 - ASCII only in files and docs: `--` not an em dash, `->` not an arrow, straight quotes.
 - Never add Co-Authored-By lines or any AI attribution to commit messages or PR descriptions.
+- Never add `-D` system property settings (`Integer.getInteger`, `System.getProperty`, ...) to the
+  mod. Make tunables constants at the top of the file instead.
 
 # Project notes
 
