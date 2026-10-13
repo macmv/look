@@ -14,13 +14,16 @@ import net.minecraft.resources.RegistryOps;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.FeatureSorter;
 import net.minecraft.world.level.levelgen.feature.AbstractHugeMushroomFeature;
+import net.minecraft.world.level.levelgen.feature.KelpFeature;
 import net.minecraft.world.level.levelgen.feature.RandomPatchFeature;
+import net.minecraft.world.level.levelgen.feature.SeaPickleFeature;
+import net.minecraft.world.level.levelgen.feature.SeagrassFeature;
 import net.minecraft.world.level.levelgen.feature.SimpleBlockFeature;
 import net.minecraft.world.level.levelgen.feature.TreeFeature;
 import net.minecraft.world.level.levelgen.placement.PlacedFeature;
 
 /**
- * Describes the features that grow trees and scatter grass, for the native decoration port (see
+ * Describes the features that grow trees, scatter grass and plant the sea floor, for the native decoration port (see
  * {@code native/src/trees/}).
  *
  * <p>Vanilla seeds every placed feature's random source from its index in its decoration step's
@@ -103,13 +106,28 @@ public final class TreeExport {
 
   /** The plants the native side can place: it knows how they survive and how they look from afar. */
   private static final List<String> PLANTS =
-      List.of("\"minecraft:short_grass\"", "\"minecraft:fern\"", "\"minecraft:tall_grass\"", "\"minecraft:large_fern\"", "\"minecraft:dead_bush\"");
+      List.of(
+          "\"minecraft:short_grass\"",
+          "\"minecraft:fern\"",
+          "\"minecraft:tall_grass\"",
+          "\"minecraft:large_fern\"",
+          "\"minecraft:dead_bush\"",
+          // The underwater features are named by their type, not by a block.
+          "\"minecraft:seagrass\"",
+          "\"minecraft:kelp\"",
+          "\"minecraft:sea_pickle\"");
 
   private static boolean mayPlacePlants(PlacedFeature feature) {
     // A patch's config does not list the feature inside it, so the patch itself is what shows up.
     return feature
         .getFeatures()
-        .anyMatch(configured -> configured.feature() instanceof RandomPatchFeature || configured.feature() instanceof SimpleBlockFeature);
+        .anyMatch(
+            configured ->
+                configured.feature() instanceof RandomPatchFeature
+                    || configured.feature() instanceof SimpleBlockFeature
+                    || configured.feature() instanceof SeagrassFeature
+                    || configured.feature() instanceof KelpFeature
+                    || configured.feature() instanceof SeaPickleFeature);
   }
 
   private static boolean placesPlants(JsonElement json) {

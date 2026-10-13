@@ -117,6 +117,9 @@ fn look_of(name: &str) -> Look {
     "mushroom_stem" => Look::Fixed(0xD4CDBE),
     "short_grass" | "fern" | "tall_grass" | "large_fern" => Look::Grass,
     "dead_bush" => Look::Fixed(0x6B5328),
+    "seagrass" | "tall_seagrass" => Look::Fixed(0x2E7D32),
+    "kelp" | "kelp_plant" => Look::Fixed(0x4E7A2A),
+    "sea_pickle" => Look::Fixed(0x6E8B2E),
     _ => Look::None,
   }
 }
@@ -310,7 +313,10 @@ impl Forest {
     let mut any = false;
     let blocks = &self.decoration.blocks;
     self.for_each_block(terrain, s, cache, true, x0, z0, width as i64, |x, y, z, id| {
-      if self.looks.get(id as usize).copied().unwrap_or(Look::None) == Look::None {
+      // Water plants are under the surface of the water the heightfield shows.
+      if self.looks.get(id as usize).copied().unwrap_or(Look::None) == Look::None
+        || blocks.is_water_plant(Block::new(id))
+      {
         return;
       }
       let at = (z as i64 - z0) as usize * width + (x as i64 - x0) as usize;
