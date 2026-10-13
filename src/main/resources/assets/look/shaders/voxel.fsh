@@ -414,6 +414,8 @@ float hfHeight(ivec2 ac, int layer) {
   if (w <= 0.0) return float(H);
 
   ivec2 cc = (uCamBlock.xz + ivec2(floor(center))) >> (lvl - HF_FINER + 1);
+  // The coarse tile may not have arrived (or been dropped): its texels are then stale or never written.
+  if (texelFetch(uHfTiles, ivec3((cc >> 4) & (HF_WINDOW - 1), layer + 1), 0).r == HF_NONE) return float(H);
   int Hc = texelFetch(uHfHeight, ivec3(cc & (HF_WINDOW * 16 - 1), layer + 1), 0).r;
   if (Hc == HF_NONE) return float(H);
   return mix(float(H), float(Hc), w);

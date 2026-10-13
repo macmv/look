@@ -176,6 +176,81 @@ public final class HeightField {
     return bad;
   }
 
+  /**
+   * Reads the GPU's height and tile-maximum textures back and checks them against what the CPU
+   * believes: a SHOWN cell's maximum must be the maximum of its texels, and no texel of a SHOWN cell
+   * may be outside the world. Cells that are not shown are only counted, since junk there is hidden
+   * (unless the shader's blend toward a coarser level reads it). Slow; meant for F4 while it is wrong.
+   */
+  public static List<String> verifyGpu() {
+    List<String> bad = new ArrayList<>();
+    if (heightTex == 0) return bad;
+
+    int prevUnit = com.mojang.blaze3d.platform.GlStateManager._getActiveTexture();
+    try {
+      ByteBuffer hb = ByteBuffer.allocateDirect(SIZE * SIZE * LEVELS * 2).order(ByteOrder.nativeOrder());
+      ByteBuffer tb = ByteBuffer.allocateDirect(WINDOW_TILES * WINDOW_TILES * LEVELS * 2).order(ByteOrder.nativeOrder());
+      GL33C.glPixelStorei(GL33C.GL_PACK_ALIGNMENT, 1);
+      GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_HEIGHT);
+      GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, heightTex);
+      GL33C.glGetTexImage(GL33C.GL_TEXTURE_2D_ARRAY, 0, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, hb);
+      GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TILES);
+      GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, tilesTex);
+      GL33C.glGetTexImage(GL33C.GL_TEXTURE_2D_ARRAY, 0, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, tb);
+      GL33C.glPixelStorei(GL33C.GL_PACK_ALIGNMENT, 4);
+
+      for (int lv = 0; lv < LEVELS; lv++) {
+        Level l = levels[lv];
+        int maxMismatch = 0;
+        int shownJunk = 0;
+        int hiddenJunk = 0;
+        for (int cz = 0; cz < WINDOW_TILES; cz++) {
+          for (int cx = 0; cx < WINDOW_TILES; cx++) {
+            int cell = cz * WINDOW_TILES + cx;
+            short gpuMax = tb.getShort(((lv * WINDOW_TILES + cz) * WINDOW_TILES + cx) * 2);
+            short texMax = NONE;
+            boolean junk = false;
+            for (int z = 0; z < TILE; z++) {
+              for (int x = 0; x < TILE; x++) {
+                int idx = (lv * SIZE + cz * TILE + z) * SIZE + cx * TILE + x;
+                short h = hb.getShort(idx * 2);
+                if (h > texMax) texMax = h;
+                if (h != NONE && (h < -64 || h > 400)) junk = true;
+              }
+            }
+            if (gpuMax != NONE && gpuMax != texMax) {
+              if (maxMismatch++ < 3) {
+                bad.add(String.format("far level %d cell (%d,%d) %s key %s: tile max %d but texels max %d",
+                    lv, cx, cz, l.state[cell], keyText(l.resident[cell]), gpuMax, texMax));
+              }
+            }
+            if (junk) {
+              if (gpuMax != NONE) {
+                if (shownJunk++ < 3) {
+                  bad.add(String.format("far level %d cell (%d,%d) %s key %s: visible texels outside the world (tile max %d, texel max %d)",
+                      lv, cx, cz, l.state[cell], keyText(l.resident[cell]), gpuMax, texMax));
+                }
+              } else {
+                hiddenJunk++;
+              }
+            }
+          }
+        }
+        if (maxMismatch > 0 || shownJunk > 0 || hiddenJunk > 0) {
+          bad.add("far level " + lv + ": " + maxMismatch + " cells with a wrong tile max, " + shownJunk
+              + " visible cells with junk texels, " + hiddenJunk + " hidden cells with junk texels");
+        }
+      }
+    } finally {
+      GL33C.glActiveTexture(prevUnit);
+    }
+    return bad;
+  }
+
+  private static String keyText(long key) {
+    return key == NO_KEY ? "none" : "(" + (int) (key >> 32) + "," + (int) key + ")";
+  }
+
   /** A line for the debug HUD: tiles held per level. */
   public static String statsLine() {
     return "far tiles: " + Arrays.toString(residentCount);
@@ -365,6 +440,18 @@ public final class HeightField {
     none = ByteBuffer.allocateDirect(WINDOW_TILES * WINDOW_TILES * 2).order(order);
     for (int i = 0; i < WINDOW_TILES * WINDOW_TILES; i++) none.putShort(i * 2, NONE);
     for (int i = 0; i < LEVELS; i++) levels[i].clearGpu = true;
+
+    // glTexImage3D leaves the heights undefined, and the shader reads cells whose tile has not arrived
+    // (the blend toward the coarser level), so start them all as "no terrain".
+    ByteBuffer blank = ByteBuffer.allocateDirect(SIZE * SIZE * 2).order(order);
+    for (int i = 0; i < SIZE * SIZE; i++) blank.putShort(i * 2, NONE);
+    GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 1);
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_HEIGHT);
+    for (int i = 0; i < LEVELS; i++) {
+      GL33C.glTexSubImage3D(
+          GL33C.GL_TEXTURE_2D_ARRAY, 0, 0, 0, i, SIZE, SIZE, 1, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, blank);
+    }
+    GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);
   }
 
   /** Makes rays skip every tile of a level. */
