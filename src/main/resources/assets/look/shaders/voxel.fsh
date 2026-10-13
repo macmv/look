@@ -40,6 +40,7 @@ uniform float uTime;              // game ticks, wrapped to a multiple of the sw
 uniform int uWaterId;             // voxel id of water, for the texture of its surface
 uniform vec3 uFogColor;           // vanilla's fog this frame, used when the camera is under water
 uniform vec2 uFogRange;           // fog start and end
+uniform float uSeaLevel;          // height of the sea: the far heightfield stores the seabed under it, and water fills up to here
 
 in vec2 vNdc;
 out vec4 fragColor;
@@ -213,6 +214,10 @@ bool gWet = false;        // the ray is in water right now
 bool gUnder = false;      // the ray started in water: the camera is under water
 ivec3 gLastWaterVoxel = ivec3(0);
 int gLastWaterLevel = 0;
+// The water surface of a far heightfield texel is not a voxel: it is the texel's column filled up to the sea.
+bool gWaterHf = false;    // the kept surface is a far one
+float gWaterSize = 1.0;   // blocks per texel of it
+vec3 gWaterTint = vec3(1.0);
 
 // Multiplier for a face table tint: -1 grass, -2 foliage (from the biome tint texture), else a 0xRRGGBB constant.
 // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
@@ -464,6 +469,20 @@ void markWater(float t, int ax, bool exiting) {
   gWaterLevel = gLastWaterLevel;
 }
 
+// The ray crosses the sea surface above far texel `ac` at distance `t`. Only the first surface is kept.
+void markHfWater(float t, bool exiting, ivec2 ac, int sh, vec3 tint) {
+  if (gWaterT >= 0.0) return;
+  float T = float(1 << sh);
+  gWaterT = t;
+  gWaterAxis = 1;
+  gWaterExit = exiting;
+  gWaterHf = true;
+  gWaterSize = T;
+  gWaterTint = tint;
+  gWaterVoxel = ivec3(ac.x << sh, int(floor(uSeaLevel / T) * T), ac.y << sh);
+  gWaterLevel = sh + HF_FINER;
+}
+
 // A tree column of the far heightfield is solid from the ground to the top of its canopy, but the
 // sides of a real canopy sit above bare trunk. The kind carries the tree's height above the ground
 // (HF_TREE + blocks), and the lower part of a side, below this share of that height, shows bark.
@@ -505,7 +524,7 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   if (kind == HF_TREE) {
     id = uint(uHfIds[12]);
   } else if (kind == 7) {
-    id = uint(uHfIds[13]);
+    id = uint(uHfIds[hax == 1 || depth < 1.0 ? 2 : 3]);   // the seabed is sand
   } else if (hax == 1 || depth < 1.0) {
     id = uint(uHfIds[(kind - 1) * 2]);
   } else if (depth < 4.0) {
@@ -522,10 +541,8 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   gHfTint = attr.rgb;
   gHfTintOn = true;
   gTapCap = 1;
-  gKeepSeeThrough = kind == 7;
   bool ok = surface(id, corner, T, hax, d, local, tt, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
   gTapCap = 8;
-  gKeepSeeThrough = false;
   gHfTintOn = false;
   if (ok && kind == HF_TREE) albedo = hfTreeColor(attr.rgb, vec2(ac), depth, treeH, hax);
   return ok;
@@ -569,6 +586,8 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     ivec2 c = ivec2(floor((rel.xz + camRem) / T));          // cell relative to the camera's
     ivec2 tile = (camCell + c) >> 4;
     int tmax = texelFetch(uHfTiles, ivec3(tile & (HF_WINDOW - 1), layer), 0).r;
+    // Water texels hold their seabed, but the sea fills them up to its level.
+    if (tmax != HF_NONE) tmax = max(tmax, int(uSeaLevel));
     if (tmax != HF_NONE && lvl < last) {
       // Heights blend toward the coarser level's near the hand-over, which may stand higher.
       int cmax = texelFetch(uHfTiles, ivec3((tile >> 1) & (HF_WINDOW - 1), layer + 1), 0).r;
@@ -599,6 +618,15 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
       ivec2 ac = camCell + c;
       float fH = hfHeight(ac, layer);
       if (fH != float(HF_NONE)) {
+        if (fH < uSeaLevel && d.y != 0.0) {
+          // A water texel: the sea fills the column from the seabed up to its level. A ray crossing that
+          // level inside the texel enters the water (coming down) or leaves it (going up).
+          float tSea = (uSeaLevel - y0) / d.y;
+          vec4 wattr = texelFetch(uHfAttr, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0);
+          if (int(wattr.a * 255.0 + 0.5) == 7 && tSea >= tc && tSea <= min(tNext.x, tNext.y)) {
+            markHfWater(tSea, d.y > 0.0, ac, sh, wattr.rgb);
+          }
+        }
         float th = -1.0;
         int hax = axis;
         if (y0 + d.y * tc <= fH) {
@@ -630,7 +658,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
             if (kind == HF_TREE) {
               id = uint(uHfIds[12]);   // any opaque block: the color comes from the texel
             } else if (kind == 7) {
-              id = uint(uHfIds[13]);
+              id = uint(uHfIds[hax == 1 || depth < 1.0 ? 2 : 3]);   // the seabed is sand
             } else if (hax == 1 || depth < 1.0) {
               id = uint(uHfIds[(kind - 1) * 2]);
             } else if (depth < 4.0) {
@@ -641,9 +669,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
 
             gHfTint = attr.rgb;
             gHfTintOn = true;
-            gKeepSeeThrough = kind == 7;   // water: its texture tinted with the biome's water color, opaque
             bool ok = surface(id, corner, T, hax, d, local, th, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
-            gKeepSeeThrough = false;
             if (ok && kind == HF_TREE) {
               // A tree's canopy or trunk: its own color, a little different from tree to tree.
               albedo = hfTreeColor(attr.rgb, vec2(ac), depth, treeH, hax);
@@ -728,10 +754,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
     if (lvl >= uLevels) {
       // Past the voxel levels the ray never comes back to them: the rest is the heightfield.
       if (uHfEnabled == 0) return false;
-      if (gWet) {
-        markWater(t, 1, true);
-        gWet = false;
-      }
+      gWet = false;
       return traceHeightfield(o, d, t, tHit, hitId, hitAxis, hitVoxel, hitLevel, albedo, steps, hitNormal, hitKind);
     }
     float vs = float(1 << lvl);       // blocks per voxel
@@ -1026,15 +1049,25 @@ void main() {
   // The first surface between water and not-water on the ray: the still-water texture tinted by the
   // biome, lit like a block, drawn with the texture's alpha over whatever is behind it. Like vanilla,
   // that alpha is the same however deep the water is.
-  float vs = float(1 << gWaterLevel);
+  float vs = gWaterHf ? gWaterSize : float(1 << gWaterLevel);
   vec3 local = clamp((o + d * gWaterT - vec3(gWaterVoxel - uCamBlock)) / vs, 0.0, 1.0);
   vec2 column;
   float lowLayer;
   vec3 farTint;
-  voxelTint(gWaterVoxel, gWaterLevel, vs, column, lowLayer, farTint);
+  if (gWaterHf) {
+    // No chunk or tint column out there: the texel carries the biome's water color.
+    column = vec2(0.0);
+    lowLayer = 0.0;
+    farTint = vec3(0.0, 0.0, -1.0);
+    gHfTint = gWaterTint;
+    gHfTintOn = true;
+  } else {
+    voxelTint(gWaterVoxel, gWaterLevel, vs, column, lowLayer, farTint);
+  }
   vec3 waterAlbedo;
   gKeepSeeThrough = true;
   surface(uint(uWaterId), gWaterVoxel, vs, gWaterAxis, d, local, gWaterT, column, lowLayer, farTint, waterAlbedo);
+  gHfTintOn = false;
   float alpha = gSurfAlpha;
 
   vec2 wl = vec2(1.0, 0.0);

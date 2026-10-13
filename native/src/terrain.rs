@@ -343,8 +343,9 @@ pub const HF_BYTES: usize = 256 * 2 + 256 * 4;
 
 impl Tile {
   /// Writes the tile as heightfield texels, for ray marching terrain that is
-  /// too far for voxels: per column the height of the surface (the sea level
-  /// over water, `NO_HEIGHT` without terrain), then per column RGBA where rgb
+  /// too far for voxels: per column the height of the surface (the seabed
+  /// under water, whose surface the shader puts at the sea level;
+  /// `NO_HEIGHT` without terrain), then per column RGBA where rgb
   /// is the biome's grass color (water color over water) and alpha the kind (0
   /// none, `1 + Surface`, `HF_WATER`).
   pub fn write_heightfield(&self, sea_level: i32, out: &mut [u8; HF_BYTES]) {
@@ -353,7 +354,7 @@ impl Tile {
       let (mut height, mut kind) = if top == NO_TERRAIN {
         (NO_HEIGHT, 0)
       } else if (top as i32) < sea_level {
-        (sea_level as i16, HF_WATER)
+        (top, HF_WATER)
       } else {
         (top, 1 + self.surface[col])
       };
@@ -994,7 +995,7 @@ mod tests {
 
     assert_eq!(i16::from_ne_bytes([out[0], out[1]]), 100);
     assert_eq!(&out[512..516], &[0x11, 0x22, 0x33, 1 + Surface::Snow as u8]);
-    assert_eq!(i16::from_ne_bytes([out[2], out[3]]), 63);
+    assert_eq!(i16::from_ne_bytes([out[2], out[3]]), 40);
     assert_eq!(&out[516..520], &[0x44, 0x55, 0x66, HF_WATER]);
     assert_eq!(i16::from_ne_bytes([out[4], out[5]]), NO_HEIGHT);
     assert_eq!(out[512 + 8 + 3], 0);

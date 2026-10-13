@@ -206,7 +206,8 @@ final class TestScene implements AutoCloseable {
         hf ? HF_IDS : null,
         0f, 1f, 0f,
         WATER,
-        new float[] {0.02f, 0.02f, 0.2f}, -8f, 96f);
+        new float[] {0.02f, 0.02f, 0.2f}, -8f, 96f,
+        63f);
   }
 
   /** Binds everything to its unit, like {@link VoxelWorld#bind}. */

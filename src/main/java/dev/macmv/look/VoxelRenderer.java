@@ -42,6 +42,7 @@ public final class VoxelRenderer {
   private static int uFogColor;
   private static int uWaterId;
   private static int uFogRange;
+  private static int uSeaLevel;
 
   private VoxelRenderer() {}
 
@@ -78,7 +79,8 @@ public final class VoxelRenderer {
       int waterId,
       float[] fogColor,
       float fogStart,
-      float fogEnd) {}
+      float fogEnd,
+      float seaLevel) {}
 
   /** Must be called on the render thread with the main framebuffer bound. */
   public static void render(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ) {
@@ -107,7 +109,8 @@ public final class VoxelRenderer {
         hf ? hfIds : null,
         sky[0], sky[1], sky[2],
         BlockClassifier.waterId(8),
-        RenderSystem.getShaderFogColor(), RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd());
+        RenderSystem.getShaderFogColor(), RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(),
+        Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getSeaLevel() : 63f);
 
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
@@ -194,6 +197,7 @@ public final class VoxelRenderer {
     GL33C.glUniform1i(uWaterId, f.waterId());
     GL33C.glUniform3f(uFogColor, f.fogColor()[0], f.fogColor()[1], f.fogColor()[2]);
     GL33C.glUniform2f(uFogRange, f.fogStart(), f.fogEnd());
+    GL33C.glUniform1f(uSeaLevel, f.seaLevel());
 
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
     RenderSystem.disableBlend();
@@ -259,6 +263,7 @@ public final class VoxelRenderer {
     uFogColor = GL33C.glGetUniformLocation(program, "uFogColor");
     uWaterId = GL33C.glGetUniformLocation(program, "uWaterId");
     uFogRange = GL33C.glGetUniformLocation(program, "uFogRange");
+    uSeaLevel = GL33C.glGetUniformLocation(program, "uSeaLevel");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
     vao = GL33C.glGenVertexArrays();
