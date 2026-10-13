@@ -41,6 +41,13 @@ const CELL_H: i32 = 8;
 /// How far above the 2D estimate the search for the surface starts, in blocks.
 /// The 3D noise moves the surface by up to roughly this much.
 const SEARCH_MARGIN: i32 = 48;
+/// How far below the surface a voxel tile looks for an air gap under an
+/// overhang, in blocks. Deeper gaps are caves, which only matter once a ray
+/// can get into them.
+const GAP_SCAN_DEPTH: i32 = 96;
+/// The shortest gap kept at level 0, in blocks (coarser levels keep gaps of at
+/// least a voxel).
+const MIN_GAP: i32 = 4;
 /// Height difference between the columns on either side of one, per block of
 /// run, from which vanilla's `steep` surface rule holds: 4 blocks over 2.
 const STEEP_SLOPE: i32 = 2;
@@ -114,18 +121,24 @@ impl Ids {
 /// The surface of one level-k section column: 16 x 16 samples, indexed `z * 16
 /// + x`.
 pub struct Tile {
-  pub top:     [i16; 256],
-  pub surface: [u8; 256],
+  pub top:        [i16; 256],
+  /// Per column, the height of the underside of the overhang slab (`gap_top`)
+  /// and of the ground below it (`gap_bottom`): the blocks in
+  /// `gap_bottom..gap_top` are air under solid ground that reaches up to `top`.
+  /// Equal values (the default, 0 and 0) mean the column has no gap.
+  pub gap_top:    [i16; 256],
+  pub gap_bottom: [i16; 256],
+  pub surface:    [u8; 256],
   /// Grass color (0xRRGGBB) of the biome of each column.
-  pub grass:   [u32; 256],
+  pub grass:      [u32; 256],
   /// Water color (0xRRGGBB) of the biome of each column.
-  pub water:   [u32; 256],
+  pub water:      [u32; 256],
   /// Foliage color (0xRRGGBB) of the biome of each column.
-  pub foliage: [u32; 256],
+  pub foliage:    [u32; 256],
   /// Tree blocks of a voxel tile, in voxels of the tile's level, sorted by `y`.
-  pub trees:   Vec<TreeVoxel>,
+  pub trees:      Vec<TreeVoxel>,
   /// Tree canopies of a heightfield tile.
-  pub canopy:  Option<Box<Canopy>>,
+  pub canopy:     Option<Box<Canopy>>,
 }
 
 /// What a sampled tile is for, which decides what trees it carries.
@@ -158,13 +171,15 @@ pub fn far_tint_layout(level: u32) -> (usize, usize) {
 impl Tile {
   pub fn empty() -> Tile {
     Tile {
-      top:     [NO_TERRAIN; 256],
-      surface: [0; 256],
-      grass:   [0; 256],
-      water:   [0; 256],
-      foliage: [0; 256],
-      trees:   Vec::new(),
-      canopy:  None,
+      top:        [NO_TERRAIN; 256],
+      gap_top:    [0; 256],
+      gap_bottom: [0; 256],
+      surface:    [0; 256],
+      grass:      [0; 256],
+      water:      [0; 256],
+      foliage:    [0; 256],
+      trees:      Vec::new(),
+      canopy:     None,
     }
   }
 
@@ -250,8 +265,29 @@ impl Tile {
                 with_fill(top_id, top - vy, size)
               };
             } else {
-              let id = if top - (vy + half) <= filler_depth { filler_id } else { ids.stone };
-              voxel = id;
+              let (gap_top, gap_bottom) = (self.gap_top[col] as i64, self.gap_bottom[col] as i64);
+              let center = vy + half;
+              let depth_id = |from: i64| {
+                if from - center <= filler_depth {
+                  filler_id
+                } else {
+                  ids.stone
+                }
+              };
+              if gap_top <= gap_bottom || center >= gap_top {
+                voxel = depth_id(top);
+              } else if center >= gap_bottom {
+                // Under the overhang. Whatever is below the sea level there
+                // is flooded.
+                if vy < sea {
+                  voxel = with_fill(ids.water, sea - vy, size);
+                }
+              } else if vy + size >= gap_bottom {
+                // The ground under the overhang is a second surface.
+                voxel = with_fill(top_id, gap_bottom - vy, size);
+              } else {
+                voxel = depth_id(gap_bottom);
+              }
             }
           }
           if voxel != 0 {
@@ -582,6 +618,22 @@ impl Terrain {
     x: i32,
     z: i32,
   ) -> Option<i32> {
+    self.surface_profile_cached(s, cache, x, z, 0).map(|(top, _)| top)
+  }
+
+  /// Like `surface_top_cached`, and when `min_gap` is above 0 also looks below
+  /// the surface for the first run of at least `min_gap` air blocks that has
+  /// ground under it within `GAP_SCAN_DEPTH`. That is returned as
+  /// `(gap_top, gap_bottom)`: air in `gap_bottom..gap_top`, or `(0, 0)` for
+  /// none.
+  pub(crate) fn surface_profile_cached(
+    &self,
+    s: &mut Scratch,
+    cache: &mut CornerCache,
+    x: i32,
+    z: i32,
+    min_gap: i32,
+  ) -> Option<(i32, (i32, i32))> {
     let TerrainParams { min_y, max_y, .. } = self.params;
     let estimate = self.estimate_top(s, x, z)?;
 
@@ -617,23 +669,61 @@ impl Terrain {
       top = (top + 2).min(rows);
     }
 
+    let mut found = None;
     let mut upper = density(top);
     for row in (0..top).rev() {
       let lower = density(row);
       if lower > SURFACE_THRESHOLD {
         // Density is linear in y inside the cell: find the highest block still
         // above the threshold.
+        let mut at = base + row * CELL_H + 1;
         for k in (0..CELL_H).rev() {
           let t = k as f64 / CELL_H as f64;
           if lower + t * (upper - lower) > SURFACE_THRESHOLD {
-            return Some((base + row * CELL_H + k + 1).clamp(min_y, max_y));
+            at = base + row * CELL_H + k + 1;
+            break;
           }
         }
-        return Some(base + row * CELL_H + 1);
+        found = Some((at, row));
+        break;
       }
       upper = lower;
     }
-    None
+    let (found, found_row) = found?;
+    let top = found.clamp(min_y, max_y);
+    if min_gap <= 0 {
+      return Some((top, (0, 0)));
+    }
+
+    // Walk further down, block by block, for the first air run (an overhang's
+    // underside) with ground below it.
+    let floor = (top - GAP_SCAN_DEPTH).max(min_y);
+    let first_row = (floor - base).div_euclid(CELL_H);
+    let mut air_top = None;
+    let mut upper = density(found_row + 1);
+    for row in (first_row..=found_row).rev() {
+      let lower = density(row);
+      for k in (0..CELL_H).rev() {
+        let y = base + row * CELL_H + k;
+        if y < floor || y >= top {
+          continue;
+        }
+        let t = k as f64 / CELL_H as f64;
+        let solid = lower + t * (upper - lower) > SURFACE_THRESHOLD;
+        match air_top {
+          None if !solid => air_top = Some(y + 1),
+          Some(gap_top) if solid => {
+            if gap_top - (y + 1) >= min_gap {
+              return Some((top, (gap_top, y + 1)));
+            }
+            air_top = None; // too short to matter: part of the slab
+          }
+          _ => {}
+        }
+      }
+      upper = lower;
+    }
+    Some((top, (0, 0)))
   }
 
   /// Density at one cell corner, memoized for the tile being sampled.
@@ -712,13 +802,20 @@ impl Terrain {
       for x in 0..16usize {
         let bx = (x0 + x as i64 * size + half) as i32;
         let bz = (z0 + z as i64 * size + half) as i32;
-        let Some(top) = self.surface_top_cached(s, &mut cache, bx, bz) else { continue };
+        let min_gap = if kind == TileKind::Voxel { MIN_GAP.max(size as i32) } else { 0 };
+        let Some((top, gap)) = self.surface_profile_cached(s, &mut cache, bx, bz, min_gap) else {
+          continue;
+        };
 
         let by = top.clamp(min_y, max_y - 1);
         let biome = self.biome_at(s, bx, by, bz);
 
         let col = z * 16 + x;
         tile.top[col] = top as i16;
+        // Gaps under the sea are left out: that is water or seabed caves.
+        if top >= sea_level {
+          (tile.gap_top[col], tile.gap_bottom[col]) = (gap.0 as i16, gap.1 as i16);
+        }
         tile.surface[col] = surface_of(biome, top, sea_level) as u8;
         tile.grass[col] = biome.grass;
         tile.water[col] = biome.water;
@@ -876,6 +973,33 @@ mod tests {
     assert_eq!(&out[516..520], &[0x44, 0x55, 0x66, HF_WATER]);
     assert_eq!(i16::from_ne_bytes([out[4], out[5]]), NO_HEIGHT);
     assert_eq!(out[512 + 8 + 3], 0);
+  }
+
+  #[test]
+  fn overhang_leaves_a_gap_with_ground_below() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 120;
+    tile.gap_top[0] = 100;
+    tile.gap_bottom[0] = 80;
+    // Level 0, section row 4 spans y 64..80 and row 5 spans 80..96.
+    let low = column(&brick(&tile, 0, 4));
+    assert_eq!(low[15], 10 | (0 << FILL_SHIFT)); // y 79: the ground under the
+                                                 // overhang
+    assert_eq!(low[14], 11); // filler below it
+    let mid = column(&brick(&tile, 0, 5));
+    assert!(mid.iter().all(|&v| v == 0)); // y 80..96 is the gap
+    let high = column(&brick(&tile, 0, 6)); // y 96..112
+    assert_eq!(high[3], 0); // y 99, still gap
+    assert_eq!(high[4], 12); // y 100, the slab (stone: deep below the top)
+  }
+
+  #[test]
+  fn columns_without_a_gap_are_unchanged() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 100;
+    let col = column(&brick(&tile, 0, 6)); // y 96..112
+    assert_eq!(col[1], 11); // y 97, filler
+    assert_eq!(col[0], 11); // y 96, 4 deep: still filler
   }
 
   #[test]
