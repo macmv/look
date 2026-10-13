@@ -14,6 +14,7 @@ import net.minecraft.resources.RegistryOps;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.FeatureSorter;
 import net.minecraft.world.level.levelgen.feature.AbstractHugeMushroomFeature;
+import net.minecraft.world.level.levelgen.feature.DiskFeature;
 import net.minecraft.world.level.levelgen.feature.KelpFeature;
 import net.minecraft.world.level.levelgen.feature.RandomPatchFeature;
 import net.minecraft.world.level.levelgen.feature.SeaPickleFeature;
@@ -125,13 +126,18 @@ public final class TreeExport {
             configured ->
                 configured.feature() instanceof RandomPatchFeature
                     || configured.feature() instanceof SimpleBlockFeature
+                    || configured.feature() instanceof DiskFeature
                     || configured.feature() instanceof SeagrassFeature
                     || configured.feature() instanceof KelpFeature
                     || configured.feature() instanceof SeaPickleFeature);
   }
 
+  /** The ground a disk can leave on the sea floor: the other disks (ice, grass) are not worth running. */
+  private static final List<String> DISK_GROUND = List.of("\"minecraft:clay\"", "\"minecraft:sand\"", "\"minecraft:gravel\"");
+
   private static boolean placesPlants(JsonElement json) {
     String text = json.toString();
+    if (text.contains("\"minecraft:disk\"")) return DISK_GROUND.stream().anyMatch(text::contains);
     return PLANTS.stream().anyMatch(text::contains);
   }
 

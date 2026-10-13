@@ -68,6 +68,8 @@ enum Look {
   Foliage,
   /// Ground plants, in the biome's grass color.
   Grass,
+  /// Ground a disk laid over the terrain: clay, sand and gravel patches.
+  Ground,
 }
 
 pub struct Forest {
@@ -120,6 +122,7 @@ fn look_of(name: &str) -> Look {
     "seagrass" | "tall_seagrass" => Look::Fixed(0x2E7D32),
     "kelp" | "kelp_plant" => Look::Fixed(0x4E7A2A),
     "sea_pickle" => Look::Fixed(0x6E8B2E),
+    "clay" | "sand" | "gravel" | "sandstone" => Look::Ground,
     _ => Look::None,
   }
 }
@@ -154,7 +157,7 @@ impl Forest {
 
   fn color(&self, id: BlockId, foliage: u32, grass: u32) -> Option<u32> {
     match self.looks.get(id as usize)? {
-      Look::None => None,
+      Look::None | Look::Ground => None,
       Look::Fixed(rgb) => Some(*rgb),
       Look::Foliage => Some(shade(foliage, FOLIAGE_SHADE)),
       Look::Grass => Some(shade(grass, GRASS_SHADE)),
@@ -260,6 +263,18 @@ impl Forest {
         _ => None,
       };
       let pick = pick.or(plant);
+      // Disks are patches a block or two wide: only voxels of single blocks
+      // can show them.
+      let ground = match pick {
+        None if level == 0 => most_common(
+          group
+            .iter()
+            .map(|h| h.3)
+            .filter(|&id| self.looks.get(id as usize) == Some(&Look::Ground)),
+        ),
+        _ => None,
+      };
+      let pick = pick.or(ground);
       if let Some(id) = pick {
         let top = group.iter().map(|h| h.4).max().unwrap_or(0);
         let fill = if plant.is_some() {
@@ -314,8 +329,10 @@ impl Forest {
     let blocks = &self.decoration.blocks;
     self.for_each_block(terrain, s, cache, true, x0, z0, width as i64, |x, y, z, id| {
       // Water plants are under the surface of the water the heightfield shows.
-      if self.looks.get(id as usize).copied().unwrap_or(Look::None) == Look::None
-        || blocks.is_water_plant(Block::new(id))
+      if matches!(
+        self.looks.get(id as usize).copied().unwrap_or(Look::None),
+        Look::None | Look::Ground
+      ) || blocks.is_water_plant(Block::new(id))
       {
         return;
       }

@@ -1,5 +1,6 @@
-//! Predicted trees and ground plants: a port of vanilla's biome decoration for
-//! the features that grow trees and scatter grass.
+//! Predicted trees, ground plants, sea floor plants and disks: a port of
+//! vanilla's biome decoration for the features that grow trees, scatter grass
+//! and dress the sea floor.
 //!
 //! The game places the trees of a chunk from a random source seeded by the
 //! world seed, the chunk's position and the feature's place in its decoration
