@@ -264,11 +264,12 @@ impl Tile {
                 voxel = with_fill(ids.water, sea - vy, size);
               }
             } else if vy + size >= top {
-              // The voxel holding the surface. When that is under water this
-              // voxel is the water, unless voxels are single blocks: coarser
-              // ones would lose the shallows, and the seabed is a voxel
-              // below that is not far off.
-              voxel = if top < sea && size > 1 {
+              // The voxel holding the surface. When that voxel also holds the
+              // sea level it is the water, unless voxels are single blocks:
+              // coarser ones would lose the shallows, and the seabed is a
+              // voxel below that is not far off. Any deeper seabed keeps its
+              // partial fill like land does, with the water in the voxel above.
+              voxel = if top < sea && size > 1 && vy + size > sea {
                 with_fill(ids.water, sea - vy, size)
               } else {
                 with_fill(top_id, top - vy, size)
@@ -963,11 +964,19 @@ mod tests {
     let mut tile = Tile::empty();
     tile.top[0] = 20;
     // Level 3, voxel 7 spans 56..64: water up to 63 is 7 of 8 blocks. Voxel 2
-    // (16..24) holds the seabed, which is under water, so it is water too.
+    // (16..24) holds the seabed, which is filled up to 20 like land is, with
+    // the water above it.
     let col = column(&brick(&tile, 3, 0));
     assert_eq!(col[7], 13 | (7 << FILL_SHIFT));
     assert_eq!(col[8], 0);
-    assert_eq!(col[2], 13);
+    assert_eq!(col[2], 10 | (4 << FILL_SHIFT));
+    assert_eq!(col[3], 13);
+    assert_eq!(col[1], 11);
+
+    // Shallows: voxel 7 holds both the seabed (62) and the sea level.
+    tile.top[0] = 62;
+    let col = column(&brick(&tile, 3, 0));
+    assert_eq!(col[7], 13 | (7 << FILL_SHIFT));
   }
 
   #[test]
