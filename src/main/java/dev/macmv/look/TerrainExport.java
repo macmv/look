@@ -43,7 +43,7 @@ import net.minecraft.world.level.levelgen.synth.NormalNoise;
  *   <li>{@code functions}: the registry density functions those refer to, by name, and
  *       {@code noises}: the noise parameters they use;
  *   <li>{@code biomes}: the climate parameter points of the biome source, with per biome flags
- *       (see {@code native/src/biome.rs}), temperature and grass color;
+ *       (see {@code native/src/biome.rs}), temperature, grass and foliage color;
  *   <li>{@code decoration}: the features that grow trees (see {@link TreeExport}).
  * </ul>
  *
@@ -221,6 +221,7 @@ public final class TerrainExport {
     JsonArray flags = new JsonArray();
     JsonArray temperatures = new JsonArray();
     JsonArray grass = new JsonArray();
+    JsonArray foliage = new JsonArray();
     JsonArray water = new JsonArray();
     for (Holder<Biome> biome : index.keySet()) {
       int f = 0;
@@ -235,6 +236,7 @@ public final class TerrainExport {
       flags.add(f);
       temperatures.add(biome.value().getBaseTemperature());
       grass.add(biome.value().getGrassColor(0, 0) & 0xFFFFFF);
+      foliage.add(biome.value().getFoliageColor() & 0xFFFFFF);
       water.add(biome.value().getWaterColor() & 0xFFFFFF);
     }
 
@@ -242,6 +244,7 @@ public final class TerrainExport {
     out.add("flags", flags);
     out.add("temperatures", temperatures);
     out.add("grass_colors", grass);
+    out.add("foliage_colors", foliage);
     out.add("water_colors", water);
     out.add("points", points);
     return out;

@@ -25,12 +25,16 @@ pub struct BiomeInfo {
   pub temperature: f32,
   /// Grass color (0xRRGGBB) of the biome, for tinting grass blocks.
   pub grass:       u32,
+  /// Foliage color (0xRRGGBB) of the biome, for tinting leaves.
+  pub foliage:     u32,
   /// Water color (0xRRGGBB) of the biome.
   pub water:       u32,
 }
 
 /// Used for biomes the export gave no grass color for (plains).
 const DEFAULT_GRASS: u32 = 0x91BD59;
+/// Used for biomes the export gave no foliage color for (plains).
+const DEFAULT_FOLIAGE: u32 = 0x77AB2F;
 /// Used for biomes the export gave no water color for.
 const DEFAULT_WATER: u32 = 0x3F76E4;
 
@@ -93,6 +97,7 @@ impl BiomeIndex {
     }
     let grass = v.get("grass_colors").and_then(Value::as_array);
     let water = v.get("water_colors").and_then(Value::as_array);
+    let foliage = v.get("foliage_colors").and_then(Value::as_array);
     let biomes: Vec<BiomeInfo> = flags
       .iter()
       .zip(temps)
@@ -104,6 +109,10 @@ impl BiomeIndex {
           .and_then(|g| g.get(i))
           .and_then(Value::as_u64)
           .map_or(DEFAULT_GRASS, |c| c as u32 & 0xFFFFFF),
+        foliage:     foliage
+          .and_then(|g| g.get(i))
+          .and_then(Value::as_u64)
+          .map_or(DEFAULT_FOLIAGE, |c| c as u32 & 0xFFFFFF),
         water:       water
           .and_then(|g| g.get(i))
           .and_then(Value::as_u64)
@@ -142,6 +151,9 @@ impl BiomeIndex {
   /// humidity, continentalness, erosion, depth, weirdness; quantized like
   /// `Climate.TargetPoint`).
   pub fn nearest(&self, target: [i64; 6]) -> BiomeInfo { self.biomes[self.nearest_index(target).0] }
+
+  /// The biome with this index (of the order the export numbers them in).
+  pub fn info(&self, index: usize) -> BiomeInfo { self.biomes[index] }
 
   /// Like [`nearest`](Self::nearest), but returns the biome's index and the
   /// winning fitness.

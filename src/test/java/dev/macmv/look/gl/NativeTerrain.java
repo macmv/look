@@ -26,6 +26,9 @@ final class NativeTerrain implements TestScene.BrickSource, TestScene.HeightFiel
   private static final Path FIXTURE =
       Path.of(System.getProperty("look.terrainFixture", "native/tests/fixtures/overworld.json"));
 
+  private static final Path TREE_FIXTURE =
+      Path.of(System.getProperty("look.treeFixture", "native/tests/fixtures/trees.json"));
+
   private static final int PLAINS_GRASS = 0x91BD59;
 
   private final long handle;
@@ -45,6 +48,11 @@ final class NativeTerrain implements TestScene.BrickSource, TestScene.HeightFiel
    *     tiles outside the view cannot show up, and there are tens of thousands of them
    */
   NativeTerrain(double camX, double camZ, float yaw, float halfAngle) {
+    this(camX, camZ, yaw, halfAngle, false);
+  }
+
+  /** @param trees whether to grow trees: the fixture world's tree features (see {@code TreeExport}) */
+  NativeTerrain(double camX, double camZ, float yaw, float halfAngle, boolean trees) {
     NativeLib.load();
     this.camX = camX;
     this.camZ = camZ;
@@ -68,10 +76,29 @@ final class NativeTerrain implements TestScene.BrickSource, TestScene.HeightFiel
     for (int i = 0; i < grass.size(); i++) {
       if (grass.get(i).getAsInt() == 0) grass.set(i, new JsonPrimitive(PLAINS_GRASS));
     }
+    if (trees) {
+      try (Reader in = Files.newBufferedReader(TREE_FIXTURE)) {
+        JsonObject treeFixture = JsonParser.parseReader(in).getAsJsonObject();
+        if (treeFixture.get("seed").getAsLong() != seed) throw new IllegalStateException("tree fixture is for another seed");
+        cfg.add("decoration", treeFixture.getAsJsonObject("decoration"));
+      } catch (IOException e) {
+        throw new IllegalStateException("Cannot read " + TREE_FIXTURE.toAbsolutePath(), e);
+      }
+    }
     byte[] config = cfg.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     handle = NativeLib.terrainCreate(seed, config, Lod.outer(0) + 6, Integer.getInteger("look.seedThreads", 0));
     NativeLib.terrainSetIds(handle, TestScene.HF_IDS);
+    if (trees) {
+      // The test atlas has oak logs and oak leaves.
+      String[] names = NativeLib.terrainTreeBlocks(handle).split("\n");
+      int[] ids = new int[names.length];
+      for (int i = 0; i < ids.length; i++) {
+        String n = names[i];
+        ids[i] = n.endsWith("_log") || n.endsWith("_wood") ? TestScene.LOG : n.endsWith("_leaves") ? TestScene.LEAVES : 0;
+      }
+      NativeLib.terrainSetTreeIds(handle, ids);
+    }
     NativeLib.terrainCamera(handle, (int) Math.floor(camX), (int) Math.floor(camZ));
   }
 

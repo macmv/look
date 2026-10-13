@@ -18,7 +18,7 @@ uniform float uMaxDist;
 uniform int uHfEnabled;    // 1: levels past uLevels are drawn from the heightfield
 uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and filler id, then stone and water
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
-uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water), a: kind (0 none, 1 + surface, 7 water)
+uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water, tree color for trees), a: kind (0 none, 1 + surface, 7 water, 8 tree)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
 uniform int uDebug;        // 5: no biome tint, 6: mip level fixed at 2, 7: alpha test off, 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
@@ -27,7 +27,7 @@ uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
 uniform usamplerBuffer uColors;   // voxel id -> 0xRRGGBB, used when a block has no texture
 uniform samplerBuffer uFaces;     // per (id, face, layer): atlas uv mapping, see BlockClassifier
 uniform sampler2D uAtlas;         // vanilla block atlas
-uniform sampler2DArray uTint;     // biome tint per column, see TintMap: grass, foliage, lower grass, lower foliage, split, far grass per level
+uniform sampler2DArray uTint;     // biome tint per column, see TintMap: grass, foliage, lower grass, lower foliage, split, far grass per level, then far foliage per level
 uniform vec2 uAtlasSize;          // atlas size in texels
 uniform float uMaxLod;            // highest mip level of the atlas
 uniform int uMinY;               // lowest block y of the level, for the tint's lower biome
@@ -50,6 +50,7 @@ const int TINT_FAR_FIRST = 5;  // TintMap.FAR_FIRST
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
 const int META_START = (8192 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level - 2) blocks wide
+const int HF_TREE = 8;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
 const int HF_NONE = -32768;      // HeightField.NONE
 const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
@@ -200,7 +201,7 @@ vec3 tintColor(float tint, vec2 column, float lowLayer, vec3 farTint) {
   if (tint < -0.5) {
     if (uDebug == 5) return vec3(1.0);
     if (gHfTintOn && tint > -1.5) return gHfTint;
-    if (farTint.z >= 0.0 && tint > -1.5) return textureLod(uTint, farTint, 0.0).rgb;
+    if (farTint.z >= 0.0) return textureLod(uTint, vec3(farTint.xy, farTint.z + (tint > -1.5 ? 0.0 : float(uLevels))), 0.0).rgb;
     return textureLod(uTint, vec3(column, lowLayer + (tint < -1.5 ? 1.0 : 0.0)), 0.0).rgb;
   }
   int t = int(tint);
@@ -506,7 +507,9 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
             // The top is the surface block, under it a few blocks of filler, then stone.
             float depth = fH - yAbs;
             uint id;
-            if (kind == 7) {
+            if (kind == HF_TREE) {
+              id = uint(uHfIds[12]);   // any opaque block: the color comes from the texel
+            } else if (kind == 7) {
               id = uint(uHfIds[13]);
             } else if (hax == 1 || depth < 1.0) {
               id = uint(uHfIds[(kind - 1) * 2]);
@@ -520,6 +523,11 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
             gHfTintOn = true;
             bool ok = surface(id, corner, T, hax, d, local, th, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
             if (ok && kind == 7) albedo = attr.rgb;   // water: the biome water color, not the stand-in block
+            if (ok && kind == HF_TREE) {
+              // A tree's canopy or trunk: its own color, a little different from tree to tree.
+              float shade = fract(sin(dot(vec2(ac), vec2(12.9898, 78.233))) * 43758.5453);
+              albedo = attr.rgb * (0.82 + 0.3 * shade);
+            }
             gHfTintOn = false;
             if (ok && th * uPixelAngle > 0.25 * T) {
               // A pixel that covers several texels would show one of them at random, and the surface

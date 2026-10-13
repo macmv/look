@@ -6,6 +6,7 @@ mod brick;
 pub mod biome;
 pub mod density;
 pub mod engine;
+pub mod forest;
 pub mod noise;
 pub mod rng;
 pub mod terrain;
@@ -179,6 +180,39 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainSetIds<'l>(
   })
 }
 
+/// The names of the blocks trees are made of, one per line; a block's line
+/// number is its id for `terrainSetTreeIds`. Empty when the world has no
+/// tree features.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainTreeBlocks<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+) -> jstring {
+  guard(&mut env, |env| {
+    let names = engine(handle)?.tree_blocks().join("\n");
+    env.new_string(names).map(|s| s.into_raw()).map_err(|e| e.to_string())
+  })
+}
+
+/// Sets the voxel id of each tree block (0 for the ones that are not drawn),
+/// in the order of `terrainTreeBlocks`.
+#[no_mangle]
+pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainSetTreeIds<'l>(
+  mut env: JNIEnv<'l>,
+  _class: JClass<'l>,
+  handle: jlong,
+  ids: JIntArray<'l>,
+) {
+  guard(&mut env, |env| {
+    let len = env.get_array_length(&ids).map_err(|e| e.to_string())? as usize;
+    let mut buf = vec![0i32; len];
+    env.get_int_array_region(&ids, 0, &mut buf).map_err(|e| e.to_string())?;
+    engine(handle)?.set_tree_ids(buf.into_iter().map(|id| id as u16).collect());
+    Ok(())
+  })
+}
+
 /// Tells the engine where the camera is, in blocks.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCamera<'l>(
@@ -283,7 +317,8 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFetch<'l>(
 }
 
 /// Writes the grass colors of a finished tile as RGBA texels (row major, at
-/// most 8 x 8) and returns the texels per side, or -1 if the tile is not ready.
+/// most 8 x 8), then at byte 256 the foliage colors, and returns the texels per
+/// side, or -1 if the tile is not ready.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFarTint<'l>(
   mut env: JNIEnv<'l>,
@@ -295,7 +330,7 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainFarTint<'l>(
   out: JByteBuffer<'l>,
 ) -> jint {
   guard(&mut env, |env| {
-    let (ptr, _) = buffer_ptr::<[u8; 256]>(env, &out, 256)?;
+    let (ptr, _) = buffer_ptr::<[u8; terrain::FAR_TINT_BYTES]>(env, &out, terrain::FAR_TINT_BYTES)?;
     // SAFETY: as in terrainPoll.
     let out = unsafe { &mut *ptr };
     Ok(engine(handle)?.far_tint(level as u32, sx, sz, out).map_or(-1, |n| n as jint))

@@ -20,13 +20,14 @@
 //! `tests/oracle.rs` measures it against
 //! `NoiseBasedChunkGenerator.getBaseHeight`.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use serde_json::Value;
 
 use crate::{
   biome::{flags, BiomeIndex, BiomeInfo},
   density::{Compiler, Graph, Point, Root, Scratch},
+  forest::{Canopy, Forest, TreeCache, TreeVoxel},
   rng::Xoroshiro,
 };
 
@@ -81,12 +82,15 @@ impl Surface {
 /// Voxel ids to write into bricks, set by Java (they come from
 /// `BlockClassifier`). Per surface kind the top block and the filler below it,
 /// then stone and the water stand-in.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Ids {
   pub top:    [u16; SURFACES],
   pub filler: [u16; SURFACES],
   pub stone:  u16,
   pub water:  u16,
+  /// Voxel id per block id of the tree decoration (see `forest::Forest`), 0
+  /// for blocks that are not drawn.
+  pub trees:  Arc<[u16]>,
 }
 
 impl Ids {
@@ -116,12 +120,35 @@ pub struct Tile {
   pub grass:   [u32; 256],
   /// Water color (0xRRGGBB) of the biome of each column.
   pub water:   [u32; 256],
+  /// Foliage color (0xRRGGBB) of the biome of each column.
+  pub foliage: [u32; 256],
+  /// Tree blocks of a voxel tile, in voxels of the tile's level, sorted by `y`.
+  pub trees:   Vec<TreeVoxel>,
+  /// Tree canopies of a heightfield tile.
+  pub canopy:  Option<Box<Canopy>>,
+}
+
+/// What a sampled tile is for, which decides what trees it carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileKind {
+  /// No trees.
+  Plain,
+  /// Bricks: trees as voxels.
+  Voxel,
+  /// Far heightfield: trees as column heights.
+  Heightfield,
 }
 
 /// Layout of a tile's grass colors as texels of the far tint texture (see
 /// `TintMap.java`): a texel is `max(8, 2 << level)` blocks wide, so the
 /// wrapping texture always spans a whole level. Returns `(texels per side,
 /// columns per texel side)`.
+/// Offset in bytes of the foliage colors in what `Tile::write_far_tint` writes
+/// (a texture of at most 8 x 8 texels comes before).
+pub const FAR_TINT_FOLIAGE: usize = 256;
+/// Bytes `Tile::write_far_tint` needs.
+pub const FAR_TINT_BYTES: usize = 2 * FAR_TINT_FOLIAGE;
+
 pub fn far_tint_layout(level: u32) -> (usize, usize) {
   let cell = 8usize.max(2usize << level);
   let cols = cell >> level;
@@ -130,14 +157,23 @@ pub fn far_tint_layout(level: u32) -> (usize, usize) {
 
 impl Tile {
   pub fn empty() -> Tile {
-    Tile { top: [NO_TERRAIN; 256], surface: [0; 256], grass: [0; 256], water: [0; 256] }
+    Tile {
+      top:     [NO_TERRAIN; 256],
+      surface: [0; 256],
+      grass:   [0; 256],
+      water:   [0; 256],
+      foliage: [0; 256],
+      trees:   Vec::new(),
+      canopy:  None,
+    }
   }
 
-  /// Writes the tile as RGBA texels of the far tint texture, row major, and
-  /// returns the texels per side. A texel takes the color of the first grass
-  /// column of its group (so a coast does not tint its grass with the sea's
-  /// biome), else of the group's middle column. Texels with no terrain
-  /// have alpha 0.
+  /// Writes the tile as RGBA texels of the far tint textures, row major, and
+  /// returns the texels per side. The grass colors come first, then (at
+  /// `FAR_TINT_FOLIAGE`) the foliage colors in the same layout. A texel takes
+  /// the color of the first grass column of its group (so a coast does not
+  /// tint its grass with the sea's biome), else of the group's middle column.
+  /// Texels with no terrain have alpha 0.
   pub fn write_far_tint(&self, level: u32, out: &mut [u8]) -> usize {
     let (side, cols) = far_tint_layout(level);
     for tz in 0..side {
@@ -153,12 +189,14 @@ impl Tile {
             }
           }
         }
-        let rgb = self.grass[pick];
         let o = (tz * side + tx) * 4;
-        out[o] = (rgb >> 16) as u8;
-        out[o + 1] = (rgb >> 8) as u8;
-        out[o + 2] = rgb as u8;
-        out[o + 3] = if self.top[pick] == NO_TERRAIN { 0 } else { 0xFF };
+        let alpha = if self.top[pick] == NO_TERRAIN { 0 } else { 0xFF };
+        for (rgb, o) in [(self.grass[pick], o), (self.foliage[pick], FAR_TINT_FOLIAGE + o)] {
+          out[o] = (rgb >> 16) as u8;
+          out[o + 1] = (rgb >> 8) as u8;
+          out[o + 2] = rgb as u8;
+          out[o + 3] = alpha;
+        }
       }
     }
     side
@@ -223,6 +261,24 @@ impl Tile {
         }
       }
     }
+
+    // Trees on top of the terrain, which they replace where they overlap it.
+    let (row0, row1) = ((sy as i32) * 16, (sy as i32) * 16 + 16);
+    let first = self.trees.partition_point(|t| (t.y as i32) < row0);
+    for t in &self.trees[first..] {
+      if t.y as i32 >= row1 {
+        break;
+      }
+      let id = ids.trees.get(t.id as usize).copied().unwrap_or(0);
+      if id == 0 {
+        continue;
+      }
+      let at = ((t.y as i32 - row0) as usize * 16 + t.z as usize) * 16 + t.x as usize;
+      if out[at] == 0 {
+        solid += 1;
+      }
+      out[at] = id;
+    }
     solid
   }
 }
@@ -232,6 +288,9 @@ pub const NO_HEIGHT: i16 = i16::MIN;
 /// Kind code of a water heightfield texel. Land is `1 + Surface`, 0 is no
 /// terrain.
 pub const HF_WATER: u8 = 7;
+/// Kind code of a texel whose column is a tree's canopy or trunk: its color is
+/// the whole story.
+pub const HF_TREE: u8 = 8;
 /// Bytes of one heightfield tile: 256 native-endian i16 heights, then 256 RGBA
 /// texels.
 pub const HF_BYTES: usize = 256 * 2 + 256 * 4;
@@ -245,16 +304,23 @@ impl Tile {
   pub fn write_heightfield(&self, sea_level: i32, out: &mut [u8; HF_BYTES]) {
     for col in 0..256 {
       let top = self.top[col];
-      let (height, kind) = if top == NO_TERRAIN {
+      let (mut height, mut kind) = if top == NO_TERRAIN {
         (NO_HEIGHT, 0)
       } else if (top as i32) < sea_level {
         (sea_level as i16, HF_WATER)
       } else {
         (top, 1 + self.surface[col])
       };
+      let mut rgb = if kind == HF_WATER { self.water[col] } else { self.grass[col] };
+      if let Some(c) = self.canopy.as_deref() {
+        if kind != 0 && c.top[col] != NO_TERRAIN && c.top[col] > height {
+          height = c.top[col];
+          kind = HF_TREE;
+          rgb = c.rgb[col];
+        }
+      }
       out[col * 2..col * 2 + 2].copy_from_slice(&height.to_ne_bytes());
 
-      let rgb = if kind == HF_WATER { self.water[col] } else { self.grass[col] };
       let o = 512 + col * 4;
       out[o] = (rgb >> 16) as u8;
       out[o + 1] = (rgb >> 8) as u8;
@@ -297,7 +363,7 @@ pub struct TerrainParams {
 /// Densities at noise cell corners, by column and cell row, for the columns of
 /// one tile (which share corners). `NaN` marks a corner not computed yet.
 #[derive(Default)]
-struct CornerCache {
+pub(crate) struct CornerCache {
   columns: HashMap<(i32, i32), Vec<f64>>,
 }
 
@@ -321,6 +387,9 @@ pub struct Terrain {
   depth:           Root,
   weirdness:       Root,
   biomes:          BiomeIndex,
+  seed:            i64,
+  /// The world's tree features, when the config describes them.
+  pub forest:      Option<Forest>,
 }
 
 impl Terrain {
@@ -375,6 +444,10 @@ impl Terrain {
     let graph = compiler.finish();
 
     let biomes = BiomeIndex::from_json(obj.get("biomes").ok_or("config is missing biomes")?)?;
+    let forest = match obj.get("decoration") {
+      Some(v) => Some(Forest::from_json(v)?),
+      None => None,
+    };
 
     Ok(Terrain {
       params,
@@ -390,6 +463,8 @@ impl Terrain {
       depth,
       weirdness,
       biomes,
+      seed,
+      forest,
     })
   }
 
@@ -414,6 +489,16 @@ impl Terrain {
       q(self.graph.eval(self.weirdness, p, s)),
     ]
   }
+
+  pub fn seed(&self) -> i64 { self.seed }
+
+  /// The index (of the export's biome table) of the biome at a block
+  /// position, picked like `biome_at` does.
+  pub fn biome_index_at(&self, s: &mut Scratch, x: i32, y: i32, z: i32) -> usize {
+    self.biomes.nearest_index(self.climate(s, (x >> 2) << 2, (y >> 2) << 2, (z >> 2) << 2)).0
+  }
+
+  pub fn biome_info(&self, index: usize) -> BiomeInfo { self.biomes.info(index) }
 
   /// The biome at a block position, as `MultiNoiseBiomeSource.getNoiseBiome`
   /// would pick it.
@@ -490,7 +575,7 @@ impl Terrain {
     self.surface_top_cached(s, &mut CornerCache::default(), x, z)
   }
 
-  fn surface_top_cached(
+  pub(crate) fn surface_top_cached(
     &self,
     s: &mut Scratch,
     cache: &mut CornerCache,
@@ -598,8 +683,22 @@ impl Terrain {
   }
 
   /// Samples the surface of the 16 x 16 columns of a level-`level` section
-  /// column.
+  /// column, without trees.
   pub fn sample_tile(&self, s: &mut Scratch, level: u32, sx: i32, sz: i32) -> Tile {
+    self.sample_tile_with(s, level, sx, sz, TileKind::Plain, None)
+  }
+
+  /// Like `sample_tile`, with the trees a tile of `kind` carries (if the world
+  /// has any), taken from `trees`.
+  pub fn sample_tile_with(
+    &self,
+    s: &mut Scratch,
+    level: u32,
+    sx: i32,
+    sz: i32,
+    kind: TileKind,
+    trees: Option<&TreeCache>,
+  ) -> Tile {
     let mut tile = Tile::empty();
     let mut cache = CornerCache::default();
     let mut steep_biome = [false; 256];
@@ -623,10 +722,20 @@ impl Terrain {
         tile.surface[col] = surface_of(biome, top, sea_level) as u8;
         tile.grass[col] = biome.grass;
         tile.water[col] = biome.water;
+        tile.foliage[col] = biome.foliage;
         steep_biome[col] = biome.flags & flags::STEEP_ROCK != 0;
       }
     }
     tile.expose_cliffs(level, &steep_biome);
+    if let (Some(forest), Some(cache)) = (&self.forest, trees) {
+      match kind {
+        TileKind::Plain => {}
+        TileKind::Voxel => tile.trees = forest.voxel_trees(self, s, cache, level, sx, sz),
+        TileKind::Heightfield => {
+          tile.canopy = forest.canopy(self, s, cache, level, sx, sz, &tile.foliage);
+        }
+      }
+    }
     tile
   }
 }

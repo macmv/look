@@ -88,6 +88,15 @@ public final class NativeLib {
   /** Voxel ids for bricks: per surface kind the top and filler id, then stone and water (14 ints). */
   public static native void terrainSetIds(long handle, int[] ids);
 
+  /**
+   * The names of the blocks the world's tree features place, one per line (empty when there are no
+   * tree features). A block's line number is its id for {@link #terrainSetTreeIds}.
+   */
+  public static native String terrainTreeBlocks(long handle);
+
+  /** Voxel id of each block of {@link #terrainTreeBlocks}, in the same order; 0 for blocks that are not drawn. */
+  public static native void terrainSetTreeIds(long handle, int[] ids);
+
   /** Camera position in blocks, to work on the nearest tiles first. */
   public static native void terrainCamera(long handle, int x, int z);
 
@@ -105,7 +114,8 @@ public final class NativeLib {
 
   /**
    * Writes the grass colors of a finished tile as RGBA texels (row major, direct buffer of at least
-   * 256 bytes) and returns the texels per side, or -1 if the tile is not finished.
+   * 512 bytes), then the foliage colors at byte 256, and returns the texels per side, or -1 if the
+   * tile is not finished.
    */
   public static native int terrainFarTint(long handle, int level, int sx, int sz, ByteBuffer out);
 

@@ -28,6 +28,10 @@ class RenderTest {
   private static final double FAR_Z = 0.5;
   private static final float FAR_YAW = 35f;
   private static final float FAR_PITCH = 9f;
+  private static final double TREES_X = -640.5;
+  private static final double TREES_Z = -512.5;
+  private static final double TREES_Y = 170.0;
+  private static final float TREES_YAW = 0f;
 
   private static GlContext gl;
   private static TestAtlas atlas;
@@ -99,6 +103,19 @@ class RenderTest {
       BufferedImage img = drawBig(scene, FAR_X, 1000.0, FAR_Z, FAR_YAW, FAR_PITCH, 0);
       assertTrue(terrainFraction(img) > 0.2, "almost nothing was drawn, the heightfield is probably empty");
       Golden.check("heightfield_far", img);
+    }
+  }
+
+  /**
+   * Trees on the same terrain from a few hundred blocks up, looking over forests out to the edge of
+   * the pyramid: bricks have them near, the heightfield past that.
+   */
+  @Test
+  void heightFieldTrees() {
+    try (NativeTerrain terrain = new NativeTerrain(TREES_X, TREES_Z, TREES_YAW, 40f, true);
+        TestScene scene = new TestScene(atlas, terrain, terrain, TREES_X, TREES_Z, Lod.maxDist())) {
+      BufferedImage img = drawBig(scene, TREES_X, TREES_Y, TREES_Z, TREES_YAW, 4f, 0);
+      Golden.check("heightfield_trees", img);
     }
   }
 

@@ -94,7 +94,9 @@ final class TestScene implements AutoCloseable {
   static final int SNOW = 9;
   /** The stand-in for water that SeedSource uses. */
   static final int WATER = 10;
-  static final int LAST_BLOCK = WATER;
+  /** Leaves tinted with the foliage color, for predicted trees. */
+  static final int LEAVES = 11;
+  static final int LAST_BLOCK = LEAVES;
 
   /** The vanilla overworld's height range. */
   static final int MIN_SECTION = -4;
@@ -106,7 +108,7 @@ final class TestScene implements AutoCloseable {
   /** Textures, in the order the atlas is stitched. */
   static final List<String> SPRITES = List.of(
       "stone", "dirt", "grass_block_top", "grass_block_side", "grass_block_side_overlay",
-      "sand", "oak_log", "oak_log_top", "red_sand", "terracotta", "gravel", "snow", "light_blue_concrete");
+      "sand", "oak_log", "oak_log_top", "red_sand", "terracotta", "gravel", "snow", "light_blue_concrete", "oak_leaves");
 
   private static final int OCCLUDER_BIT = 1 << 24;
   private static final int BRICK_VOXELS = 16 * 16 * 16;
@@ -428,6 +430,7 @@ final class TestScene implements AutoCloseable {
       case GRAVEL -> Cube.all("gravel");
       case SNOW -> Cube.all("snow");
       case WATER -> Cube.all("light_blue_concrete");
+      case LEAVES -> Cube.all("oak_leaves");
       case GRASS -> new Cube(
           new String[] {"dirt", "grass_block_top", "grass_block_side", "grass_block_side", "grass_block_side", "grass_block_side"},
           "grass_block_side_overlay", true);
@@ -458,7 +461,7 @@ final class TestScene implements AutoCloseable {
       for (int face = 0; face < 6; face++) {
         int o = id * BlockClassifier.ID_FLOATS + face * BlockClassifier.LAYERS * 8;
         // Grass is tinted on its top face only, plus the overlay on the sides.
-        float baseTint = c.grassTint && face == 1 ? -1f : 0xFFFFFF;
+        float baseTint = id == LEAVES ? -2f : c.grassTint && face == 1 ? -1f : 0xFFFFFF;
         writeLayer(faces, o, atlas.rect(c.faces[face]), FACE_MAP[face], baseTint);
         if (c.sideOverlay != null && face >= 2) {
           writeLayer(faces, o + 8, atlas.rect(c.sideOverlay), FACE_MAP[face], -1f);

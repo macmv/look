@@ -31,6 +31,7 @@ import org.lwjgl.system.MemoryUtil;
  *   <li>{@link #FAR_FIRST} + level: grass color of predicted terrain (see {@link SeedSource}), for
  *       columns without a loaded chunk. Texels are {@link #farCell} blocks wide and alpha says
  *       whether one is filled.
+ *   <li>{@link #FAR_FOLIAGE_FIRST} + level: the same for foliage, which predicted trees use.
  * </ul>
  * Columns with one biome have the lower layers equal to the upper ones. The shader samples the
  * color layers with bilinear filtering.
@@ -55,7 +56,9 @@ public final class TintMap {
   /** Layers filled from loaded chunks. */
   private static final int NEAR_LAYERS = 5;
   public static final int FAR_FIRST = NEAR_LAYERS;
-  public static final int LAYERS = NEAR_LAYERS + Lod.LEVELS;
+  /** {@code FAR_FIRST + Lod.LEVELS + level}: foliage color of predicted terrain, laid out like the grass. */
+  public static final int FAR_FOLIAGE_FIRST = NEAR_LAYERS + Lod.LEVELS;
+  public static final int LAYERS = NEAR_LAYERS + 2 * Lod.LEVELS;
   private static final int CHUNK_TEXELS = 16 / CELL;
   /** Neighbor refills per {@link #flush}. */
   private static final int REFILLS_PER_FLUSH = 6;
@@ -99,6 +102,12 @@ public final class TintMap {
    */
   public static void queueFar(int level, int x, int z, int side, byte[] rgba) {
     pendingFarPos.add(new int[] {FAR_FIRST + level, x & (SIZE - 1), z & (SIZE - 1), side});
+    pendingFarData.add(rgba);
+  }
+
+  /** Like {@link #queueFar}, for the foliage colors. */
+  public static void queueFarFoliage(int level, int x, int z, int side, byte[] rgba) {
+    pendingFarPos.add(new int[] {FAR_FOLIAGE_FIRST + level, x & (SIZE - 1), z & (SIZE - 1), side});
     pendingFarData.add(rgba);
   }
 

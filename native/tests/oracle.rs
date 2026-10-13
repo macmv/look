@@ -318,7 +318,7 @@ fn engine_builds_the_same_bricks_as_direct_sampling() {
     *id = 10 + i as i32;
   }
   let ids = Ids::from_slice(&ids).unwrap();
-  engine.set_ids(ids);
+  engine.set_ids(ids.clone());
   engine.set_camera(0, 0);
 
   // Negative coordinates on purpose, and requesting everything twice must not

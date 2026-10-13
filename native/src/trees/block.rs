@@ -123,6 +123,11 @@ impl Blocks {
 
   pub fn name(&self, id: BlockId) -> &str { &self.names[id as usize] }
 
+  /// The name of a block, or None past the last one.
+  pub fn name_of(&self, id: BlockId) -> Option<&str> {
+    self.names.get(id as usize).map(String::as_str)
+  }
+
   pub fn lookup(&self, name: &str) -> Option<BlockId> { self.index.get(name).copied() }
 
   fn has(&self, b: Block, c: u16) -> bool { self.classes[b.id as usize] & c != 0 }

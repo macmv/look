@@ -21,7 +21,10 @@ use std::{
   time::{Duration, Instant},
 };
 
-use crate::terrain::{Ids, Terrain, Tile, BRICK_VOXELS, HF_BYTES};
+use crate::{
+  forest::TreeCache,
+  terrain::{Ids, Terrain, Tile, TileKind, BRICK_VOXELS, HF_BYTES},
+};
 
 /// Keys pack a tile like `SectionKey.java` does: level in bits 60..62, x in
 /// 22..43, z in 0..21.
@@ -94,6 +97,8 @@ struct Shared {
   tiles: Mutex<HashMap<u64, Arc<Tile>>>,
   done:  Mutex<Vec<u64>>,
   ids:   RwLock<Ids>,
+  /// Decorated chunks the tiles around them share.
+  trees: TreeCache,
 
   cam_x:     AtomicI32,
   cam_z:     AtomicI32,
@@ -120,6 +125,22 @@ pub struct Engine {
 /// Sections past `want_sections` that a tile is still kept for, so walking back
 /// and forth over a border does not recompute it.
 const KEEP_MARGIN: i64 = 8;
+/// Decorated chunks kept for the tiles that border them.
+const TREE_CHUNKS_KEPT: usize = 2048;
+
+/// The coarsest tile level that gets trees. Trees are drawn at every voxel
+/// level; of the heightfield's, only the finer ones, as decorating a chunk is
+/// about as much work as a whole level-0 tile and a tile at level k covers
+/// 4^k chunks.
+fn tree_levels(kind: TileKind) -> u32 {
+  match kind {
+    TileKind::Heightfield => HF_TREE_LEVEL,
+    _ => u32::MAX,
+  }
+}
+
+pub const HF_TREE_LEVEL: u32 = 3;
+
 const SORT_DISTANCE: i64 = 32;
 const EVICT_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -133,6 +154,7 @@ impl Engine {
       tiles: Mutex::new(HashMap::new()),
       done: Mutex::new(Vec::new()),
       ids: RwLock::new(Ids::default()),
+      trees: TreeCache::new(TREE_CHUNKS_KEPT),
       cam_x: AtomicI32::new(0),
       cam_z: AtomicI32::new(0),
       shutdown: AtomicBool::new(false),
@@ -157,7 +179,23 @@ impl Engine {
     }
   }
 
-  pub fn set_ids(&self, ids: Ids) { *self.shared.ids.write().unwrap() = ids; }
+  /// Sets the voxel ids of the terrain; the ids of tree blocks are kept.
+  pub fn set_ids(&self, mut ids: Ids) {
+    let mut now = self.shared.ids.write().unwrap();
+    ids.trees = now.trees.clone();
+    *now = ids;
+  }
+
+  /// Sets the voxel id of each tree block (see `tree_blocks`), 0 for the ones
+  /// that are not drawn.
+  pub fn set_tree_ids(&self, trees: Vec<u16>) {
+    self.shared.ids.write().unwrap().trees = trees.into();
+  }
+
+  /// The names of the blocks trees are made of, whose index is their id.
+  pub fn tree_blocks(&self) -> Vec<String> {
+    self.shared.terrain.forest.as_ref().map(|f| f.block_names()).unwrap_or_default()
+  }
 
   /// Queues a tile unless it exists or is already queued. Returns true if it
   /// was queued now.
@@ -243,7 +281,7 @@ impl Engine {
     out: &mut [u16; BRICK_VOXELS],
   ) -> Option<u32> {
     let tile = self.shared.tiles.lock().unwrap().get(&pack_key(level, sx, sz)).cloned()?;
-    let ids = *self.shared.ids.read().unwrap();
+    let ids = self.shared.ids.read().unwrap();
     Some(tile.fill_brick(level, sy, &self.shared.terrain.params, &ids, out))
   }
 
@@ -308,13 +346,16 @@ fn worker(shared: Arc<Shared>) {
     }
 
     let (level, sx, sz) = unpack_key(job.key);
-    let tile =
-      catch_unwind(AssertUnwindSafe(|| shared.terrain.sample_tile(&mut scratch, level, sx, sz)))
-        .unwrap_or_else(|_| {
-          // The memo may be half updated; start clean.
-          scratch = shared.terrain.scratch();
-          Tile::empty()
-        });
+    let tile = catch_unwind(AssertUnwindSafe(|| {
+      let kind = if job.key & HF_FLAG != 0 { TileKind::Heightfield } else { TileKind::Voxel };
+      let trees = (level <= tree_levels(kind)).then_some(&shared.trees);
+      shared.terrain.sample_tile_with(&mut scratch, level, sx, sz, kind, trees)
+    }))
+    .unwrap_or_else(|_| {
+      // The memo may be half updated; start clean.
+      scratch = shared.terrain.scratch();
+      Tile::empty()
+    });
 
     shared.tiles.lock().unwrap().insert(job.key, Arc::new(tile));
     shared.completed.fetch_add(1, Ordering::Relaxed);

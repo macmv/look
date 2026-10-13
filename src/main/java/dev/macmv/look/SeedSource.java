@@ -5,7 +5,9 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
@@ -53,9 +55,12 @@ public final class SeedSource implements VoxelSource {
   private long handle;
   private boolean resolved;
   private int[] ids = new int[0];
+  /** The blocks trees are made of (see {@link NativeLib#terrainTreeBlocks}) and their voxel ids. */
+  private Block[] treeBlocks = new Block[0];
+  private int[] treeIds = new int[0];
 
   private final ByteBuffer keys = NativeLib.allocate(KEYS_PER_POLL * 8);
-  private final ByteBuffer tint = NativeLib.allocate(256);
+  private final ByteBuffer tint = NativeLib.allocate(512);
   private final long[] stats = new long[3];
 
   private SeedSource() {}
@@ -90,6 +95,8 @@ public final class SeedSource implements VoxelSource {
     handle = 0;
     resolved = false;
     ids = new int[0];
+    treeBlocks = new Block[0];
+    treeIds = new int[0];
     HeightField.reset();
   }
 
@@ -130,6 +137,9 @@ public final class SeedSource implements VoxelSource {
         byte[] texels = new byte[side * side * 4];
         tint.get(0, texels);
         TintMap.queueFar(level, sx * side, sz * side, side, texels);
+        byte[] foliage = new byte[side * side * 4];
+        tint.get(256, foliage);
+        TintMap.queueFarFoliage(level, sx * side, sz * side, side, foliage);
       }
       int min = VoxelWorld.levelMin(level);
       for (int sy = min; sy < min + VoxelWorld.levelRows(level); sy++) VoxelWorld.invalidate(level, sx, sy, sz);
@@ -146,9 +156,36 @@ public final class SeedSource implements VoxelSource {
     now[SURFACES.length * 2] = BlockClassifier.voxelId(Blocks.STONE.defaultBlockState());
     now[SURFACES.length * 2 + 1] = BlockClassifier.voxelId(WATER.defaultBlockState());
 
-    if (Arrays.equals(now, ids)) return;
-    ids = now;
-    NativeLib.terrainSetIds(handle, now);
+    if (!Arrays.equals(now, ids)) {
+      ids = now;
+      NativeLib.terrainSetIds(handle, now);
+    }
+
+    int[] trees = new int[treeBlocks.length];
+    for (int i = 0; i < trees.length; i++) {
+      Block block = treeBlocks[i];
+      trees[i] = block == null ? 0 : BlockClassifier.voxelId(block.defaultBlockState());
+    }
+    if (!Arrays.equals(trees, treeIds)) {
+      treeIds = trees;
+      NativeLib.terrainSetTreeIds(handle, trees);
+    }
+  }
+
+  /**
+   * The blocks tree features place, by the native side's numbering. Those that are not worth a
+   * voxel (water the trees stand in, vines and cocoa pods, which are too thin to see from afar)
+   * are null.
+   */
+  private static Block[] resolveTreeBlocks(String names) {
+    if (names.isEmpty()) return new Block[0];
+    String[] lines = names.split("\n");
+    Block[] out = new Block[lines.length];
+    for (int i = 0; i < lines.length; i++) {
+      Block block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse(lines[i]));
+      out[i] = block == Blocks.AIR || block == Blocks.WATER || block == Blocks.VINE || block == Blocks.COCOA || block == Blocks.BEE_NEST ? null : block;
+    }
+    return out;
   }
 
   private void resolve(Minecraft mc) {
@@ -177,7 +214,8 @@ public final class SeedSource implements VoxelSource {
               server.registryAccess(), settings, ((MultiNoiseBiomeSourceAccessor) (Object) biomes).look$parameters());
       long seed = server.getWorldData().worldGenOptions().seed();
       handle = NativeLib.terrainCreate(seed, config, Lod.outer(0) + WANT_MARGIN, Integer.getInteger("look.seedThreads", 0));
-      LookMod.LOGGER.info("Seed terrain engine started ({} bytes of config)", config.length);
+      treeBlocks = resolveTreeBlocks(NativeLib.terrainTreeBlocks(handle));
+      LookMod.LOGGER.info("Seed terrain engine started ({} bytes of config, {} tree blocks)", config.length, treeBlocks.length);
     } catch (RuntimeException | LinkageError e) {
       // An unusual world (legacy noise, a modded density function): just no predicted terrain.
       LookMod.LOGGER.warn("Predicted terrain is unavailable for this world: {}", e.toString());
