@@ -56,4 +56,34 @@ final class TestWorlds {
     }
     return y >= bottom - 2 ? TestScene.SAND : TestScene.STONE;
   };
+
+  /**
+   * Flat grass with a stone pillar, a log post and a stone slab held up by a second pillar, to cast
+   * shadows: the pillar is at x 4..5, z 0..1; the slab spans x -9..-3, z -4..4 at y 66.
+   */
+  static final TestScene.World SHADOWS = (x, y, z) -> {
+    if (y > 59) {
+      if (x >= 4 && x <= 5 && z >= 0 && z <= 1 && y < 70) return TestScene.STONE;
+      if (x == 12 && z == 3 && y < 65) return TestScene.LOG;
+      if (x >= -9 && x <= -3 && z >= -4 && z <= 4 && y == 66) return TestScene.STONE;
+      if (x == -9 && z == 4 && y < 66) return TestScene.STONE;
+      return 0;
+    }
+    return y == 59 ? TestScene.GRASS : (y >= 55 ? TestScene.DIRT : TestScene.STONE);
+  };
+
+  /** Flat stone with a row of blocks at z = 6: glowstone, lava, redstone ore, plain stone for comparison, and glowstone again. */
+  static final TestScene.World EMISSIVE = (x, y, z) -> {
+    if (y < 60) return y < 57 ? TestScene.STONE : TestScene.DIRT;
+    if (y == 60 && z == 6 && x >= -4 && x <= 4 && (x & 1) == 0) {
+      return switch (x) {
+        case -4 -> TestScene.GLOWSTONE;
+        case -2 -> TestScene.LAVA;
+        case 0 -> TestScene.REDSTONE_ORE;
+        case 2 -> TestScene.STONE;
+        default -> TestScene.GLOWSTONE;
+      };
+    }
+    return 0;
+  };
 }

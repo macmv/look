@@ -4,6 +4,7 @@ import dev.macmv.look.BlockClassifier;
 import dev.macmv.look.HeightField;
 import dev.macmv.look.LightMap;
 import dev.macmv.look.Lod;
+import dev.macmv.look.Materials;
 import dev.macmv.look.SectionLayout;
 import dev.macmv.look.TintMap;
 import dev.macmv.look.VoxelRenderer;
@@ -96,7 +97,15 @@ final class TestScene implements AutoCloseable {
   static final int WATER = 10;
   /** Leaves tinted with the foliage color, for predicted trees. */
   static final int LEAVES = 11;
-  static final int LAST_BLOCK = LEAVES;
+  /** Emissive blocks, for the Enhanced material tests. */
+  static final int GLOWSTONE = 12;
+  static final int LAVA = 13;
+  static final int REDSTONE_ORE = 14;
+  static final int LAST_BLOCK = REDSTONE_ORE;
+  /** Registry path of each block id, to look up its material the way BlockClassifier does. */
+  private static final String[] NAMES = {
+    "air", "stone", "dirt", "grass_block", "sand", "oak_log", "red_sand", "terracotta", "gravel", "snow_block",
+    "water", "oak_leaves", "glowstone", "lava", "redstone_ore"};
 
   /** The vanilla overworld's height range. */
   static final int MIN_SECTION = -4;
@@ -109,7 +118,7 @@ final class TestScene implements AutoCloseable {
   /** Textures, in the order the atlas is stitched. */
   static final List<String> SPRITES = List.of(
       "stone", "dirt", "grass_block_top", "grass_block_side", "grass_block_side_overlay",
-      "sand", "oak_log", "oak_log_top", "red_sand", "terracotta", "gravel", "snow", "water_still", "oak_leaves");
+      "sand", "oak_log", "oak_log_top", "red_sand", "terracotta", "gravel", "snow", "water_still", "oak_leaves", "glowstone", "lava_still", "redstone_ore");
 
   private static final int OCCLUDER_BIT = 1 << 24;
   private static final int BRICK_VOXELS = 16 * 16 * 16;
@@ -124,6 +133,7 @@ final class TestScene implements AutoCloseable {
   private final int indirectionTex;
   private final int brickBuf, brickTex;
   private final int colorBuf, colorTex;
+  private final int materialBuf, materialTex;
   private final int faceBuf, faceTex;
   private final int tintTex;
   private final int lightIndirectionTex, lightBuf, lightTex;
@@ -149,9 +159,20 @@ final class TestScene implements AutoCloseable {
     GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, colorBuf);
     IntBuffer colors = ByteBuffer.allocateDirect((BlockClassifier.MAX_ID + 1) * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
     for (int id = 1; id < MAP_COLORS.length; id++) colors.put(id, MAP_COLORS[id] | OCCLUDER_BIT);
+    for (int id = GLOWSTONE; id <= LAST_BLOCK; id++) colors.put(id, 0x808080 | OCCLUDER_BIT);
     colors.put(WATER, WATER_COLOR | BlockClassifier.KIND_WATER << BlockClassifier.KIND_SHIFT | 8 << BlockClassifier.WATER_HEIGHT_SHIFT);
     GL33C.glBufferData(GL33C.GL_TEXTURE_BUFFER, colors, GL33C.GL_STATIC_DRAW);
     colorTex = texBuffer(VoxelWorld.UNIT_COLORS, GL33C.GL_R32UI, colorBuf);
+
+    materialBuf = GL33C.glGenBuffers();
+    GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, materialBuf);
+    IntBuffer materials = ByteBuffer.allocateDirect((BlockClassifier.MAX_ID + 1) * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
+    for (int id = 0; id <= BlockClassifier.MAX_ID; id++) {
+      boolean lit = id == GLOWSTONE;
+      materials.put(id, Materials.pack(id > 0 && id < NAMES.length ? Materials.classify(NAMES[id], lit ? 15 : 0, false) : Materials.DEFAULT));
+    }
+    GL33C.glBufferData(GL33C.GL_TEXTURE_BUFFER, materials, GL33C.GL_STATIC_DRAW);
+    materialTex = texBuffer(Materials.UNIT, GL33C.GL_R32UI, materialBuf);
 
     faceBuf = GL33C.glGenBuffers();
     GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, faceBuf);
@@ -215,11 +236,39 @@ final class TestScene implements AutoCloseable {
 
   /** The same frame drawn the Enhanced way: HDR target, then resolve. */
   VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f) {
-    VoxelRenderer.Atmosphere atm = new VoxelRenderer.Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f);
+    return enhanced(f, new float[] {0f, 1f, 0f});
+  }
+
+  /** The Enhanced frame with the sun toward {@code sun} (the moon opposite it). */
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, float[] sun) {
+    float n = (float) Math.sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+    float[] s = {sun[0] / n, sun[1] / n, sun[2] / n};
+    return enhanced(f, new VoxelRenderer.Atmosphere(s, new float[] {-s[0], -s[1], -s[2]}, 0, 0f, 0f));
+  }
+
+  /** Enhanced with a given sun, moon and weather. */
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, VoxelRenderer.Atmosphere atm) {
+    return enhanced(f, atm, f.skyDarken());
+  }
+
+  /** The Vanilla frame with the sky dimmed to {@code skyDarken}. */
+  VoxelRenderer.Frame dimmed(VoxelRenderer.Frame f, float skyDarken) {
     return new VoxelRenderer.Frame(
         f.view(), f.projection(), f.camX(), f.camY(), f.camZ(), f.gridRows(), f.levelParams(), f.maxDist(), f.minY(),
         f.atlasWidth(), f.atlasHeight(), f.atlasMaxLevel(), f.viewportHeight(), f.debug(), f.hfIds(), f.time(),
-        f.skyDarken(), f.ambientLight(), f.waterId(), f.fogColor(), f.fogStart(), f.fogEnd(), f.seaLevel(), atm);
+        skyDarken, f.ambientLight(), f.waterId(), f.fogColor(), f.fogStart(), f.fogEnd(), f.seaLevel(), null);
+  }
+
+  /** Enhanced, with the sky dimmed to {@code skyDarken} so that emission stands out. */
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, float skyDarken) {
+    return enhanced(f, new VoxelRenderer.Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f), skyDarken);
+  }
+
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, VoxelRenderer.Atmosphere atm, float skyDarken) {
+    return new VoxelRenderer.Frame(
+        f.view(), f.projection(), f.camX(), f.camY(), f.camZ(), f.gridRows(), f.levelParams(), f.maxDist(), f.minY(),
+        f.atlasWidth(), f.atlasHeight(), f.atlasMaxLevel(), f.viewportHeight(), f.debug(), f.hfIds(), f.time(),
+        skyDarken, f.ambientLight(), f.waterId(), f.fogColor(), f.fogStart(), f.fogEnd(), f.seaLevel(), atm);
   }
 
   /** Binds everything to its unit, like {@link VoxelWorld#bind}. */
@@ -228,6 +277,7 @@ final class TestScene implements AutoCloseable {
     unit(VoxelWorld.UNIT_BRICKS, GL33C.GL_TEXTURE_BUFFER, brickTex);
     unit(VoxelWorld.UNIT_COLORS, GL33C.GL_TEXTURE_BUFFER, colorTex);
     unit(VoxelWorld.UNIT_FACES, GL33C.GL_TEXTURE_BUFFER, faceTex);
+    unit(Materials.UNIT, GL33C.GL_TEXTURE_BUFFER, materialTex);
     unit(VoxelWorld.UNIT_ATLAS, GL33C.GL_TEXTURE_2D, atlas.texture());
     GL33C.glBindSampler(VoxelWorld.UNIT_ATLAS, atlasSampler);
     unit(VoxelWorld.UNIT_TINT, GL33C.GL_TEXTURE_2D_ARRAY, tintTex);
@@ -463,6 +513,9 @@ final class TestScene implements AutoCloseable {
       case SNOW -> Cube.all("snow");
       case WATER -> Cube.all("water_still");
       case LEAVES -> Cube.all("oak_leaves");
+      case GLOWSTONE -> Cube.all("glowstone");
+      case LAVA -> Cube.all("lava_still");
+      case REDSTONE_ORE -> Cube.all("redstone_ore");
       case GRASS -> new Cube(
           new String[] {"dirt", "grass_block_top", "grass_block_side", "grass_block_side", "grass_block_side", "grass_block_side"},
           "grass_block_side_overlay", true);
@@ -585,9 +638,9 @@ final class TestScene implements AutoCloseable {
   @Override
   public void close() {
     GL33C.glDeleteTextures(new int[] {
-      indirectionTex, brickTex, colorTex, faceTex, tintTex, lightIndirectionTex, lightTex,
+      indirectionTex, brickTex, colorTex, faceTex, materialTex, tintTex, lightIndirectionTex, lightTex,
       hfHeightTex, hfAttrTex, hfTilesTex, hfSuperTex});
-    GL33C.glDeleteBuffers(new int[] {brickBuf, colorBuf, faceBuf, lightBuf});
+    GL33C.glDeleteBuffers(new int[] {brickBuf, colorBuf, faceBuf, materialBuf, lightBuf});
     GL33C.glDeleteSamplers(atlasSampler);
   }
 }

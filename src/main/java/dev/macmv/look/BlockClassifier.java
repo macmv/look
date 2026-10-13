@@ -220,6 +220,7 @@ public final class BlockClassifier {
     nextExtraRow = MAX_ID + 1;
     Arrays.fill(colors, 0);
     Arrays.fill(priorities, (byte) 0);
+    Materials.reset();
     Arrays.fill(faces, 0f);
     colorsDirty = true;
     dirtyIds.markAll(0, (MAX_ID + 1) * ID_FLOATS - 1);
@@ -305,6 +306,8 @@ public final class BlockClassifier {
     }
     colors[id] = (color == 0 ? FALLBACK_COLOR : color) & 0xFFFFFF;
     colorsDirty = true;
+    Materials.set(id, Materials.classify(
+        BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath(), state.getLightEmission(), !cube && isPlant(state)));
 
     if (cube) {
       priorities[id] = (byte) priorityOf(state);
@@ -347,6 +350,7 @@ public final class BlockClassifier {
     colors[id] = 0x3F76E4 | KIND_WATER << KIND_SHIFT | eighths << WATER_HEIGHT_SHIFT;
     colorsDirty = true;
     priorities[id] = 3;
+    Materials.set(id, Materials.classify("water", 0, false));
 
     // Every face is the still-water sprite, tinted by the biome. Vanilla uses the flowing sprite on
     // the sides, which only matters for the faces of a waterfall.
@@ -543,6 +547,7 @@ public final class BlockClassifier {
       System.arraycopy(faces, ground * ID_FLOATS, faces, id * ID_FLOATS, ID_FLOATS);
       colors[id] = colors[ground];
       priorities[id] = priorities[ground];
+      Materials.copy(ground, id);
       colorsDirty = true;
 
       // The up face (index 1): the second layer, or the first if the face has no texture at all.

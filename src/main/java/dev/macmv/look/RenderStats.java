@@ -130,6 +130,8 @@ public final class RenderStats {
           "bricks: %d / %d, queued: %d, generating: %d",
           VoxelWorld.usedSlots(), VoxelWorld.capacity(), VoxelWorld.queued(), VoxelWorld.loading()));
       out.add("lod bricks: " + java.util.Arrays.toString(VoxelWorld.loadedPerLevel()));
+      String shadow = ShadowPass.statsLine();
+      if (shadow != null) out.add(shadow);
       String seed = SeedSource.INSTANCE.statsLine();
       if (seed != null) out.add(seed);
     }

@@ -20,10 +20,11 @@ public final class VoxelRenderer {
   /** The Vanilla program, and the one compiled with {@code #define ENHANCED}, made on first use. */
   private static Program vanilla;
   private static Program enhanced;
+  private static Program shadow;
   private static int vao;
 
   /** A linked program with its uniform locations looked up once. */
-  private static final class Program {
+  static final class Program {
     final int id;
     private final java.util.HashMap<String, Integer> locations = new java.util.HashMap<>();
 
@@ -120,11 +121,16 @@ public final class VoxelRenderer {
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
 
+    // Sun shadow map, before the timed world pass (timer queries do not nest). Overworld-like dimensions only.
+    ShadowPass.render(frame, frame.atmosphere() != null && hasSun(Minecraft.getInstance().level));
+
     RenderStats.beginGpu();
     if (frame.atmosphere() != null) {
+      SkyState.update(Minecraft.getInstance().level, Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false));
       // Own HDR target first, then resolve it into the main framebuffer. Vanilla draws on top of that.
       var main = Minecraft.getInstance().getMainRenderTarget();
       EnhancedTarget.begin(main.width, main.height);
+      FinalPost.capture(view, projection, camX, camY, camZ, frame.atmosphere().sunDir());
       draw(frame);
       main.bindWrite(true);
       EnhancedTarget.resolve();
@@ -176,6 +182,28 @@ public final class VoxelRenderer {
       GL33C.glUniformMatrix4fv(p.loc("uProj"), false, buf);
     }
 
+    voxelUniforms(p, f);
+
+    Atmosphere atm = f.atmosphere();
+    if (atm != null) {
+      GL33C.glUniform3f(p.loc("uSunDir"), atm.sunDir()[0], atm.sunDir()[1], atm.sunDir()[2]);
+      GL33C.glUniform3f(p.loc("uMoonDir"), atm.moonDir()[0], atm.moonDir()[1], atm.moonDir()[2]);
+      GL33C.glUniform1i(p.loc("uMoonPhase"), atm.moonPhase());
+      GL33C.glUniform1f(p.loc("uRain"), atm.rain());
+      GL33C.glUniform1f(p.loc("uThunder"), atm.thunder());
+      SkyState.upload(p.id);
+      ShadowPass.setUniforms(p);
+    }
+
+    GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
+    RenderSystem.disableBlend();
+
+    GlStateManager._glBindVertexArray(0);
+    GlStateManager._glUseProgram(0);
+  }
+
+  /** Camera, pyramid and data-texture uniforms shared by the raycast pass and the shadow pass. */
+  static void voxelUniforms(Program p, Frame f) {
     int bx = (int) Math.floor(f.camX());
     int by = (int) Math.floor(f.camY());
     int bz = (int) Math.floor(f.camZ());
@@ -194,6 +222,7 @@ public final class VoxelRenderer {
     GL33C.glUniform1i(p.loc("uFaces"), VoxelWorld.UNIT_FACES);
     GL33C.glUniform1i(p.loc("uAtlas"), VoxelWorld.UNIT_ATLAS);
     GL33C.glUniform1i(p.loc("uTint"), VoxelWorld.UNIT_TINT);
+    GL33C.glUniform1i(p.loc("uMaterials"), Materials.UNIT);
 
     // Angle one pixel covers, used to pick a mip level from the distance of a hit.
     float pixelAngle = 2f / (f.projection().m11() * Math.max(1, f.viewportHeight()));
@@ -219,21 +248,6 @@ public final class VoxelRenderer {
     GL33C.glUniform3f(p.loc("uFogColor"), f.fogColor()[0], f.fogColor()[1], f.fogColor()[2]);
     GL33C.glUniform2f(p.loc("uFogRange"), f.fogStart(), f.fogEnd());
     GL33C.glUniform1f(p.loc("uSeaLevel"), f.seaLevel());
-
-    Atmosphere atm = f.atmosphere();
-    if (atm != null) {
-      GL33C.glUniform3f(p.loc("uSunDir"), atm.sunDir()[0], atm.sunDir()[1], atm.sunDir()[2]);
-      GL33C.glUniform3f(p.loc("uMoonDir"), atm.moonDir()[0], atm.moonDir()[1], atm.moonDir()[2]);
-      GL33C.glUniform1i(p.loc("uMoonPhase"), atm.moonPhase());
-      GL33C.glUniform1f(p.loc("uRain"), atm.rain());
-      GL33C.glUniform1f(p.loc("uThunder"), atm.thunder());
-    }
-
-    GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
-    RenderSystem.disableBlend();
-
-    GlStateManager._glBindVertexArray(0);
-    GlStateManager._glUseProgram(0);
   }
 
   /** Game time for the wind, sky darkening for the time of day and weather, and the dimension's ambient light. */
@@ -256,6 +270,11 @@ public final class VoxelRenderer {
     return new float[] {time, skyDarken, ambient};
   }
 
+  /** Whether the dimension has a sun to cast shadows: not the Nether (ceiling) or the End (no sky light). */
+  private static boolean hasSun(ClientLevel level) {
+    return level != null && level.dimensionType().hasSkyLight() && !level.dimensionType().hasCeiling();
+  }
+
   /** Sun, moon and weather from the client level, for the Enhanced program. */
   private static Atmosphere atmosphere() {
     ClientLevel level = Minecraft.getInstance().level;
@@ -268,6 +287,15 @@ public final class VoxelRenderer {
     return new Atmosphere(
         new float[] {sx, sy, 0f}, new float[] {-sx, -sy, 0f},
         level.getMoonPhase(), level.getRainLevel(partial), level.getThunderLevel(partial));
+  }
+
+  /** The Enhanced program compiled as the shadow pass (see {@link ShadowPass}), made on first use. */
+  static Program shadowProgram() {
+    if (shadow == null) {
+      program(false);
+      shadow = link("#define ENHANCED\n#define SHADOW_PASS\n");
+    }
+    return shadow;
   }
 
   private static Program program(boolean enhancedMode) {
@@ -308,6 +336,9 @@ public final class VoxelRenderer {
   static int compile(int type, String name, String defines) {
     int shader = GL33C.glCreateShader(type);
     String source = readShader(name);
+    // `#include "file"` lines are pasted in, so Enhanced code can live in its own files.
+    var inc = java.util.regex.Pattern.compile("(?m)^#include \"([^\"]+)\"[ \\t]*$").matcher(source);
+    source = inc.replaceAll(m -> java.util.regex.Matcher.quoteReplacement(readShader(m.group(1))));
     if (!defines.isEmpty()) {
       // #version has to stay the first line.
       int eol = source.indexOf('\n') + 1;

@@ -12,6 +12,15 @@ define) into an HDR target (`EnhancedTarget`) and resolved into the main framebu
 tonemap, looking the same as Vanilla. The sun, moon and rain uniforms are declared and set
 (`VoxelRenderer.Atmosphere`) but nothing reads them yet.
 
+Sky and atmosphere (4.1 to 4.3, steps 2 and 5) exist: `sky.glsl` (pasted into `voxel.fsh` inside
+`#ifdef ENHANCED` by an `#include` line that `VoxelRenderer` expands) has an analytic Rayleigh/Mie sky,
+sun and moon discs with phases, stars, vanilla-style and soft volumetric clouds, `cloudShadow(pos, L)`
+(not yet used by any lighting), and aerial perspective with height, rain and night fog and the border
+fade. `SkyState` holds the feature bits, cloud style (`-Dlook.clouds=0|1|2`) and wind, and
+`LevelRendererMixin` cancels vanilla's `renderSky` and `renderClouds` in the overworld. Not done:
+aurora, rainbow, biome fog, cave fog, blindness and darkness fog, matching vanilla's entity fog to the
+horizon color, clouds at half resolution with temporal accumulation.
+
 The feature list comes from memory of the pack's option menus. It is probably not complete. Before
 building a section, check the pack's actual option list for that area.
 
@@ -169,6 +178,19 @@ frame and measure before getting clever.
 Past the far cascade, shadows fade out into the unshadowed sun term. The heightfield can still cast
 cheap long shadows (mountains at sunset): sample a coarse heightfield march toward the sun for
 pixels beyond the cascades. That is a later add-on.
+
+**Built (3.1 to 3.5).** `ShadowPass` renders two cascades (near 96 blocks wide at 512 texels, far
+512 wide at 1024) every frame, with voxel.fsh compiled a third time as `SHADOW_PASS` (a `main` that
+traces one ray per texel along `-uShadowDir` and writes the hit distance to an R32F texture). The
+light is the sun by day and the moon by night, kept 0.06 above the horizon. Lookups from `voxel.fsh`:
+`sunVisibility(pos, normal[, fallback])` (blocker search, then a rotated Poisson kernel whose width
+shrinks toward the occluder) and `sunVisibilityFast(pos)` (one tap, for volumetrics). `pos` is relative
+to `uCamBlock`. Raw maps are `uShadowMap0` / `uShadowMap1` on units 26 and 27; `shadowCoords(c, pos)`
+gives texel and ray distance. Past the far cascade the lookup returns the receiver's sky light, so
+caves stay dark and open terrain lit. The light model is `enhancedLight()`; `uSunLighting` is 0 in the
+Nether and End, which keep vanilla's light and skip the pass. Not done: rolling updates, the short
+exact contact ray, heightfield shadows past the cascades, night vision, a real blue-noise texture
+(interleaved gradient noise rotates the kernel instead).
 
 ### 3.6 Entities in shadows
 
@@ -419,11 +441,18 @@ entities are not in the buffer, see 1.2). On camera cuts and teleports, drop the
 Threshold + downsample/upsample chain on the HDR world pass output, added back before tonemapping.
 Only the voxel world blooms in the first version; entities draw after the resolve pass (9.1).
 
+Built (`PostChain`): threshold with a soft knee, 13-tap downsample chain, tent upsample, added in
+`resolve.fsh`. Bloom does not spill onto sky pixels, because the resolve pass discards pixels the world
+pass missed. Knobs in `EnhancedSettings`.
+
 ### 7.3 Auto-exposure
 
 Compute average (log) luminance on a small mip of the HDR image, smooth over time with different up
 and down rates, and apply as an exposure multiplier in the resolve pass. A fixed exposure while it is
 being built; the sun-vs-cave brightness swing is what it is for.
+
+Built (`PostChain`): log-luminance of a 128x128 reduction, mipmapped to one texel, smoothed on the GPU
+in a 1x1 ping-pong texture (no readback). Strength, key, limits and rates are in `EnhancedSettings`.
 
 ### 7.4 Color grading and tonemap options
 
@@ -443,6 +472,12 @@ or a few uniforms in the resolve pass. The Nether and End get their own presets 
 | Lens flare | Sun-screen-position sprites. Occlusion from one `trace` toward the sun (a single ray per frame) or a depth sample. |
 | Underwater / lava distortion | UV warp in final post when the camera is inside the fluid. |
 | Hurt, pumpkin, nausea overlays | Stay vanilla (GUI layer). |
+
+Built (`FinalPost`, `post.fsh`, hooked at the tail of `LevelRenderer.renderLevel`): vignette, chromatic
+aberration, grain, sharpening, depth of field (depth and focus from the world pass, so entities take the
+terrain's depth), motion blur, lens flare and underwater/lava warp, each with its own switch. Sharpening
+runs here, not in the resolve pass, until TAA exists. Tonemap, grading and the other resolve knobs
+live in `EnhancedSettings`.
 
 ## 8. Dimensions
 
