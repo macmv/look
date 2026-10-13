@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.macmv.look.Lod;
+import dev.macmv.look.VoxelRenderer;
 import java.awt.image.BufferedImage;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -185,6 +186,9 @@ class RenderTest {
    */
   @Test
   void enhancedMatchesVanilla() {
+    // The sky and fog are Enhanced-only features of their own, tested below.
+    int saved = dev.macmv.look.SkyState.features;
+    dev.macmv.look.SkyState.features = 0;
     try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
       for (double[] cam : new double[][] {{-17.5, 63.0, -9.5, 300, 22}, {-3.5, 56.5, -2.5, 300, 12}}) {
         var vanilla = scene.frame(W, H, cam[0], cam[1], cam[2], (float) cam[3], (float) cam[4], 70f, 0);
@@ -204,6 +208,84 @@ class RenderTest {
         }
         assertTrue(bad == 0, bad + " pixels differ between Vanilla and Enhanced");
       }
+    } finally {
+      dev.macmv.look.SkyState.features = saved;
+    }
+  }
+
+  /** Sun and moon at {@code elevDeg} above the horizon toward -x, in the plane vanilla turns the sky in. */
+  private static VoxelRenderer.Atmosphere atm(float elevDeg, int phase, float rain, float thunder) {
+    float a = (float) Math.toRadians(90.0 - elevDeg);
+    float sx = -(float) Math.sin(a), sy = (float) Math.cos(a);
+    return new VoxelRenderer.Atmosphere(new float[] {sx, sy, 0f}, new float[] {-sx, -sy, 0f}, phase, rain, thunder);
+  }
+
+  private static BufferedImage enhancedSky(
+      TestScene scene, double x, double y, double z, float yaw, float pitch, VoxelRenderer.Atmosphere atm, int clouds, int w, int h) {
+    int saved = dev.macmv.look.SkyState.cloudStyle;
+    dev.macmv.look.SkyState.cloudStyle = clouds;
+    try {
+      var f = scene.frame(w, h, x, y, z, yaw, pitch, 70f, 0);
+      return gl.render(scene.enhanced(f, atm), scene, SKY, w, h);
+    } finally {
+      dev.macmv.look.SkyState.cloudStyle = saved;
+    }
+  }
+
+  @Test
+  void skyNoon() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("sky_noon", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -10f, atm(40f, 0, 0f, 0f), 0, W, H));
+    }
+  }
+
+  @Test
+  void skySunset() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("sky_sunset", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, 4f, atm(3f, 0, 0f, 0f), 0, W, H));
+    }
+  }
+
+  @Test
+  void skyNight() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("sky_night", enhancedSky(scene, 4.5, 80.5, 0.5, 270f, -35f, atm(-50f, 2, 0f, 0f), 0, BIG_W, BIG_H));
+    }
+  }
+
+  @Test
+  void skyRain() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("sky_rain", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -10f, atm(40f, 0, 1f, 0.5f), 0, W, H));
+    }
+  }
+
+  @Test
+  void cloudsGrid() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("clouds_grid", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(55f, 0, 0f, 0f), 1, W, H));
+    }
+  }
+
+  @Test
+  void cloudsSoft() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("clouds_soft", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(35f, 0, 0f, 0f), 2, W, H));
+    }
+  }
+
+  @Test
+  void cloudsSoftStorm() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
+      Golden.check("clouds_soft_storm", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(35f, 0, 1f, 1f), 2, W, H));
+    }
+  }
+
+  /** Far terrain fades into the sky color instead of cutting off at the end of the pyramid. */
+  @Test
+  void fogFarField() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {
+      Golden.check("fog_far", enhancedSky(scene, FAR_X, 80.5, FAR_Z, FAR_YAW, FAR_PITCH, atm(40f, 0, 0f, 0f), 0, BIG_W, BIG_H));
     }
   }
 }

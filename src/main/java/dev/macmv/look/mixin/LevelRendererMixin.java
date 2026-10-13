@@ -1,6 +1,7 @@
 package dev.macmv.look.mixin;
 
 import dev.macmv.look.LookState;
+import dev.macmv.look.SkyState;
 import dev.macmv.look.VoxelRenderer;
 import dev.macmv.look.WorldSource;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -30,6 +31,18 @@ public abstract class LevelRendererMixin {
   private void look$blockChanged(
       BlockGetter level, BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci) {
     WorldSource.INSTANCE.blockChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
+  }
+
+  /** Enhanced draws the sky (sun, moon, stars) in the raycast shader. */
+  @Inject(method = "renderSky", at = @At("HEAD"), cancellable = true)
+  private void look$renderSky(CallbackInfo ci) {
+    if (SkyState.ownsSky()) ci.cancel();
+  }
+
+  /** Enhanced draws the clouds in the raycast shader. */
+  @Inject(method = "renderClouds", at = @At("HEAD"), cancellable = true)
+  private void look$renderClouds(CallbackInfo ci) {
+    if (SkyState.ownsClouds()) ci.cancel();
   }
 
   /**

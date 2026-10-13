@@ -12,6 +12,15 @@ define) into an HDR target (`EnhancedTarget`) and resolved into the main framebu
 tonemap, looking the same as Vanilla. The sun, moon and rain uniforms are declared and set
 (`VoxelRenderer.Atmosphere`) but nothing reads them yet.
 
+Sky and atmosphere (4.1 to 4.3, steps 2 and 5) exist: `sky.glsl` (pasted into `voxel.fsh` inside
+`#ifdef ENHANCED` by an `#include` line that `VoxelRenderer` expands) has an analytic Rayleigh/Mie sky,
+sun and moon discs with phases, stars, vanilla-style and soft volumetric clouds, `cloudShadow(pos, L)`
+(not yet used by any lighting), and aerial perspective with height, rain and night fog and the border
+fade. `SkyState` holds the feature bits, cloud style (`-Dlook.clouds=0|1|2`) and wind, and
+`LevelRendererMixin` cancels vanilla's `renderSky` and `renderClouds` in the overworld. Not done:
+aurora, rainbow, biome fog, cave fog, blindness and darkness fog, matching vanilla's entity fog to the
+horizon color, clouds at half resolution with temporal accumulation.
+
 The feature list comes from memory of the pack's option menus. It is probably not complete. Before
 building a section, check the pack's actual option list for that area.
 

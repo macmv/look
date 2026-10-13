@@ -122,6 +122,7 @@ public final class VoxelRenderer {
 
     RenderStats.beginGpu();
     if (frame.atmosphere() != null) {
+      SkyState.update(Minecraft.getInstance().level, Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false));
       // Own HDR target first, then resolve it into the main framebuffer. Vanilla draws on top of that.
       var main = Minecraft.getInstance().getMainRenderTarget();
       EnhancedTarget.begin(main.width, main.height);
@@ -227,6 +228,7 @@ public final class VoxelRenderer {
       GL33C.glUniform1i(p.loc("uMoonPhase"), atm.moonPhase());
       GL33C.glUniform1f(p.loc("uRain"), atm.rain());
       GL33C.glUniform1f(p.loc("uThunder"), atm.thunder());
+      SkyState.upload(p.id);
     }
 
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
@@ -308,6 +310,9 @@ public final class VoxelRenderer {
   static int compile(int type, String name, String defines) {
     int shader = GL33C.glCreateShader(type);
     String source = readShader(name);
+    // `#include "file"` lines are pasted in, so Enhanced code can live in its own files.
+    var inc = java.util.regex.Pattern.compile("(?m)^#include \"([^\"]+)\"[ \\t]*$").matcher(source);
+    source = inc.replaceAll(m -> java.util.regex.Matcher.quoteReplacement(readShader(m.group(1))));
     if (!defines.isEmpty()) {
       // #version has to stay the first line.
       int eol = source.indexOf('\n') + 1;

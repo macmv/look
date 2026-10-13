@@ -215,7 +215,11 @@ final class TestScene implements AutoCloseable {
 
   /** The same frame drawn the Enhanced way: HDR target, then resolve. */
   VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f) {
-    VoxelRenderer.Atmosphere atm = new VoxelRenderer.Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f);
+    return enhanced(f, new VoxelRenderer.Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f));
+  }
+
+  /** Enhanced with a given sun, moon and weather. */
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, VoxelRenderer.Atmosphere atm) {
     return new VoxelRenderer.Frame(
         f.view(), f.projection(), f.camX(), f.camY(), f.camZ(), f.gridRows(), f.levelParams(), f.maxDist(), f.minY(),
         f.atlasWidth(), f.atlasHeight(), f.atlasMaxLevel(), f.viewportHeight(), f.debug(), f.hfIds(), f.time(),
