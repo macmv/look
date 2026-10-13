@@ -10,6 +10,8 @@ public final class LookKeys {
 
   public static final KeyMapping TOGGLE_RENDERER =
       new KeyMapping("key.look.toggle_renderer", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F7, CATEGORY);
+  public static final KeyMapping TOGGLE_RENDER_MODE =
+      new KeyMapping("key.look.toggle_render_mode", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F6, CATEGORY);
   public static final KeyMapping TOGGLE_DEBUG =
       new KeyMapping("key.look.toggle_debug", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_F8, CATEGORY);
 
@@ -22,6 +24,6 @@ public final class LookKeys {
   private LookKeys() {}
 
   public static KeyMapping[] all() {
-    return new KeyMapping[] {TOGGLE_RENDERER, TOGGLE_DEBUG, RELOAD, VERIFY};
+    return new KeyMapping[] {TOGGLE_RENDERER, TOGGLE_RENDER_MODE, TOGGLE_DEBUG, RELOAD, VERIFY};
   }
 }
