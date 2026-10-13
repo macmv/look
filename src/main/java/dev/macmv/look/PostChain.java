@@ -65,7 +65,7 @@ public final class PostChain {
     }
   }
 
-  /** Texture unit for the post chain's own inputs: three consecutive units above everything else. */
+  /** Texture unit for the post chain's own inputs: three consecutive units above everything else (28 to 30; the materials table sits at 31). */
   private static int unit() {
     if (base < 0) {
       int max = GL33C.glGetInteger(GL33C.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS);

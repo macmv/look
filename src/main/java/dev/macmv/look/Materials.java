@@ -30,7 +30,7 @@ import org.lwjgl.opengl.GL33C;
  */
 public final class Materials {
   /** Texture unit of the table. Above the units the other tables use (10..23). */
-  public static final int UNIT = 28;
+  public static final int UNIT = 31;
   /** Emission strength of byte 255. */
   public static final float EMISSION_MAX = 4f;
 
