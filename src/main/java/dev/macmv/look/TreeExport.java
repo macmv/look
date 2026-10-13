@@ -10,11 +10,12 @@ import net.minecraft.core.HolderSet;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.FeatureSorter;
 import net.minecraft.world.level.levelgen.feature.AbstractHugeMushroomFeature;
+import net.minecraft.world.level.levelgen.feature.SimpleBlockFeature;
 import net.minecraft.world.level.levelgen.feature.TreeFeature;
 import net.minecraft.world.level.levelgen.placement.PlacedFeature;
 
 /**
- * Describes the features that grow trees, for the native decoration port (see
+ * Describes the features that grow trees and scatter grass, for the native decoration port (see
  * {@code native/src/trees/}).
  *
  * <p>Vanilla seeds every placed feature's random source from its index in its decoration step's
@@ -25,7 +26,7 @@ import net.minecraft.world.level.levelgen.placement.PlacedFeature;
  * <ul>
  *   <li>{@code steps}: per decoration step, an object from feature index to the placed feature as
  *       the game's own codec writes it (nested features inlined), for the features that contain a
- *       tree or a huge mushroom;
+ *       tree, a huge mushroom or a grass patch;
  *   <li>{@code biomes}: per biome (in the order of {@code biomes} in {@link TerrainExport}), per
  *       step, the indices of those features the biome has;
  *   <li>{@code skipped}: features the codec could not write, with the reason.
@@ -48,9 +49,11 @@ public final class TreeExport {
       JsonObject byIndex = new JsonObject();
       for (int i = 0; i < features.size(); i++) {
         PlacedFeature feature = features.get(i);
-        if (!growsTrees(feature)) continue;
+        boolean tree = growsTrees(feature);
+        if (!tree && !mayPlacePlants(feature)) continue;
         try {
           JsonElement json = PlacedFeature.DIRECT_CODEC.encodeStart(JsonOps.INSTANCE, feature).getOrThrow();
+          if (!tree && !placesPlants(json)) continue;
           byIndex.add(Integer.toString(i), json);
           wanted[step][i] = true;
         } catch (RuntimeException e) {
@@ -87,6 +90,19 @@ public final class TreeExport {
     out.add("biomes", biomesJson);
     out.add("skipped", skipped);
     return out;
+  }
+
+  /** The plants the native side can place: it knows how they survive and how they look from afar. */
+  private static final List<String> PLANTS =
+      List.of("\"minecraft:short_grass\"", "\"minecraft:fern\"", "\"minecraft:tall_grass\"", "\"minecraft:large_fern\"", "\"minecraft:dead_bush\"");
+
+  private static boolean mayPlacePlants(PlacedFeature feature) {
+    return feature.getFeatures().anyMatch(configured -> configured.feature() instanceof SimpleBlockFeature);
+  }
+
+  private static boolean placesPlants(JsonElement json) {
+    String text = json.toString();
+    return PLANTS.stream().anyMatch(text::contains);
   }
 
   private static boolean growsTrees(PlacedFeature feature) {

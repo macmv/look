@@ -1,5 +1,5 @@
-//! Predicted trees: a port of vanilla's biome decoration for the features that
-//! grow trees.
+//! Predicted trees and ground plants: a port of vanilla's biome decoration for
+//! the features that grow trees and scatter grass.
 //!
 //! The game places the trees of a chunk from a random source seeded by the
 //! world seed, the chunk's position and the feature's place in its decoration
@@ -39,6 +39,8 @@ struct Slot {
   step:   i32,
   index:  i32,
   placed: PlacedFeature,
+  /// Whether it places plants, not trees.
+  plants: bool,
 }
 
 /// The tree features of a world and which biomes have them, from the
@@ -69,7 +71,10 @@ impl Decoration {
       indices.sort_unstable();
       for index in indices {
         match PlacedFeature::parse(&mut blocks, &features[&index.to_string()]) {
-          Ok(placed) => slots.push(Slot { step: step as i32, index, placed }),
+          Ok(placed) => {
+            let plants = placed.places_plants();
+            slots.push(Slot { step: step as i32, index, placed, plants })
+          }
           Err(e) => unsupported.push(format!("step {step} feature {index}: {e}")),
         }
       }
@@ -98,9 +103,12 @@ impl Decoration {
 
   pub fn biome_count(&self) -> usize { self.biome_has.len() }
 
-  /// Whether a biome has any tree feature at all.
-  pub fn has_trees(&self, biome: usize) -> bool {
-    self.biome_has.get(biome).is_some_and(|h| h.iter().any(|&b| b))
+  /// Whether a biome has any feature to run: with `plants`, any at all,
+  /// without, only the ones that grow trees.
+  pub fn has_features(&self, biome: usize, plants: bool) -> bool {
+    self.biome_has.get(biome).is_some_and(|h| {
+      h.iter().zip(&self.slots).any(|(&has, slot)| has && (plants || !slot.plants))
+    })
   }
 
   /// `ChunkGenerator.applyBiomeDecoration`, for the tree features: decorates
@@ -115,6 +123,22 @@ impl Decoration {
     cz: i32,
     region: &BTreeSet<usize>,
   ) {
+    self.decorate_chunk_with(level, seed, cx, cz, region, true)
+  }
+
+  /// `decorate_chunk`, optionally leaving out the features that place plants.
+  /// Every feature draws from a random source seeded for it alone, and plants
+  /// go on whatever is free after the trees, so the trees are the same either
+  /// way.
+  pub fn decorate_chunk_with(
+    &self,
+    level: &mut Level,
+    seed: i64,
+    cx: i32,
+    cz: i32,
+    region: &BTreeSet<usize>,
+    plants: bool,
+  ) {
     level.set_center(cx, cz);
     let origin = (cx * 16, level.min_y(), cz * 16);
 
@@ -122,7 +146,9 @@ impl Decoration {
     let decoration_seed = rng.set_decoration_seed(seed, origin.0, origin.2);
 
     for (slot_index, slot) in self.slots.iter().enumerate() {
-      if !region.iter().any(|&b| self.biome_has.get(b).is_some_and(|h| h[slot_index])) {
+      if (!plants && slot.plants)
+        || !region.iter().any(|&b| self.biome_has.get(b).is_some_and(|h| h[slot_index]))
+      {
         continue;
       }
       rng.set_feature_seed(decoration_seed, slot.index, slot.step);

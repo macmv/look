@@ -177,3 +177,42 @@ impl WorldgenRandom {
     self.set_seed(decoration_seed.wrapping_add(index as i64).wrapping_add((10000 * step) as i64));
   }
 }
+
+/// `LegacyRandomSource` (`java.util.Random`'s generator), which seeds the noise
+/// that decides how much grass a spot gets.
+#[derive(Clone)]
+pub struct LegacyRandom {
+  seed: i64,
+}
+
+impl LegacyRandom {
+  const MASK: i64 = (1 << 48) - 1;
+
+  pub fn new(seed: i64) -> Self { LegacyRandom { seed: (seed ^ 25214903917) & Self::MASK } }
+
+  fn next(&mut self, bits: u32) -> i32 {
+    self.seed = self.seed.wrapping_mul(25214903917).wrapping_add(11) & Self::MASK;
+    (self.seed >> (48 - bits)) as i32
+  }
+
+  /// `BitRandomSource.nextInt(bound)` for `bound > 0`.
+  pub fn next_int_bound(&mut self, bound: i32) -> i32 {
+    debug_assert!(bound > 0);
+    if bound & (bound - 1) == 0 {
+      return ((bound as i64 * self.next(31) as i64) >> 31) as i32;
+    }
+    loop {
+      let j = self.next(31);
+      let k = j % bound;
+      if j.wrapping_sub(k).wrapping_add(bound - 1) >= 0 {
+        return k;
+      }
+    }
+  }
+
+  pub fn next_double(&mut self) -> f64 {
+    let i = self.next(26) as i64;
+    let j = self.next(27) as i64;
+    (((i << 27) + j) as f64) * (1.110_223e-16_f32 as f64)
+  }
+}

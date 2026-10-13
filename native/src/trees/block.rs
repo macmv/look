@@ -92,6 +92,14 @@ mod class {
   pub const MUSHROOM_GROW: u16 = 1024;
   /// Part of the `replaceable_by_trees` tag besides leaves.
   pub const REPLACEABLE: u16 = 2048;
+  /// A plant that stands on the `dirt` tag (`BushBlock`).
+  pub const PLANT: u16 = 4096;
+  /// A plant that also stands on sand and terracotta (`DeadBushBlock`).
+  pub const DESERT_PLANT: u16 = 8192;
+  /// Sand and terracotta, which desert plants stand on.
+  pub const DESERT_GROUND: u16 = 16384;
+  /// A plant two blocks tall (`DoublePlantBlock`).
+  pub const DOUBLE: u16 = 32768;
 }
 
 /// The names the configs mention, numbered, with the classes of each.
@@ -139,6 +147,18 @@ impl Blocks {
   /// The `dirt` block tag (`Feature.isDirt`).
   pub fn is_dirt(&self, b: Block) -> bool { self.has(b, class::DIRT) }
 
+  /// A plant `Feature`s may place with a simple block feature.
+  pub fn is_plant(&self, b: Block) -> bool { self.has(b, class::PLANT) }
+
+  pub fn is_double_plant(&self, b: Block) -> bool { self.has(b, class::DOUBLE) }
+
+  /// `BushBlock.mayPlaceOn` (or `DeadBushBlock`'s) for a plant and the block
+  /// below it.
+  pub fn plant_survives(&self, plant: Block, below: Block) -> bool {
+    self.is_dirt(below)
+      || (self.has(plant, class::DESERT_PLANT) && self.has(below, class::DESERT_GROUND))
+  }
+
   pub fn is_grass_block(&self, b: Block) -> bool { self.has(b, class::GRASS_BLOCK) }
 
   pub fn is_mycelium(&self, b: Block) -> bool { self.has(b, class::MYCELIUM) }
@@ -175,8 +195,14 @@ impl Default for Blocks {
 
 fn classify(name: &str) -> u16 {
   use class::*;
+  // `name[half=upper]` is the same block as `name`, in another state.
+  let name = name.split('[').next().unwrap_or(name);
   let short = name.strip_prefix("minecraft:").unwrap_or(name);
   match short {
+    "short_grass" | "fern" => return REPLACEABLE | PLANT,
+    "tall_grass" | "large_fern" => return REPLACEABLE | PLANT | DOUBLE,
+    "dead_bush" => return REPLACEABLE | PLANT | DESERT_PLANT,
+    "sand" | "red_sand" | "terracotta" => return SOLID | OPAQUE | DESERT_GROUND,
     "air" | "cave_air" | "void_air" => return AIR,
     // The only fluid in the replaceable_by_trees tag; lava is neither.
     "water" => return FLUID | REPLACEABLE,
@@ -189,9 +215,10 @@ fn classify(name: &str) -> u16 {
       return DIRT | SOLID | OPAQUE
     }
     "crimson_nylium" | "warped_nylium" => return SOLID | OPAQUE | MUSHROOM_GROW,
-    "short_grass" | "fern" | "dead_bush" | "glow_lichen" | "tall_grass" | "large_fern"
-    | "sunflower" | "lilac" | "rose_bush" | "peony" | "hanging_roots" | "pitcher_plant"
-    | "seagrass" | "tall_seagrass" | "snow" | "moss_carpet" => return REPLACEABLE,
+    "glow_lichen" | "sunflower" | "lilac" | "rose_bush" | "peony" | "hanging_roots"
+    | "pitcher_plant" | "seagrass" | "tall_seagrass" | "snow" | "moss_carpet" => {
+      return REPLACEABLE
+    }
     _ => {}
   }
   if short.ends_with("_leaves") {
@@ -200,6 +227,9 @@ fn classify(name: &str) -> u16 {
   }
   if short.ends_with("_log") || short.ends_with("_wood") {
     return LOG | SOLID | OPAQUE;
+  }
+  if short.ends_with("_terracotta") {
+    return SOLID | OPAQUE | DESERT_GROUND;
   }
   if short.ends_with("_sapling") || short.ends_with("_propagule") {
     return 0;

@@ -149,7 +149,17 @@ impl Forest {
   }
 
   /// The blocks the features place when chunk `(cx, cz)` is decorated alone.
-  pub fn decorate(&self, terrain: &Terrain, s: &mut Scratch, cx: i32, cz: i32) -> ChunkTrees {
+  ///
+  /// With `plants`, the grass and ferns of the chunk too (which tiles of
+  /// level 0 draw; coarser ones could not show them).
+  pub fn decorate(
+    &self,
+    terrain: &Terrain,
+    s: &mut Scratch,
+    cx: i32,
+    cz: i32,
+    plants: bool,
+  ) -> ChunkTrees {
     let mut ground = SeedGround::new(terrain, s);
 
     // The biomes the chunk's surface is made of decide which features run.
@@ -159,12 +169,12 @@ impl Forest {
         region.insert(ground.biome(cx * 16 + qx * 4, 0, cz * 16 + qz * 4));
       }
     }
-    if !region.iter().any(|&b| self.decoration.has_trees(b)) {
+    if !region.iter().any(|&b| self.decoration.has_features(b, plants)) {
       return ChunkTrees(Box::new([]));
     }
 
     let mut level = Level::new(&self.decoration.blocks, &mut ground);
-    self.decoration.decorate_chunk(&mut level, terrain.seed(), cx, cz, &region);
+    self.decoration.decorate_chunk_with(&mut level, terrain.seed(), cx, cz, &region, plants);
     let blocks = level
       .placed()
       .filter(|&(_, _, _, b)| b.id != crate::trees::block::AIR)
@@ -194,7 +204,7 @@ impl Forest {
 
     // (voxel row, z, x) so a sort groups voxels and orders them by row.
     let mut hits: Vec<(i16, u8, u8, BlockId, i64)> = Vec::new();
-    self.for_each_block(terrain, s, cache, x0, z0, width, |x, y, z, id| {
+    self.for_each_block(terrain, s, cache, level == 0, x0, z0, width, |x, y, z, id| {
       let (vx, vz) = ((x as i64 - x0) >> level, (z as i64 - z0) >> level);
       hits.push(((y >> level) as i16, vz as u8, vx as u8, id, y as i64));
     });
@@ -226,6 +236,11 @@ impl Forest {
         Some(id) if has_log || group.len() >= need => Some(id),
         _ => most_common(group.iter().map(|h| h.3).filter(|&id| blocks.is_log(Block::new(id)))),
       };
+      // Plants are only worth a voxel when it is one block: a coarser voxel of
+      // grass would be a bush.
+      let pick = pick.or_else(|| {
+        group.iter().map(|h| h.3).find(|&id| level == 0 && blocks.is_plant(Block::new(id)))
+      });
       if let Some(id) = pick {
         let top = group.iter().map(|h| h.4).max().unwrap_or(0);
         let fill = (top + 1 - ((group[0].0 as i64) << level)).clamp(1, size) as u8;
@@ -269,7 +284,7 @@ impl Forest {
     let mut tops = vec![i16::MIN; width * width];
     let mut ids = vec![0 as BlockId; width * width];
     let mut any = false;
-    self.for_each_block(terrain, s, cache, x0, z0, width as i64, |x, y, z, id| {
+    self.for_each_block(terrain, s, cache, false, x0, z0, width as i64, |x, y, z, id| {
       if self.looks.get(id as usize).copied().unwrap_or(Look::None) == Look::None {
         return;
       }
@@ -323,6 +338,7 @@ impl Forest {
     terrain: &Terrain,
     s: &mut Scratch,
     cache: &TreeCache,
+    plants: bool,
     x0: i64,
     z0: i64,
     width: i64,
@@ -332,7 +348,7 @@ impl Forest {
     let (cz0, cz1) = (((z0 >> 4) - 1) as i32, (((z0 + width - 1) >> 4) + 1) as i32);
     for cz in cz0..=cz1 {
       for cx in cx0..=cx1 {
-        let chunk = cache.get(cx, cz, || self.decorate(terrain, s, cx, cz));
+        let chunk = cache.get(cx, cz, plants, || self.decorate(terrain, s, cx, cz, plants));
         for b in chunk.0.iter() {
           let (x, z) = (cx * 16 + b.dx as i32, cz * 16 + b.dz as i32);
           if (x as i64) >= x0
@@ -359,7 +375,8 @@ fn most_common(ids: impl Iterator<Item = BlockId>) -> Option<BlockId> {
   counts.into_iter().max_by_key(|c| (c.1, std::cmp::Reverse(c.0))).map(|c| c.0)
 }
 
-/// The tree blocks of one chunk.
+/// The tree blocks of one chunk (and its plants, if it was decorated with
+/// them).
 pub struct ChunkTrees(pub Box<[TreeBlock]>);
 
 /// Decorated chunks, kept for the tiles that border them. A chunk is needed by
@@ -372,8 +389,8 @@ pub struct TreeCache {
 
 #[derive(Default)]
 struct CacheInner {
-  map:   HashMap<(i32, i32), Arc<ChunkTrees>>,
-  order: VecDeque<(i32, i32)>,
+  map:   HashMap<(i32, i32, bool), Arc<ChunkTrees>>,
+  order: VecDeque<(i32, i32, bool)>,
 }
 
 impl TreeCache {
@@ -384,14 +401,20 @@ impl TreeCache {
   pub fn is_empty(&self) -> bool { self.len() == 0 }
 
   /// The chunk's trees, computed by `make` (outside the lock) if not kept.
-  pub fn get(&self, cx: i32, cz: i32, make: impl FnOnce() -> ChunkTrees) -> Arc<ChunkTrees> {
-    if let Some(c) = self.inner.lock().unwrap().map.get(&(cx, cz)) {
+  pub fn get(
+    &self,
+    cx: i32,
+    cz: i32,
+    plants: bool,
+    make: impl FnOnce() -> ChunkTrees,
+  ) -> Arc<ChunkTrees> {
+    if let Some(c) = self.inner.lock().unwrap().map.get(&(cx, cz, plants)) {
       return c.clone();
     }
     let made = Arc::new(make());
     let mut inner = self.inner.lock().unwrap();
-    if inner.map.insert((cx, cz), made.clone()).is_none() {
-      inner.order.push_back((cx, cz));
+    if inner.map.insert((cx, cz, plants), made.clone()).is_none() {
+      inner.order.push_back((cx, cz, plants));
       while inner.order.len() > self.cap {
         if let Some(old) = inner.order.pop_front() {
           inner.map.remove(&old);

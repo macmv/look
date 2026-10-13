@@ -14,6 +14,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseGeneratorSettings;
@@ -53,7 +55,7 @@ public final class SeedSource implements VoxelSource {
   private boolean resolved;
   private int[] ids = new int[0];
   /** The blocks trees are made of (see {@link NativeLib#terrainTreeBlocks}) and their voxel ids. */
-  private Block[] treeBlocks = new Block[0];
+  private BlockState[] treeBlocks = new BlockState[0];
   private int[] treeIds = new int[0];
 
   private final ByteBuffer keys = NativeLib.allocate(KEYS_PER_POLL * 8);
@@ -92,7 +94,7 @@ public final class SeedSource implements VoxelSource {
     handle = 0;
     resolved = false;
     ids = new int[0];
-    treeBlocks = new Block[0];
+    treeBlocks = new BlockState[0];
     treeIds = new int[0];
     HeightField.reset();
   }
@@ -163,8 +165,8 @@ public final class SeedSource implements VoxelSource {
 
     int[] trees = new int[treeBlocks.length];
     for (int i = 0; i < trees.length; i++) {
-      Block block = treeBlocks[i];
-      trees[i] = block == null ? 0 : BlockClassifier.voxelId(block.defaultBlockState());
+      BlockState state = treeBlocks[i];
+      trees[i] = state == null ? 0 : BlockClassifier.voxelId(state);
     }
     if (!Arrays.equals(trees, treeIds)) {
       treeIds = trees;
@@ -173,19 +175,36 @@ public final class SeedSource implements VoxelSource {
   }
 
   /**
-   * The blocks tree features place, by the native side's numbering. Those that are not worth a
-   * voxel (water the trees stand in, vines and cocoa pods, which are too thin to see from afar)
-   * are null.
+   * The blocks tree and plant features place, by the native side's numbering: a block name,
+   * optionally followed by properties ({@code minecraft:tall_grass[half=upper]}). Those that are not
+   * worth a voxel (water the trees stand in, vines and cocoa pods, which are too thin to see from
+   * afar) are null.
    */
-  private static Block[] resolveTreeBlocks(String names) {
-    if (names.isEmpty()) return new Block[0];
+  private static BlockState[] resolveTreeBlocks(String names) {
+    if (names.isEmpty()) return new BlockState[0];
     String[] lines = names.split("\n");
-    Block[] out = new Block[lines.length];
+    BlockState[] out = new BlockState[lines.length];
     for (int i = 0; i < lines.length; i++) {
-      Block block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse(lines[i]));
-      out[i] = block == Blocks.AIR || block == Blocks.WATER || block == Blocks.VINE || block == Blocks.COCOA || block == Blocks.BEE_NEST ? null : block;
+      String line = lines[i];
+      int bracket = line.indexOf('[');
+      Block block = BuiltInRegistries.BLOCK.get(ResourceLocation.parse(bracket < 0 ? line : line.substring(0, bracket)));
+      if (block == Blocks.AIR || block == Blocks.WATER || block == Blocks.VINE || block == Blocks.COCOA || block == Blocks.BEE_NEST) continue;
+
+      BlockState state = block.defaultBlockState();
+      if (bracket >= 0) {
+        for (String property : line.substring(bracket + 1, line.length() - 1).split(",")) {
+          int eq = property.indexOf('=');
+          Property<?> p = block.getStateDefinition().getProperty(property.substring(0, eq));
+          if (p != null) state = withValue(state, p, property.substring(eq + 1));
+        }
+      }
+      out[i] = state;
     }
     return out;
+  }
+
+  private static <T extends Comparable<T>> BlockState withValue(BlockState state, Property<T> property, String value) {
+    return property.getValue(value).map(v -> state.setValue(property, v)).orElse(state);
   }
 
   private void resolve(Minecraft mc) {

@@ -2,7 +2,7 @@
 //! `PerlinNoise` (octaves) and `NormalNoise` (two Perlin noises averaged).
 //! Matches vanilla's 1.21 non-legacy initialization.
 
-use crate::rng::Xoroshiro;
+use crate::rng::{LegacyRandom, Xoroshiro};
 
 /// Gradient directions (`SimplexNoise.GRADIENT`).
 const GRADIENT: [[i32; 3]; 16] = [
@@ -301,5 +301,88 @@ impl BlendedNoise {
       lo + q * (hi - lo)
     };
     blended / 128.0
+  }
+}
+
+/// `SimplexNoise`, the two dimensional part of it.
+pub struct SimplexNoise {
+  p: [u8; 256],
+}
+
+impl SimplexNoise {
+  pub fn new(rng: &mut LegacyRandom) -> Self {
+    // The offsets are drawn but only the 3D noise uses them.
+    for _ in 0..3 {
+      rng.next_double();
+    }
+    let mut p = [0u8; 256];
+    for (i, v) in p.iter_mut().enumerate() {
+      *v = i as u8;
+    }
+    for i in 0..256 {
+      let j = rng.next_int_bound(256 - i as i32) as usize;
+      p.swap(i, i + j);
+    }
+    SimplexNoise { p }
+  }
+
+  fn perm(&self, i: i32) -> i32 { self.p[(i & 0xFF) as usize] as i32 }
+
+  fn corner(&self, gradient: i32, x: f64, y: f64) -> f64 {
+    let t = 0.5 - x * x - y * y;
+    if t < 0.0 {
+      return 0.0;
+    }
+    let g = GRADIENT[gradient as usize];
+    let t = t * t;
+    t * t * (g[0] as f64 * x + g[1] as f64 * y)
+  }
+
+  pub fn value(&self, x: f64, y: f64) -> f64 {
+    let sqrt3 = 3.0f64.sqrt();
+    let f2 = 0.5 * (sqrt3 - 1.0);
+    let g2 = (3.0 - sqrt3) / 6.0;
+
+    let s = (x + y) * f2;
+    let i = floor(x + s);
+    let j = floor(y + s);
+    let t = (i + j) as f64 * g2;
+    let x0 = x - (i as f64 - t);
+    let y0 = y - (j as f64 - t);
+    let (i1, j1) = if x0 > y0 { (1, 0) } else { (0, 1) };
+    let x1 = x0 - i1 as f64 + g2;
+    let y1 = y0 - j1 as f64 + g2;
+    let x2 = x0 - 1.0 + 2.0 * g2;
+    let y2 = y0 - 1.0 + 2.0 * g2;
+    let (ii, jj) = (i & 0xFF, j & 0xFF);
+    let g0 = self.perm(ii + self.perm(jj)) % 12;
+    let g1 = self.perm(ii + i1 + self.perm(jj + j1)) % 12;
+    let g2i = self.perm(ii + 1 + self.perm(jj + 1)) % 12;
+    70.0 * (self.corner(g0, x0, y0) + self.corner(g1, x1, y1) + self.corner(g2i, x2, y2))
+  }
+}
+
+/// `Biome.BIOME_INFO_NOISE`: a single octave of simplex noise seeded with a
+/// constant, which the grass placement modifiers read.
+pub fn biome_info(x: f64, z: f64) -> f64 {
+  static NOISE: std::sync::OnceLock<SimplexNoise> = std::sync::OnceLock::new();
+  NOISE.get_or_init(|| SimplexNoise::new(&mut LegacyRandom::new(2345))).value(x, z)
+}
+
+#[cfg(test)]
+mod simplex_tests {
+  use super::*;
+
+  #[test]
+  fn biome_info_is_smooth_and_bounded() {
+    let mut last = biome_info(0.0, 3.0);
+    let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+    for i in 1..2000 {
+      let v = biome_info(i as f64 * 0.01, 3.0);
+      assert!((v - last).abs() < 0.2, "jump at {i}: {last} -> {v}");
+      (lo, hi) = (lo.min(v), hi.max(v));
+      last = v;
+    }
+    assert!(lo < -0.2 && hi > 0.2 && lo > -1.1 && hi < 1.1, "{lo} {hi}");
   }
 }

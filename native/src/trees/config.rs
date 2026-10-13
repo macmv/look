@@ -6,7 +6,7 @@
 use serde_json::Value;
 
 use super::{
-  block::{mushroom, Block, Blocks},
+  block::{mushroom, Block, BlockId, Blocks},
   world::Heightmap,
 };
 use crate::rng::WorldgenRandom;
@@ -284,21 +284,111 @@ pub enum Modifier {
   SurfaceWaterDepth(i32),
   Heightmap(Heightmap),
   Biome,
+  Filter(Predicate),
+  Rarity(i32),
+  /// `NoiseThresholdCountPlacement`.
+  NoiseThresholdCount {
+    level: f64,
+    below: i32,
+    above: i32,
+  },
+  /// `NoiseBasedCountPlacement`.
+  NoiseBasedCount {
+    ratio:  i32,
+    factor: f64,
+    offset: f64,
+  },
+}
+
+/// The `BlockPredicate`s the placement filters use.
+#[derive(Clone, Debug)]
+pub enum Predicate {
   /// `would_survive` of a sapling: the block `offset` away must be able to
   /// stand on the dirt below.
-  WouldSurvive {
+  SaplingSurvives {
     offset: [i32; 3],
   },
-  Rarity(i32),
+  MatchingBlocks {
+    offset: [i32; 3],
+    blocks: Vec<BlockId>,
+  },
+  Not(Box<Predicate>),
+  AllOf(Vec<Predicate>),
+}
+
+/// What a simple block feature places. A double plant carries its upper half.
+#[derive(Clone, Debug)]
+pub struct Plant {
+  pub lower: Block,
+  pub upper: Option<Block>,
+}
+
+#[derive(Clone, Debug)]
+pub enum PlantProvider {
+  Simple(Plant),
+  Weighted(Vec<(Plant, i32)>),
+}
+
+impl PlantProvider {
+  /// `BlockStateProvider.getState`.
+  pub fn pick(&self, rng: &mut WorldgenRandom) -> &Plant {
+    match self {
+      PlantProvider::Simple(p) => p,
+      PlantProvider::Weighted(list) => {
+        let total: i32 = list.iter().map(|(_, w)| w).sum();
+        let mut i = rng.next_int_bound(total);
+        for (p, w) in list {
+          i -= w;
+          if i < 0 {
+            return p;
+          }
+        }
+        &list[list.len() - 1].0
+      }
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
 pub enum Feature {
   Tree(Box<TreeConfig>),
   Mushroom(MushroomConfig),
-  RandomSelector { features: Vec<(PlacedFeature, f32)>, default: Box<PlacedFeature> },
-  RandomBoolean { when_true: Box<PlacedFeature>, when_false: Box<PlacedFeature> },
+  RandomSelector {
+    features: Vec<(PlacedFeature, f32)>,
+    default:  Box<PlacedFeature>,
+  },
+  RandomBoolean {
+    when_true:  Box<PlacedFeature>,
+    when_false: Box<PlacedFeature>,
+  },
   SimpleRandom(Vec<PlacedFeature>),
+  /// `RandomPatchFeature`.
+  RandomPatch {
+    tries:     i32,
+    xz_spread: i32,
+    y_spread:  i32,
+    feature:   Box<PlacedFeature>,
+  },
+  /// `SimpleBlockFeature`, for the plants (`Blocks::is_plant`) only.
+  SimpleBlock(PlantProvider),
+}
+
+impl PlacedFeature {
+  /// Whether the feature places plants rather than trees: those runs are only
+  /// worth it for tiles that draw plants.
+  pub fn places_plants(&self) -> bool {
+    match &self.feature {
+      Feature::Tree(_) | Feature::Mushroom(_) => false,
+      Feature::RandomPatch { .. } | Feature::SimpleBlock(_) => true,
+      Feature::RandomSelector { features, default } => {
+        default.places_plants() || features.iter().any(|(f, _)| f.places_plants())
+      }
+      Feature::RandomBoolean { when_true, when_false } => {
+        when_true.places_plants() || when_false.places_plants()
+      }
+      Feature::SimpleRandom(list) => list.iter().any(PlacedFeature::places_plants),
+    }
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -311,13 +401,13 @@ impl PlacedFeature {
   pub fn parse(blocks: &mut Blocks, v: &Value) -> Result<PlacedFeature> {
     let mut modifiers = Vec::new();
     for m in field(v, "placement")?.as_array().ok_or("placement is not a list")? {
-      modifiers.push(parse_modifier(m)?);
+      modifiers.push(parse_modifier(blocks, m)?);
     }
     Ok(PlacedFeature { modifiers, feature: parse_feature(blocks, field(v, "feature")?)? })
   }
 }
 
-fn parse_modifier(m: &Value) -> Result<Modifier> {
+fn parse_modifier(blocks: &mut Blocks, m: &Value) -> Result<Modifier> {
   Ok(match kind(m)? {
     "minecraft:count" => Modifier::Count(IntProvider::parse(field(m, "count")?)?),
     "minecraft:in_square" => Modifier::InSquare,
@@ -336,24 +426,98 @@ fn parse_modifier(m: &Value) -> Result<Modifier> {
     "minecraft:biome" => Modifier::Biome,
     "minecraft:rarity_filter" => Modifier::Rarity(int(m, "chance")?),
     "minecraft:block_predicate_filter" => {
-      let p = field(m, "predicate")?;
-      if kind(p)? != "minecraft:would_survive" {
-        return Err(format!("unsupported predicate {}", kind(p)?));
-      }
+      Modifier::Filter(parse_predicate(blocks, field(m, "predicate")?)?)
+    }
+    "minecraft:noise_threshold_count" => Modifier::NoiseThresholdCount {
+      level: field(m, "noise_level")?.as_f64().ok_or("noise_level is not a number")?,
+      below: int(m, "below_noise")?,
+      above: int(m, "above_noise")?,
+    },
+    "minecraft:noise_based_count" => Modifier::NoiseBasedCount {
+      ratio:  int(m, "noise_to_count_ratio")?,
+      factor: field(m, "noise_factor")?.as_f64().ok_or("noise_factor is not a number")?,
+      offset: m.get("noise_offset").and_then(Value::as_f64).unwrap_or(0.0),
+    },
+    other => return Err(format!("unsupported placement modifier {other}")),
+  })
+}
+
+fn offset_of(v: &Value) -> [i32; 3] {
+  let mut offset = [0; 3];
+  if let Some(o) = v.get("offset").and_then(Value::as_array) {
+    for (i, n) in o.iter().take(3).enumerate() {
+      offset[i] = n.as_i64().unwrap_or(0) as i32;
+    }
+  }
+  offset
+}
+
+fn parse_predicate(blocks: &mut Blocks, p: &Value) -> Result<Predicate> {
+  Ok(match kind(p)? {
+    "minecraft:would_survive" => {
       let name = field(field(p, "state")?, "Name")?.as_str().unwrap_or("");
       if !name.ends_with("_sapling") && !name.ends_with("_propagule") {
         return Err(format!("unsupported would_survive of {name}"));
       }
-      let mut offset = [0; 3];
-      if let Some(o) = p.get("offset").and_then(Value::as_array) {
-        for (i, n) in o.iter().take(3).enumerate() {
-          offset[i] = n.as_i64().unwrap_or(0) as i32;
-        }
-      }
-      Modifier::WouldSurvive { offset }
+      Predicate::SaplingSurvives { offset: offset_of(p) }
     }
-    other => return Err(format!("unsupported placement modifier {other}")),
+    "minecraft:matching_blocks" => {
+      let names = match field(p, "blocks")? {
+        Value::String(one) => vec![one.as_str()],
+        Value::Array(list) => list.iter().filter_map(Value::as_str).collect(),
+        _ => return Err("blocks is not a block or a list".into()),
+      };
+      if names.iter().any(|n| n.starts_with('#')) {
+        return Err("block tags in predicates are not supported".into());
+      }
+      Predicate::MatchingBlocks {
+        offset: offset_of(p),
+        blocks: names.into_iter().map(|n| blocks.intern(n)).collect(),
+      }
+    }
+    "minecraft:not" => Predicate::Not(Box::new(parse_predicate(blocks, field(p, "predicate")?)?)),
+    "minecraft:all_of" => {
+      let mut list = Vec::new();
+      for e in field(p, "predicates")?.as_array().ok_or("predicates is not a list")? {
+        list.push(parse_predicate(blocks, e)?);
+      }
+      Predicate::AllOf(list)
+    }
+    other => return Err(format!("unsupported predicate {other}")),
   })
+}
+
+fn parse_plant(blocks: &mut Blocks, v: &Value) -> Result<Plant> {
+  let state = block_state(blocks, v)?;
+  if !blocks.is_plant(state) {
+    return Err(format!("unsupported block {}", blocks.name(state.id)));
+  }
+  let upper = if blocks.is_double_plant(state) {
+    let name = format!("{}[half=upper]", blocks.name(state.id));
+    Some(Block::new(blocks.intern(&name)))
+  } else {
+    None
+  };
+  Ok(Plant { lower: state, upper })
+}
+
+fn parse_plant_provider(blocks: &mut Blocks, v: &Value) -> Result<PlantProvider> {
+  match kind(v)? {
+    "minecraft:simple_state_provider" => {
+      Ok(PlantProvider::Simple(parse_plant(blocks, field(v, "state")?)?))
+    }
+    "minecraft:weighted_state_provider" => {
+      let mut list = Vec::new();
+      for e in field(v, "entries")?.as_array().ok_or("entries is not a list")? {
+        list.push((parse_plant(blocks, field(e, "data")?)?, int(e, "weight")?));
+      }
+      if list.iter().map(|(_, w)| w).sum::<i32>() <= 0 {
+        return Err("weighted state provider without weight".into());
+      }
+      Ok(PlantProvider::Weighted(list))
+    }
+    other => Err(format!("unsupported state provider {other}")),
+  }
 }
 
 fn parse_feature(blocks: &mut Blocks, v: &Value) -> Result<Feature> {
@@ -367,6 +531,15 @@ fn parse_feature(blocks: &mut Blocks, v: &Value) -> Result<Feature> {
         stem:           state_provider(blocks, field(config, "stem_provider")?)?,
         foliage_radius: int(config, "foliage_radius")?,
       })
+    }
+    "minecraft:random_patch" => Feature::RandomPatch {
+      tries:     int(config, "tries")?,
+      xz_spread: int(config, "xz_spread")?,
+      y_spread:  int(config, "y_spread")?,
+      feature:   Box::new(PlacedFeature::parse(blocks, field(config, "feature")?)?),
+    },
+    "minecraft:simple_block" => {
+      Feature::SimpleBlock(parse_plant_provider(blocks, field(config, "to_place")?)?)
     }
     "minecraft:random_selector" => {
       let mut features = Vec::new();

@@ -5,11 +5,11 @@
 
 use super::{
   block::{mushroom, Block},
-  config::{Feature, Modifier, MushroomConfig, PlacedFeature},
+  config::{Feature, Modifier, MushroomConfig, PlacedFeature, Plant, Predicate},
   tree::{place_tree, P},
   world::{Heightmap, Level},
 };
-use crate::rng::WorldgenRandom;
+use crate::{noise::biome_info, rng::WorldgenRandom};
 
 /// What a `Biome` placement modifier asks: whether the feature is one of the
 /// biome's at a spot.
@@ -66,17 +66,67 @@ fn run(
       let here = level.biome(pos.0, pos.1, pos.2);
       biome.map_or(true, |check| check(here)) && run(level, rng, pf, i + 1, pos, biome)
     }
-    Modifier::WouldSurvive { offset } => {
-      // A sapling survives on the dirt tag (or farmland, which the terrain does
-      // not make).
-      let at = (pos.0 + offset[0], pos.1 + offset[1], pos.2 + offset[2]);
-      let below = level.get(at.0, at.1 - 1, at.2);
-      level.blocks.is_dirt(below) && run(level, rng, pf, i + 1, pos, biome)
+    Modifier::Filter(predicate) => {
+      holds(level, predicate, pos) && run(level, rng, pf, i + 1, pos, biome)
+    }
+    Modifier::NoiseThresholdCount { level: threshold, below, above } => {
+      let noise = biome_info(pos.0 as f64 / 200.0, pos.2 as f64 / 200.0);
+      let n = if noise < *threshold { *below } else { *above };
+      let mut any = false;
+      for _ in 0..n {
+        any |= run(level, rng, pf, i + 1, pos, biome);
+      }
+      any
+    }
+    Modifier::NoiseBasedCount { ratio, factor, offset } => {
+      let noise = biome_info(pos.0 as f64 / factor, pos.2 as f64 / factor);
+      let n = ((noise + offset) * *ratio as f64).ceil() as i32;
+      let mut any = false;
+      for _ in 0..n {
+        any |= run(level, rng, pf, i + 1, pos, biome);
+      }
+      any
     }
     Modifier::Rarity(chance) => {
       rng.next_float() < 1.0f32 / *chance as f32 && run(level, rng, pf, i + 1, pos, biome)
     }
   }
+}
+
+/// `BlockPredicate.test` at `pos`.
+fn holds(level: &mut Level, predicate: &Predicate, pos: P) -> bool {
+  match predicate {
+    // A sapling survives on the dirt tag (or farmland, which the terrain does
+    // not make).
+    Predicate::SaplingSurvives { offset } => {
+      let at = (pos.0 + offset[0], pos.1 + offset[1], pos.2 + offset[2]);
+      let below = level.get(at.0, at.1 - 1, at.2);
+      level.blocks.is_dirt(below)
+    }
+    Predicate::MatchingBlocks { offset, blocks } => {
+      let b = level.get(pos.0 + offset[0], pos.1 + offset[1], pos.2 + offset[2]);
+      blocks.contains(&b.id)
+    }
+    Predicate::Not(inner) => !holds(level, inner, pos),
+    Predicate::AllOf(list) => list.iter().all(|p| holds(level, p, pos)),
+  }
+}
+
+/// `SimpleBlockFeature`: the provider's draw comes first, then the survival
+/// check.
+fn place_plant(level: &mut Level, plant: &Plant, pos: P) -> bool {
+  let below = level.get(pos.0, pos.1 - 1, pos.2);
+  if !level.blocks.plant_survives(plant.lower, below) {
+    return false;
+  }
+  if let Some(upper) = plant.upper {
+    let above = level.get(pos.0, pos.1 + 1, pos.2);
+    if !level.blocks.is_air(above) {
+      return false;
+    }
+    level.set(pos.0, pos.1 + 1, pos.2, upper);
+  }
+  level.set(pos.0, pos.1, pos.2, plant.lower)
 }
 
 fn place_feature(level: &mut Level, rng: &mut WorldgenRandom, feature: &Feature, pos: P) -> bool {
@@ -94,6 +144,24 @@ fn place_feature(level: &mut Level, rng: &mut WorldgenRandom, feature: &Feature,
         }
       }
       place(level, rng, default, pos, None)
+    }
+    Feature::RandomPatch { tries, xz_spread, y_spread, feature } => {
+      let (j, k) = (xz_spread + 1, y_spread + 1);
+      let mut placed = 0;
+      for _ in 0..*tries {
+        // Arguments are evaluated in order: x, y, z.
+        let dx = rng.next_int_bound(j) - rng.next_int_bound(j);
+        let dy = rng.next_int_bound(k) - rng.next_int_bound(k);
+        let dz = rng.next_int_bound(j) - rng.next_int_bound(j);
+        if place(level, rng, feature, (pos.0 + dx, pos.1 + dy, pos.2 + dz), None) {
+          placed += 1;
+        }
+      }
+      placed > 0
+    }
+    Feature::SimpleBlock(provider) => {
+      let plant = provider.pick(rng).clone();
+      place_plant(level, &plant, pos)
     }
     Feature::RandomBoolean { when_true, when_false } => {
       let pick = if rng.next_bool() { when_true } else { when_false };
