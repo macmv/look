@@ -14,7 +14,9 @@ import org.joml.Vector4f;
 import java.awt.image.BufferedImage;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 /**
  * Draws fixed scenes through the real raycast shader and compares them with checked-in images.
@@ -22,6 +24,10 @@ import org.junit.jupiter.api.Test;
  * {@code LOOK_REQUIRE_GL} is set, in which case that is a failure. The images are Mesa llvmpipe
  * output, but the tests run on whatever GL renderer is available, including a hardware GPU. Regenerate the images with
  * {@code ./gradlew test -PupdateGolden} and look at them before committing.
+ *
+ * <p>Building a scene (filling bricks, generating terrain) costs far more than drawing it, so the tests
+ * are grouped in nested classes by scene: each builds its scene once and draws every image of its
+ * group from it. Drawing changes neither the scene nor the frames.
  */
 class RenderTest {
   private static final int W = 320;
@@ -68,98 +74,6 @@ class RenderTest {
     return gl.render(scene.frame(BIG_W, BIG_H, x, y, z, yaw, pitch, 70f, debug), scene, SKY, BIG_W, BIG_H);
   }
 
-  @Test
-  void blocksCloseUp() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      assertTrue(scene.slots() > 0, "scene has no bricks");
-      BufferedImage img = draw(scene, 4.5, 80.5, 0.5, 0f, 18f, 0);
-      Golden.check("blocks_closeup", img);
-    }
-  }
-
-  @Test
-  void blocksFromAbove() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 8, 96)) {
-      BufferedImage img = draw(scene, 3.2, 84.0, 4.3, 25f, 55f, 0);
-      Golden.check("blocks_from_above", img);
-    }
-  }
-
-  /** Water seen from the bank: the floor shows through the surface, and the post stands in it. */
-  @Test
-  void pondFromTheBank() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
-      BufferedImage img = draw(scene, -17.5, 63.0, -9.5, 300f, 22f, 0);
-      Golden.check("pond_bank", img);
-    }
-  }
-
-  /** The same pond from under the surface: fogged, with the surface seen from below. */
-  @Test
-  void pondUnderWater() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
-      BufferedImage img = draw(scene, -3.5, 56.5, -2.5, 300f, 12f, 0);
-      Golden.check("pond_under", img);
-    }
-  }
-
-  @Test
-  void hillsToTheHorizon() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {
-      BufferedImage img = draw(scene, 0.5, 110.0, 0.5, 35f, 8f, 0);
-      Golden.check("hills_horizon", img);
-    }
-  }
-
-  /**
-   * Camera 1000 blocks up over vanilla's terrain for a fixed seed, made by the native engine, looking
-   * out over everything the pyramid reaches (about 1000 chunks).
-   */
-  @Test
-  void heightFieldFromHigh() {
-    try (NativeTerrain terrain = new NativeTerrain(FAR_X, FAR_Z, FAR_YAW, 60f);
-        TestScene scene = new TestScene(atlas, terrain, terrain, FAR_X, FAR_Z, Lod.maxDist())) {
-      BufferedImage img = drawBig(scene, FAR_X, 1000.0, FAR_Z, FAR_YAW, FAR_PITCH, 0);
-      assertTrue(terrainFraction(img) > 0.2, "almost nothing was drawn, the heightfield is probably empty");
-      Golden.check("heightfield_far", img);
-    }
-  }
-
-  /**
-   * Trees on the same terrain from a few hundred blocks up, looking over forests out to the edge of
-   * the pyramid: bricks have them near, the heightfield past that.
-   */
-  @Test
-  void heightFieldTrees() {
-    try (NativeTerrain terrain = new NativeTerrain(TREES_X, TREES_Z, TREES_YAW, 40f, true);
-        TestScene scene = new TestScene(atlas, terrain, terrain, TREES_X, TREES_Z, Lod.maxDist())) {
-      BufferedImage img = drawBig(scene, TREES_X, TREES_Y, TREES_Z, TREES_YAW, 4f, 0);
-      Golden.check("heightfield_trees", img);
-    }
-  }
-
-  /**
-   * The same forests from 600 blocks up and looking down, so most of the frame is far canopy: the
-   * colors of leaves and the bark under them, drawn from the heightfield.
-   */
-  @Test
-  void heightFieldTreesFromHigh() {
-    try (NativeTerrain terrain = new NativeTerrain(TREES_X, TREES_Z, TREES_YAW, 40f, true);
-        TestScene scene = new TestScene(atlas, terrain, terrain, TREES_X, TREES_Z, Lod.maxDist())) {
-      BufferedImage img = drawBig(scene, TREES_X, 600.0, TREES_Z, TREES_YAW, 22f, 0);
-      Golden.check("heightfield_trees_high", img);
-    }
-  }
-
-  /** The same view tinted per pyramid level, to see where the heightfield levels start and end. */
-  @Test
-  void heightFieldLevelTint() {
-    try (NativeTerrain terrain = new NativeTerrain(FAR_X, FAR_Z, FAR_YAW, 60f);
-        TestScene scene = new TestScene(atlas, terrain, terrain, FAR_X, FAR_Z, Lod.maxDist())) {
-      BufferedImage img = drawBig(scene, FAR_X, 1000.0, FAR_Z, FAR_YAW, FAR_PITCH, 2);
-      Golden.check("heightfield_far_levels", img);
-    }
-  }
 
   private static double terrainFraction(BufferedImage img) {
     int sky = (int) (SKY[0] * 255 + 0.5) << 16 | (int) (SKY[1] * 255 + 0.5) << 8 | (int) (SKY[2] * 255 + 0.5);
@@ -170,56 +84,6 @@ class RenderTest {
       }
     }
     return n / (double) (img.getWidth() * img.getHeight());
-  }
-
-  @Test
-  void hillsLevelTint() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {
-      BufferedImage img = draw(scene, 0.5, 110.0, 0.5, 35f, 8f, 2);
-      Golden.check("hills_levels", img);
-    }
-  }
-
-  /**
-   * Enhanced mode draws through the HDR target and resolve pass, and until it gets its own lighting
-   * it must look like Vanilla. The 16-bit float target may move a value by a step or two.
-   */
-  @Test
-  void enhancedMatchesVanilla() {
-    var saved = saveSettings();
-    int savedSky = dev.macmv.look.SkyState.features;
-    try {
-      EnhancedSettings.neutral();
-      // The sky and fog are Enhanced-only features of their own, tested below.
-      dev.macmv.look.SkyState.features = 0;
-      matchesVanilla();
-    } finally {
-      restoreSettings(saved);
-      dev.macmv.look.SkyState.features = savedSky;
-    }
-  }
-
-  private void matchesVanilla() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
-      for (double[] cam : new double[][] {{-17.5, 63.0, -9.5, 300, 22}, {-3.5, 56.5, -2.5, 300, 12}}) {
-        var vanilla = scene.frame(W, H, cam[0], cam[1], cam[2], (float) cam[3], (float) cam[4], 70f, 0);
-        BufferedImage a = gl.render(vanilla, scene, SKY, W, H);
-        BufferedImage b = gl.render(scene.enhanced(vanilla), scene, SKY, W, H);
-        int bad = 0;
-        for (int y = 0; y < H; y++) {
-          for (int x = 0; x < W; x++) {
-            int p = a.getRGB(x, y), q = b.getRGB(x, y);
-            for (int s = 0; s < 24; s += 8) {
-              if (Math.abs(((p >> s) & 255) - ((q >> s) & 255)) > 2) {
-                bad++;
-                break;
-              }
-            }
-          }
-        }
-        assertTrue(bad == 0, bad + " pixels differ between Vanilla and Enhanced");
-      }
-    }
   }
 
   /** Sun and moon at {@code elevDeg} above the horizon toward -x, in the plane vanilla turns the sky in. */
@@ -238,63 +102,6 @@ class RenderTest {
       return gl.render(scene.enhanced(f, atm), scene, SKY, w, h);
     } finally {
       dev.macmv.look.SkyState.cloudStyle = saved;
-    }
-  }
-
-  @Test
-  void skyNoon() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("sky_noon", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -10f, atm(40f, 0, 0f, 0f), 0, W, H));
-    }
-  }
-
-  @Test
-  void skySunset() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("sky_sunset", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, 4f, atm(3f, 0, 0f, 0f), 0, W, H));
-    }
-  }
-
-  @Test
-  void skyNight() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("sky_night", enhancedSky(scene, 4.5, 80.5, 0.5, 270f, -35f, atm(-50f, 2, 0f, 0f), 0, BIG_W, BIG_H));
-    }
-  }
-
-  @Test
-  void skyRain() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("sky_rain", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -10f, atm(40f, 0, 1f, 0.5f), 0, W, H));
-    }
-  }
-
-  @Test
-  void cloudsGrid() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("clouds_grid", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(55f, 0, 0f, 0f), 1, W, H));
-    }
-  }
-
-  @Test
-  void cloudsSoft() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("clouds_soft", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(35f, 0, 0f, 0f), 2, W, H));
-    }
-  }
-
-  @Test
-  void cloudsSoftStorm() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96)) {
-      Golden.check("clouds_soft_storm", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(35f, 0, 1f, 1f), 2, W, H));
-    }
-  }
-
-  /** Far terrain fades into the sky color instead of cutting off at the end of the pyramid. */
-  @Test
-  void fogFarField() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {
-      Golden.check("fog_far", enhancedSky(scene, FAR_X, 80.5, FAR_Z, FAR_YAW, FAR_PITCH, atm(40f, 0, 0f, 0f), 0, BIG_W, BIG_H));
     }
   }
 
@@ -343,178 +150,19 @@ class RenderTest {
     return new FinalPost.Params(f.view(), f.projection(), cam, prev, cam, sunDir, fluid, 1.5f, 3);
   }
 
-  private BufferedImage hillsPost(java.util.function.Function<VoxelRenderer.Frame, FinalPost.Params> params) {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {
-      var vanilla = scene.frame(W, H, HILLS_CAM[0], HILLS_CAM[1], HILLS_CAM[2], HILLS_CAM[3], HILLS_CAM[4], 70f, 0);
-      var frame = scene.enhanced(vanilla);
-      return gl.render(frame, scene, SKY, W, H, params == null ? null : params.apply(frame));
-    }
-  }
-
-  /** Bloom with a low threshold, so the bright sunlit parts of the hills glow. */
-  @Test
-  void enhancedBloom() {
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.bloom = true;
-      EnhancedSettings.bloomThreshold = 0.45f;
-      EnhancedSettings.bloomKnee = 0.2f;
-      EnhancedSettings.bloomStrength = 0.4f;
-    }, () -> hillsPost(null));
-    Golden.check("enhanced_bloom", img);
-  }
-
-  /** ACES tonemap, a darker fixed exposure and a saturation / contrast / tint grade. */
-  @Test
-  void enhancedTonemapAndGrade() {
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.tonemap = EnhancedSettings.TONEMAP_ACES;
-      EnhancedSettings.exposureCompensation = 1.3f;
-      EnhancedSettings.grading = true;
-      EnhancedSettings.saturation = 1.4f;
-      EnhancedSettings.contrast = 1.15f;
-      EnhancedSettings.tint = new float[] {1.05f, 1.0f, 0.9f};
-    }, () -> hillsPost(null));
-    Golden.check("enhanced_tonemap_grade", img);
-  }
-
-  /** Auto-exposure on a well lit scene must settle on a multiplier inside its limits, and change the image. */
-  @Test
-  void enhancedAutoExposure() {
-    BufferedImage base = withPost(() -> {}, () -> hillsPost(null));
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.autoExposure = true;
-      EnhancedSettings.exposureStrength = 1f;
-      EnhancedSettings.exposureKey = 0.5f;
-      EnhancedSettings.exposureMax = 2f;
-    }, () -> hillsPost(null));
-    Golden.check("enhanced_auto_exposure", img);
-    long a = 0, b = 0;
-    for (int y = 0; y < H; y++) {
-      for (int x = 0; x < W; x++) {
-        a += base.getRGB(x, y) & 255;
-        b += img.getRGB(x, y) & 255;
-      }
-    }
-    assertTrue(a != b, "auto-exposure changed nothing");
-  }
-
-  /** Vignette, chromatic aberration, grain and sharpening together. */
-  @Test
-  void enhancedScreenEffects() {
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.vignette = true;
-      EnhancedSettings.vignetteStrength = 0.6f;
-      EnhancedSettings.chromaticAberration = true;
-      EnhancedSettings.chromaticStrength = 0.02f;
-      EnhancedSettings.filmGrain = true;
-      EnhancedSettings.grainStrength = 0.08f;
-      EnhancedSettings.sharpen = true;
-      EnhancedSettings.sharpenStrength = 0.6f;
-    }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 0f)));
-    Golden.check("enhanced_screen_effects", img);
-  }
-
-  @Test
-  void enhancedDepthOfField() {
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.depthOfField = true;
-      EnhancedSettings.dofRadius = 10f;
-      EnhancedSettings.dofStrength = 2f;
-    }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 0f)));
-    Golden.check("enhanced_dof", img);
-  }
-
-  @Test
-  void enhancedMotionBlur() {
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.motionBlur = true;
-      EnhancedSettings.motionBlurStrength = 1f;
-    }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 2.5f)));
-    Golden.check("enhanced_motion_blur", img);
-  }
-
-  @Test
-  void enhancedLensFlare() {
-    BufferedImage img = withPost(() -> {
-      EnhancedSettings.lensFlare = true;
-      EnhancedSettings.lensFlareStrength = 1f;
-    }, () -> hillsPost(f -> {
-      // The sun a bit right of and above the view center, in the sky over the hills.
-      Matrix4f invProj = new Matrix4f(f.projection()).invert();
-      Vector4f v = invProj.transform(new Vector4f(0.3f, 0.45f, 1f, 1f));
-      Vector3f d = new Vector3f(v.x / v.w, v.y / v.w, v.z / v.w);
-      new Matrix4f(f.view()).invert().transformDirection(d).normalize();
-      return postParams(f, 0, new float[] {d.x, d.y, d.z}, 0f);
-    }));
-    Golden.check("enhanced_lens_flare", img);
-  }
-
-  @Test
-  void enhancedUnderwaterDistortion() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
-      BufferedImage img = withPost(() -> {
-        EnhancedSettings.fluidDistortion = true;
-        EnhancedSettings.fluidDistortionStrength = 3f;
-      }, () -> {
-        var f = scene.enhanced(scene.frame(W, H, -3.5, 56.5, -2.5, 300f, 12f, 70f, 0));
-        return gl.render(f, scene, SKY, W, H, postParams(f, 1, new float[] {0f, 1f, 0f}, 0f));
-      });
-      Golden.check("enhanced_underwater", img);
-    }
-  }
 
   // --- Enhanced shadows -----------------------------------------------------------------------
 
   /** Camera over the shadow scene, looking at the origin from +x, -z, with the sun to the side so shadows fall across the view. */
-  private static BufferedImage shadowScene(float[] sun, double x, double y, double z, float yaw, float pitch) {
+  private static BufferedImage shadowScene(TestScene scene, float[] sun, double x, double y, double z, float yaw, float pitch) {
     ShadowPass.configure(32f, 512, 64f, 512);
-    try (TestScene scene = new TestScene(atlas, TestWorlds.SHADOWS, 0, 0, 96)) {
-      var vanilla = scene.frame(SW, SH, x, y, z, yaw, pitch, 70f, 0);
-      return gl.render(scene.enhanced(vanilla, sun), scene, SKY, SW, SH, true);
-    }
+    var vanilla = scene.frame(SW, SH, x, y, z, yaw, pitch, 70f, 0);
+    return gl.render(scene.enhanced(vanilla, sun), scene, SKY, SW, SH, true);
   }
 
   private static final int SW = 640;
   private static final int SH = 360;
 
-  /** Afternoon sun: the pillar, post and slab throw shadows over the grass, soft at the far end. */
-  @Test
-  void enhancedSunShadows() {
-    BufferedImage img = shadowScene(new float[] {-0.6f, 0.55f, -0.1f}, 14.5, 66.0, -16.5, 41f, 22f);
-    Golden.check("enhanced_shadows", img);
-  }
-
-  /** Low sun: long shadows, orange light. */
-  @Test
-  void enhancedSunsetShadows() {
-    BufferedImage img = shadowScene(new float[] {-0.8f, 0.2f, -0.1f}, 14.5, 63.0, -16.5, 41f, 12f);
-    Golden.check("enhanced_sunset", img);
-  }
-
-  /** The moon is up (the sun is below the horizon): dim blue light and its own shadows. */
-  @Test
-  void enhancedMoonShadows() {
-    BufferedImage img = shadowScene(new float[] {0.6f, -0.55f, 0.1f}, 14.5, 66.0, -16.5, 41f, 22f);
-    Golden.check("enhanced_moon", img);
-  }
-
-  /**
-   * Emissive blocks in a dim world, Enhanced only: glowstone and lava glow all over, redstone ore only
-   * at its flecks, plain stone (second from the right) stays dark.
-   */
-  @Test
-  void enhancedEmission() {
-    try (TestScene scene = new TestScene(atlas, TestWorlds.EMISSIVE, 0, 6, 96)) {
-      var vanilla = scene.frame(W, H, 0.5, 62.0, 0.5, 0f, 14f, 70f, 0);
-      BufferedImage dim = gl.render(scene.enhanced(vanilla, 0.25f), scene, SKY, W, H);
-      Golden.check("enhanced_emission", dim);
-
-      // The same blocks in Vanilla get no emission: the glowstone is as dark as the stone around it.
-      BufferedImage plain = gl.render(scene.dimmed(vanilla, 0.25f), scene, SKY, W, H);
-      int glow = brightest(dim), glowVanilla = brightest(plain);
-      assertTrue(glow > glowVanilla + 40, "emission did not brighten the glowstone: " + glow + " vs " + glowVanilla);
-    }
-  }
 
   /** Brightest channel in the box around the leftmost glowstone block. */
   private static int brightest(BufferedImage img) {
@@ -526,5 +174,421 @@ class RenderTest {
       }
     }
     return best;
+  }
+
+  /** Hills with only the near levels; the camera is over the showcase blocks. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class HillsNear {
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      scene = new TestScene(atlas, TestWorlds.HILLS, 4, 0, 96);
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+    }
+
+    @Test
+    void blocksCloseUp() {
+      assertTrue(scene.slots() > 0, "scene has no bricks");
+      Golden.check("blocks_closeup", draw(scene, 4.5, 80.5, 0.5, 0f, 18f, 0));
+    }
+
+    @Test
+    void blocksFromAbove() {
+      Golden.check("blocks_from_above", draw(scene, 3.2, 84.0, 4.3, 25f, 55f, 0));
+    }
+
+    @Test
+    void skyNoon() {
+      Golden.check("sky_noon", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -10f, atm(40f, 0, 0f, 0f), 0, W, H));
+    }
+
+    @Test
+    void skySunset() {
+      Golden.check("sky_sunset", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, 4f, atm(3f, 0, 0f, 0f), 0, W, H));
+    }
+
+    @Test
+    void skyNight() {
+      Golden.check("sky_night", enhancedSky(scene, 4.5, 80.5, 0.5, 270f, -35f, atm(-50f, 2, 0f, 0f), 0, BIG_W, BIG_H));
+    }
+
+    @Test
+    void skyRain() {
+      Golden.check("sky_rain", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -10f, atm(40f, 0, 1f, 0.5f), 0, W, H));
+    }
+
+    @Test
+    void cloudsGrid() {
+      Golden.check("clouds_grid", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(55f, 0, 0f, 0f), 1, W, H));
+    }
+
+    @Test
+    void cloudsSoft() {
+      Golden.check("clouds_soft", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(35f, 0, 0f, 0f), 2, W, H));
+    }
+
+    @Test
+    void cloudsSoftStorm() {
+      Golden.check("clouds_soft_storm", enhancedSky(scene, 4.5, 80.5, 0.5, 90f, -25f, atm(35f, 0, 1f, 1f), 2, W, H));
+    }
+  }
+
+  /** Hills out to 700 blocks, with the whole pyramid in view, and the Enhanced post effects drawn over it. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class HillsFar {
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700);
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+    }
+
+    @Test
+    void hillsToTheHorizon() {
+      Golden.check("hills_horizon", draw(scene, 0.5, 110.0, 0.5, 35f, 8f, 0));
+    }
+
+    @Test
+    void hillsLevelTint() {
+      Golden.check("hills_levels", draw(scene, 0.5, 110.0, 0.5, 35f, 8f, 2));
+    }
+
+    /** Far terrain fades into the sky color instead of cutting off at the end of the pyramid. */
+    @Test
+    void fogFarField() {
+      Golden.check("fog_far", enhancedSky(scene, FAR_X, 80.5, FAR_Z, FAR_YAW, FAR_PITCH, atm(40f, 0, 0f, 0f), 0, BIG_W, BIG_H));
+    }
+
+    private BufferedImage hillsPost(java.util.function.Function<VoxelRenderer.Frame, FinalPost.Params> params) {
+      var vanilla = scene.frame(W, H, HILLS_CAM[0], HILLS_CAM[1], HILLS_CAM[2], HILLS_CAM[3], HILLS_CAM[4], 70f, 0);
+      var frame = scene.enhanced(vanilla);
+      return gl.render(frame, scene, SKY, W, H, params == null ? null : params.apply(frame));
+    }
+
+    /** Bloom with a low threshold, so the bright sunlit parts of the hills glow. */
+    @Test
+    void enhancedBloom() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.bloom = true;
+        EnhancedSettings.bloomThreshold = 0.45f;
+        EnhancedSettings.bloomKnee = 0.2f;
+        EnhancedSettings.bloomStrength = 0.4f;
+      }, () -> hillsPost(null));
+      Golden.check("enhanced_bloom", img);
+    }
+
+    /** ACES tonemap, a darker fixed exposure and a saturation / contrast / tint grade. */
+    @Test
+    void enhancedTonemapAndGrade() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.tonemap = EnhancedSettings.TONEMAP_ACES;
+        EnhancedSettings.exposureCompensation = 1.3f;
+        EnhancedSettings.grading = true;
+        EnhancedSettings.saturation = 1.4f;
+        EnhancedSettings.contrast = 1.15f;
+        EnhancedSettings.tint = new float[] {1.05f, 1.0f, 0.9f};
+      }, () -> hillsPost(null));
+      Golden.check("enhanced_tonemap_grade", img);
+    }
+
+    /** Auto-exposure on a well lit scene must settle on a multiplier inside its limits, and change the image. */
+    @Test
+    void enhancedAutoExposure() {
+      BufferedImage base = withPost(() -> {}, () -> hillsPost(null));
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.autoExposure = true;
+        EnhancedSettings.exposureStrength = 1f;
+        EnhancedSettings.exposureKey = 0.5f;
+        EnhancedSettings.exposureMax = 2f;
+      }, () -> hillsPost(null));
+      Golden.check("enhanced_auto_exposure", img);
+      long a = 0, b = 0;
+      for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+          a += base.getRGB(x, y) & 255;
+          b += img.getRGB(x, y) & 255;
+        }
+      }
+      assertTrue(a != b, "auto-exposure changed nothing");
+    }
+
+    /** Vignette, chromatic aberration, grain and sharpening together. */
+    @Test
+    void enhancedScreenEffects() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.vignette = true;
+        EnhancedSettings.vignetteStrength = 0.6f;
+        EnhancedSettings.chromaticAberration = true;
+        EnhancedSettings.chromaticStrength = 0.02f;
+        EnhancedSettings.filmGrain = true;
+        EnhancedSettings.grainStrength = 0.08f;
+        EnhancedSettings.sharpen = true;
+        EnhancedSettings.sharpenStrength = 0.6f;
+      }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 0f)));
+      Golden.check("enhanced_screen_effects", img);
+    }
+
+    @Test
+    void enhancedDepthOfField() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.depthOfField = true;
+        EnhancedSettings.dofRadius = 10f;
+        EnhancedSettings.dofStrength = 2f;
+      }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 0f)));
+      Golden.check("enhanced_dof", img);
+    }
+
+    @Test
+    void enhancedMotionBlur() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.motionBlur = true;
+        EnhancedSettings.motionBlurStrength = 1f;
+      }, () -> hillsPost(f -> postParams(f, 0, new float[] {0f, -1f, 0f}, 2.5f)));
+      Golden.check("enhanced_motion_blur", img);
+    }
+
+    @Test
+    void enhancedLensFlare() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.lensFlare = true;
+        EnhancedSettings.lensFlareStrength = 1f;
+      }, () -> hillsPost(f -> {
+        // The sun a bit right of and above the view center, in the sky over the hills.
+        Matrix4f invProj = new Matrix4f(f.projection()).invert();
+        Vector4f v = invProj.transform(new Vector4f(0.3f, 0.45f, 1f, 1f));
+        Vector3f d = new Vector3f(v.x / v.w, v.y / v.w, v.z / v.w);
+        new Matrix4f(f.view()).invert().transformDirection(d).normalize();
+        return postParams(f, 0, new float[] {d.x, d.y, d.z}, 0f);
+      }));
+      Golden.check("enhanced_lens_flare", img);
+    }
+  }
+
+  /** The pond, seen from the bank and from under the surface. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class Pond {
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96);
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+    }
+
+    /** Water seen from the bank: the floor shows through the surface, and the post stands in it. */
+    @Test
+    void pondFromTheBank() {
+      Golden.check("pond_bank", draw(scene, -17.5, 63.0, -9.5, 300f, 22f, 0));
+    }
+
+    /** The same pond from under the surface: fogged, with the surface seen from below. */
+    @Test
+    void pondUnderWater() {
+      Golden.check("pond_under", draw(scene, -3.5, 56.5, -2.5, 300f, 12f, 0));
+    }
+
+    /**
+     * Enhanced mode draws through the HDR target and resolve pass, and until it gets its own lighting
+     * it must look like Vanilla. The 16-bit float target may move a value by a step or two.
+     */
+    @Test
+    void enhancedMatchesVanilla() {
+      var saved = saveSettings();
+      int savedSky = dev.macmv.look.SkyState.features;
+      try {
+        EnhancedSettings.neutral();
+        // The sky and fog are Enhanced-only features of their own, tested elsewhere.
+        dev.macmv.look.SkyState.features = 0;
+        matchesVanilla();
+      } finally {
+        restoreSettings(saved);
+        dev.macmv.look.SkyState.features = savedSky;
+      }
+    }
+
+    private void matchesVanilla() {
+      for (double[] cam : new double[][] {{-17.5, 63.0, -9.5, 300, 22}, {-3.5, 56.5, -2.5, 300, 12}}) {
+        var vanilla = scene.frame(W, H, cam[0], cam[1], cam[2], (float) cam[3], (float) cam[4], 70f, 0);
+        BufferedImage a = gl.render(vanilla, scene, SKY, W, H);
+        BufferedImage b = gl.render(scene.enhanced(vanilla), scene, SKY, W, H);
+        int bad = 0;
+        for (int y = 0; y < H; y++) {
+          for (int x = 0; x < W; x++) {
+            int p = a.getRGB(x, y), q = b.getRGB(x, y);
+            for (int s = 0; s < 24; s += 8) {
+              if (Math.abs(((p >> s) & 255) - ((q >> s) & 255)) > 2) {
+                bad++;
+                break;
+              }
+            }
+          }
+        }
+        assertTrue(bad == 0, bad + " pixels differ between Vanilla and Enhanced");
+      }
+    }
+
+    @Test
+    void enhancedUnderwaterDistortion() {
+      BufferedImage img = withPost(() -> {
+        EnhancedSettings.fluidDistortion = true;
+        EnhancedSettings.fluidDistortionStrength = 3f;
+      }, () -> {
+        var f = scene.enhanced(scene.frame(W, H, -3.5, 56.5, -2.5, 300f, 12f, 70f, 0));
+        return gl.render(f, scene, SKY, W, H, postParams(f, 1, new float[] {0f, 1f, 0f}, 0f));
+      });
+      Golden.check("enhanced_underwater", img);
+    }
+  }
+
+  /** Flat grass with pillars, a post and a slab, for the shadow pass. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class Shadows {
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      ShadowPass.configure(32f, 512, 64f, 512);
+      scene = new TestScene(atlas, TestWorlds.SHADOWS, 0, 0, 96);
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+    }
+
+    /** Afternoon sun: the pillar, post and slab throw shadows over the grass, soft at the far end. */
+    @Test
+    void enhancedSunShadows() {
+      Golden.check("enhanced_shadows", shadowScene(scene, new float[] {-0.6f, 0.55f, -0.1f}, 14.5, 66.0, -16.5, 41f, 22f));
+    }
+
+    /** Low sun: long shadows, orange light. */
+    @Test
+    void enhancedSunsetShadows() {
+      Golden.check("enhanced_sunset", shadowScene(scene, new float[] {-0.8f, 0.2f, -0.1f}, 14.5, 63.0, -16.5, 41f, 12f));
+    }
+
+    /** The moon is up (the sun is below the horizon): dim blue light and its own shadows. */
+    @Test
+    void enhancedMoonShadows() {
+      Golden.check("enhanced_moon", shadowScene(scene, new float[] {0.6f, -0.55f, 0.1f}, 14.5, 66.0, -16.5, 41f, 22f));
+    }
+  }
+
+  /** Emissive blocks in a dim world. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class Emissive {
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      scene = new TestScene(atlas, TestWorlds.EMISSIVE, 0, 6, 96);
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+    }
+
+    /**
+     * Emissive blocks in a dim world, Enhanced only: glowstone and lava glow all over, redstone ore only
+     * at its flecks, plain stone (second from the right) stays dark.
+     */
+    @Test
+    void enhancedEmission() {
+      var vanilla = scene.frame(W, H, 0.5, 62.0, 0.5, 0f, 14f, 70f, 0);
+      BufferedImage dim = gl.render(scene.enhanced(vanilla, 0.25f), scene, SKY, W, H);
+      Golden.check("enhanced_emission", dim);
+
+      // The same blocks in Vanilla get no emission: the glowstone is as dark as the stone around it.
+      BufferedImage plain = gl.render(scene.dimmed(vanilla, 0.25f), scene, SKY, W, H);
+      int glow = brightest(dim), glowVanilla = brightest(plain);
+      assertTrue(glow > glowVanilla + 40, "emission did not brighten the glowstone: " + glow + " vs " + glowVanilla);
+    }
+  }
+
+  /** Vanilla's terrain for a fixed seed, made by the native engine, seen from high up over the whole pyramid. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class FarTerrain {
+    private NativeTerrain terrain;
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      terrain = new NativeTerrain(FAR_X, FAR_Z, FAR_YAW, 60f);
+      scene = new TestScene(atlas, terrain, terrain, FAR_X, FAR_Z, Lod.maxDist());
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+      if (terrain != null) terrain.close();
+    }
+
+    /** Camera 1000 blocks up, looking out over everything the pyramid reaches (about 1000 chunks). */
+    @Test
+    void heightFieldFromHigh() {
+      BufferedImage img = drawBig(scene, FAR_X, 1000.0, FAR_Z, FAR_YAW, FAR_PITCH, 0);
+      assertTrue(terrainFraction(img) > 0.2, "almost nothing was drawn, the heightfield is probably empty");
+      Golden.check("heightfield_far", img);
+    }
+
+    /** The same view tinted per pyramid level, to see where the heightfield levels start and end. */
+    @Test
+    void heightFieldLevelTint() {
+      Golden.check("heightfield_far_levels", drawBig(scene, FAR_X, 1000.0, FAR_Z, FAR_YAW, FAR_PITCH, 2));
+    }
+  }
+
+  /** The same terrain with trees grown: bricks have them near, the heightfield past that. */
+  @Nested
+  @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+  class Trees {
+    private NativeTerrain terrain;
+    private TestScene scene;
+
+    @BeforeAll
+    void build() {
+      terrain = new NativeTerrain(TREES_X, TREES_Z, TREES_YAW, 40f, true);
+      scene = new TestScene(atlas, terrain, terrain, TREES_X, TREES_Z, Lod.maxDist());
+    }
+
+    @AfterAll
+    void close() {
+      if (scene != null) scene.close();
+      if (terrain != null) terrain.close();
+    }
+
+    /** A few hundred blocks up, looking over forests out to the edge of the pyramid. */
+    @Test
+    void heightFieldTrees() {
+      Golden.check("heightfield_trees", drawBig(scene, TREES_X, TREES_Y, TREES_Z, TREES_YAW, 4f, 0));
+    }
+
+    /** From 600 blocks up and looking down, so most of the frame is far canopy: leaves and the bark under them. */
+    @Test
+    void heightFieldTreesFromHigh() {
+      Golden.check("heightfield_trees_high", drawBig(scene, TREES_X, 600.0, TREES_Z, TREES_YAW, 22f, 0));
+    }
   }
 }
