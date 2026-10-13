@@ -71,16 +71,19 @@ pub struct Forest {
   looks:      Vec<Look>,
 }
 
-/// Leaf textures are not white, so tinting one with the foliage color gives a
-/// darker color than the foliage color itself.
-const FOLIAGE_SHADE: f32 = 0.75;
+/// Leaf textures are gray, not white (their opaque pixels average 0.5 to 0.6
+/// depending on the wood), so a tinted leaf is darker than its tint.
+const FOLIAGE_SHADE: f32 = 0.57;
+/// The same for the leaves with a fixed tint: birch and spruce.
+const BIRCH_SHADE: f32 = 0.51;
+const SPRUCE_SHADE: f32 = 0.495;
 
 fn look_of(name: &str) -> Look {
   let short = name.strip_prefix("minecraft:").unwrap_or(name);
   if let Some(wood) = short.strip_suffix("_leaves") {
     return match wood {
-      "birch" => Look::Fixed(0x80A755),
-      "spruce" => Look::Fixed(0x619961),
+      "birch" => Look::Fixed(shade(0x80A755, BIRCH_SHADE)),
+      "spruce" => Look::Fixed(shade(0x619961, SPRUCE_SHADE)),
       "cherry" => Look::Fixed(0xE3A0BD),
       "azalea" => Look::Fixed(0x5A7A2C),
       "flowering_azalea" => Look::Fixed(0x6F7E45),

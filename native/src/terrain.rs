@@ -334,7 +334,8 @@ pub const NO_HEIGHT: i16 = i16::MIN;
 /// terrain.
 pub const HF_WATER: u8 = 7;
 /// Kind code of a texel whose column is a tree's canopy or trunk: its color is
-/// the whole story.
+/// the whole story. The code is this plus the tree's height above the ground
+/// (up to 200), which lets the shader color the bare trunk below the canopy.
 pub const HF_TREE: u8 = 8;
 /// Bytes of one heightfield tile: 256 native-endian i16 heights, then 256 RGBA
 /// texels.
@@ -359,8 +360,8 @@ impl Tile {
       let mut rgb = if kind == HF_WATER { self.water[col] } else { self.grass[col] };
       if let Some(c) = self.canopy.as_deref() {
         if kind != 0 && c.top[col] != NO_TERRAIN && c.top[col] > height {
+          kind = HF_TREE + (c.top[col] as i32 - height as i32).min(200) as u8;
           height = c.top[col];
-          kind = HF_TREE;
           rgb = c.rgb[col];
         }
       }
