@@ -224,6 +224,7 @@ public final class TerrainExport {
     JsonArray grass = new JsonArray();
     JsonArray foliage = new JsonArray();
     JsonArray water = new JsonArray();
+    JsonArray names = new JsonArray();
     for (Holder<Biome> biome : index.keySet()) {
       int f = 0;
       if (biome.is(BiomeTags.IS_OCEAN)) f |= OCEAN;
@@ -242,6 +243,7 @@ public final class TerrainExport {
       grass.add(biome.value().getGrassColor(0, 0) & 0xFFFFFF);
       foliage.add(biome.value().getFoliageColor() & 0xFFFFFF);
       water.add(biome.value().getWaterColor() & 0xFFFFFF);
+      names.add(biome.unwrapKey().map(k -> k.location().toString()).orElse(""));
     }
 
     JsonObject out = new JsonObject();
@@ -250,6 +252,8 @@ public final class TerrainExport {
     out.add("grass_colors", grass);
     out.add("foliage_colors", foliage);
     out.add("water_colors", water);
+    // Lets a client recompute the colors, as a dedicated server has no colormaps (see ClientWorldDescriptor).
+    out.add("names", names);
     out.add("points", points);
     return out;
   }

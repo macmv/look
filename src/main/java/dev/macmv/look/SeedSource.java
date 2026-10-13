@@ -214,6 +214,7 @@ public final class SeedSource implements VoxelSource {
     IntegratedServer server = mc.getSingleplayerServer();
     WorldDescriptor world = server != null ? WorldDescriptor.of(server) : ClientWorldDescriptor.received();
     if (world == null && server == null) return;
+    if (world != null && server == null) world = ClientWorldDescriptor.recolored(world, client.registryAccess());
 
     resolved = true;
     // The sections of an enumerated source are only asked for during a sweep.
