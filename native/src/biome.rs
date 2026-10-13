@@ -17,6 +17,8 @@ pub mod flags {
   pub const STEEP_ROCK: u32 = 64;
   /// Bare rock everywhere (stony peaks and shores).
   pub const STONE: u32 = 128;
+  /// Sand under the water instead of gravel (warm and lukewarm oceans).
+  pub const WARM_SEABED: u32 = 256;
 }
 
 #[derive(Clone, Copy, Debug)]

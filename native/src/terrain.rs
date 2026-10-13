@@ -884,11 +884,16 @@ impl Tile {
   }
 }
 
-/// Picks what the top of a column is made of from its biome and height.
+/// Picks what the top of a column is made of from its biome and height. `top`
+/// is the first block above the ground.
+///
+/// Follows vanilla's overworld surface rules. Ground under water is gravel,
+/// whatever the biome and depth, except in the warm oceans where it is sand;
+/// the dirt, grass and sand rules only apply to ground the sea does not cover.
 pub fn surface_of(biome: BiomeInfo, top: i32, sea_level: i32) -> Surface {
   let f = biome.flags;
-  if f & (flags::OCEAN | flags::RIVER) != 0 || top <= sea_level {
-    return if biome.temperature < 0.2 { Surface::Gravel } else { Surface::Sand };
+  if top < sea_level {
+    return if f & flags::WARM_SEABED != 0 { Surface::Sand } else { Surface::Gravel };
   }
   // Higher ground is colder, so snow reaches lower on cold biomes' mountains.
   if biome.temperature - (top - 80).max(0) as f32 * LAPSE_PER_BLOCK <= 0.15 {
