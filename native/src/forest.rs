@@ -52,8 +52,10 @@ pub struct TreeVoxel {
 /// Per column of a heightfield tile: the height of the top of the tree there
 /// (`NO_TERRAIN` for none) and its color.
 pub struct Canopy {
-  pub top: [i16; 256],
-  pub rgb: [u32; 256],
+  pub top:   [i16; 256],
+  pub rgb:   [u32; 256],
+  /// Columns that are ground plants, not trees: they have no trunk to show.
+  pub plant: [bool; 256],
 }
 
 /// How a block looks from far away.
@@ -64,6 +66,8 @@ enum Look {
   Fixed(u32),
   /// Leaves tinted with the biome's foliage color.
   Foliage,
+  /// Ground plants, in the biome's grass color.
+  Grass,
 }
 
 pub struct Forest {
@@ -74,6 +78,9 @@ pub struct Forest {
 /// Leaf textures are gray, not white (their opaque pixels average 0.5 to 0.6
 /// depending on the wood), so a tinted leaf is darker than its tint.
 const FOLIAGE_SHADE: f32 = 0.57;
+/// Grass blades are gray like leaves; seen from far away they are about this
+/// much darker than the biome tint.
+const GRASS_SHADE: f32 = 0.6;
 /// The same for the leaves with a fixed tint: birch and spruce.
 const BIRCH_SHADE: f32 = 0.51;
 const SPRUCE_SHADE: f32 = 0.495;
@@ -108,6 +115,8 @@ fn look_of(name: &str) -> Look {
     "red_mushroom_block" => Look::Fixed(0xC52B26),
     "brown_mushroom_block" => Look::Fixed(0x957250),
     "mushroom_stem" => Look::Fixed(0xD4CDBE),
+    "short_grass" | "fern" | "tall_grass" | "large_fern" => Look::Grass,
+    "dead_bush" => Look::Fixed(0x6B5328),
     _ => Look::None,
   }
 }
@@ -140,11 +149,12 @@ impl Forest {
     out
   }
 
-  fn color(&self, id: BlockId, foliage: u32) -> Option<u32> {
+  fn color(&self, id: BlockId, foliage: u32, grass: u32) -> Option<u32> {
     match self.looks.get(id as usize)? {
       Look::None => None,
       Look::Fixed(rgb) => Some(*rgb),
       Look::Foliage => Some(shade(foliage, FOLIAGE_SHADE)),
+      Look::Grass => Some(shade(grass, GRASS_SHADE)),
     }
   }
 
@@ -204,7 +214,7 @@ impl Forest {
 
     // (voxel row, z, x) so a sort groups voxels and orders them by row.
     let mut hits: Vec<(i16, u8, u8, BlockId, i64)> = Vec::new();
-    self.for_each_block(terrain, s, cache, level == 0, x0, z0, width, |x, y, z, id| {
+    self.for_each_block(terrain, s, cache, true, x0, z0, width, |x, y, z, id| {
       let (vx, vz) = ((x as i64 - x0) >> level, (z as i64 - z0) >> level);
       hits.push(((y >> level) as i16, vz as u8, vx as u8, id, y as i64));
     });
@@ -236,14 +246,24 @@ impl Forest {
         Some(id) if has_log || group.len() >= need => Some(id),
         _ => most_common(group.iter().map(|h| h.3).filter(|&id| blocks.is_log(Block::new(id)))),
       };
-      // Plants are only worth a voxel when it is one block: a coarser voxel of
-      // grass would be a bush.
-      let pick = pick.or_else(|| {
-        group.iter().map(|h| h.3).find(|&id| level == 0 && blocks.is_plant(Block::new(id)))
-      });
+      // Plants are drawn whole, scaled up with the voxel, so a coarse voxel
+      // needs half of its columns to have one or the ground would be a bush
+      // everywhere.
+      let plants = group.iter().filter(|h| blocks.is_plant(Block::new(h.3)));
+      let plant = match pick {
+        None if plants.clone().count() >= (size * size / 2).max(1) as usize => {
+          plants.map(|h| h.3).next()
+        }
+        _ => None,
+      };
+      let pick = pick.or(plant);
       if let Some(id) = pick {
         let top = group.iter().map(|h| h.4).max().unwrap_or(0);
-        let fill = (top + 1 - ((group[0].0 as i64) << level)).clamp(1, size) as u8;
+        let fill = if plant.is_some() {
+          size as u8
+        } else {
+          (top + 1 - ((group[0].0 as i64) << level)).clamp(1, size) as u8
+        };
         out.push(TreeVoxel { x: group[0].2, z: group[0].1, y: group[0].0, id, fill });
       }
       i = j;
@@ -263,8 +283,9 @@ impl Forest {
     out
   }
 
-  /// The canopies a heightfield tile of `level` reaches. None when no tree is
-  /// there at all.
+  /// The canopies a heightfield tile of `level` reaches: trees, and where there
+  /// is enough of it, the ground plants as a thin layer over the ground. None
+  /// when there is neither.
   #[allow(clippy::too_many_arguments)]
   pub fn canopy(
     &self,
@@ -275,20 +296,29 @@ impl Forest {
     sx: i32,
     sz: i32,
     foliage: &[u32; 256],
+    grass: &[u32; 256],
   ) -> Option<Box<Canopy>> {
     let size = 1usize << level;
     let (x0, z0) = ((sx as i64) << (level + 4), (sz as i64) << (level + 4));
     let width = 16 * size;
 
-    // Highest tree block per block column of the tile.
+    // Highest tree block and highest plant per block column of the tile.
     let mut tops = vec![i16::MIN; width * width];
     let mut ids = vec![0 as BlockId; width * width];
+    let mut plant_tops = vec![i16::MIN; width * width];
+    let mut plant_ids = vec![0 as BlockId; width * width];
     let mut any = false;
-    self.for_each_block(terrain, s, cache, false, x0, z0, width as i64, |x, y, z, id| {
+    let blocks = &self.decoration.blocks;
+    self.for_each_block(terrain, s, cache, true, x0, z0, width as i64, |x, y, z, id| {
       if self.looks.get(id as usize).copied().unwrap_or(Look::None) == Look::None {
         return;
       }
       let at = (z as i64 - z0) as usize * width + (x as i64 - x0) as usize;
+      let (tops, ids) = if blocks.is_plant(Block::new(id)) {
+        (&mut plant_tops, &mut plant_ids)
+      } else {
+        (&mut tops, &mut ids)
+      };
       if y as i16 + 1 > tops[at] {
         tops[at] = y as i16 + 1;
         ids[at] = id;
@@ -299,29 +329,48 @@ impl Forest {
       return None;
     }
 
-    let mut canopy = Box::new(Canopy { top: [NO_TERRAIN; 256], rgb: [0; 256] });
+    let mut canopy =
+      Box::new(Canopy { top: [NO_TERRAIN; 256], rgb: [0; 256], plant: [false; 256] });
     let need = (size * size / 4).max(1);
+    // Plants are sparse and low: it takes fewer of them to show, and they stay
+    // under any tree over the same texel.
+    let plant_need = (size * size / 8).max(1);
     for tz in 0..16 {
       for tx in 0..16 {
+        let col = tz * 16 + tx;
         let mut covered = 0;
         let mut best = (i16::MIN, 0);
+        let mut plants_covered = 0;
+        let mut plant_best = (i16::MIN, 0);
         for dz in 0..size {
           for dx in 0..size {
             let at = (tz * size + dz) * width + tx * size + dx;
-            if tops[at] == i16::MIN {
-              continue;
+            if tops[at] != i16::MIN {
+              covered += 1;
+              if tops[at] > best.0 {
+                best = (tops[at], ids[at]);
+              }
             }
-            covered += 1;
-            if tops[at] > best.0 {
-              best = (tops[at], ids[at]);
+            if plant_tops[at] != i16::MIN {
+              plants_covered += 1;
+              if plant_tops[at] > plant_best.0 {
+                plant_best = (plant_tops[at], plant_ids[at]);
+              }
             }
           }
         }
-        if covered >= need {
-          let col = tz * 16 + tx;
-          if let Some(rgb) = self.color(best.1, foliage[col]) {
-            canopy.top[col] = best.0;
+        let (pick, plant) = if covered >= need {
+          (Some(best), false)
+        } else if plants_covered >= plant_need {
+          (Some(plant_best), true)
+        } else {
+          (None, false)
+        };
+        if let Some((top, id)) = pick {
+          if let Some(rgb) = self.color(id, foliage[col], grass[col]) {
+            canopy.top[col] = top;
             canopy.rgb[col] = rgb;
+            canopy.plant[col] = plant;
           }
         }
       }

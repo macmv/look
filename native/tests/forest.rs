@@ -12,7 +12,7 @@ use serde_json::Value;
 
 fn terrain() -> Terrain {
   let world: Value = serde_json::from_str(include_str!("fixtures/overworld.json")).unwrap();
-  let trees: Value = serde_json::from_str(include_str!("fixtures/trees.json")).unwrap();
+  let trees: Value = serde_json::from_str(include_str!("fixtures/decoration.json")).unwrap();
   assert_eq!(world["seed"], trees["seed"], "fixtures are for different worlds");
   let mut config = world["config"].clone();
   config["decoration"] = trees["decoration"].clone();
@@ -98,5 +98,59 @@ fn heightfield_tiles_get_canopies() {
       start.elapsed() / tiles,
       trees
     );
+  }
+}
+
+/// Voxels of a tile that are ground plants, given the ids `ids` gives them.
+fn plant_voxels(tile: &Tile, level: u32, t: &Terrain, ids: &Ids) -> usize {
+  let names = t.forest.as_ref().unwrap().block_names();
+  let plants: Vec<u16> = names
+    .iter()
+    .enumerate()
+    .filter(|(_, n)| {
+      ["short_grass", "fern", "tall_grass", "large_fern", "dead_bush"].iter().any(|p| n.contains(p))
+    })
+    .map(|(i, _)| 100 + i as u16)
+    .collect();
+  let mut n = 0;
+  let mut out = Box::new([0u16; BRICK_VOXELS]);
+  for sy in -4..24 {
+    tile.fill_brick(level, sy, &t.params, ids, &mut out);
+    n += out.iter().filter(|v| plants.contains(v)).count();
+  }
+  n
+}
+
+#[test]
+fn plants_show_at_every_level() {
+  let t = terrain();
+  let ids = ids(&t);
+  let mut s = t.scratch();
+  let cache = TreeCache::new(2048);
+
+  for level in 0..=1u32 {
+    let mut plants = 0;
+    for i in 0..8 {
+      let tile =
+        t.sample_tile_with(&mut s, level, i * 7 - 40, i * 5 - 30, TileKind::Voxel, Some(&cache));
+      plants += plant_voxels(&tile, level, &t, &ids);
+    }
+    eprintln!("level {level}: {plants} plant voxels over 8 tiles");
+    assert!(plants > 0, "no plants at level {level}");
+  }
+
+  // Far away, they are a low layer over the ground that the shader does not
+  // give a trunk.
+  for level in 2..=3u32 {
+    let mut low = 0;
+    for i in 0..8 {
+      let tile =
+        t.sample_tile_with(&mut s, level, i * 2 - 8, 4 - i, TileKind::Heightfield, Some(&cache));
+      let mut out = [0u8; HF_BYTES];
+      tile.write_heightfield(63, &mut out);
+      low += (0..256).filter(|&c| out[512 + c * 4 + 3] == HF_TREE + 200).count();
+    }
+    eprintln!("heightfield level {level}: {low} plant texels over 8 tiles");
+    assert!(low > 0, "no plants at heightfield level {level}");
   }
 }

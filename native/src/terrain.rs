@@ -360,7 +360,10 @@ impl Tile {
       let mut rgb = if kind == HF_WATER { self.water[col] } else { self.grass[col] };
       if let Some(c) = self.canopy.as_deref() {
         if kind != 0 && c.top[col] != NO_TERRAIN && c.top[col] > height {
-          kind = HF_TREE + (c.top[col] as i32 - height as i32).min(200) as u8;
+          // A plant is as tall as the cap, so the shader finds no trunk under
+          // it.
+          let rise = if c.plant[col] { 200 } else { (c.top[col] as i32 - height as i32).min(200) };
+          kind = HF_TREE + rise as u8;
           height = c.top[col];
           rgb = c.rgb[col];
         }
@@ -839,7 +842,7 @@ impl Terrain {
         TileKind::Plain => {}
         TileKind::Voxel => tile.trees = forest.voxel_trees(self, s, cache, level, sx, sz),
         TileKind::Heightfield => {
-          tile.canopy = forest.canopy(self, s, cache, level, sx, sz, &tile.foliage);
+          tile.canopy = forest.canopy(self, s, cache, level, sx, sz, &tile.foliage, &tile.grass);
         }
       }
     }
