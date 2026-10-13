@@ -311,6 +311,10 @@ public final class VoxelWorld {
     for (int sy = levelMin[level]; sy < levelMin[level] + levelRows[level]; sy++) {
       forget(SectionKey.pack(level, sx, sy, sz));
     }
+
+    // An enumerated source can still produce the column (generated terrain behind the real
+    // chunk), but only hears about it in a sweep, and the one for this move already ran.
+    if (sources[level].enumerated()) sweepRequested = true;
   }
 
   /**
