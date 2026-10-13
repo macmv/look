@@ -18,7 +18,7 @@ uniform float uMaxDist;
 uniform int uHfEnabled;    // 1: levels past uLevels are drawn from the heightfield
 uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and filler id, then stone and water
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
-uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water, tree color for trees), a: kind (0 none, 1 + surface, 7 water, 8 tree)
+uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water, tree color for trees), a: kind (0 none, 1 + surface, 7 water, 8 + height above ground for trees)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
 uniform int uDebug;        // 5: no biome tint, 6: mip level fixed at 2, 7: alpha test off, 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
@@ -368,6 +368,18 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
   return found;
 }
 
+// A tree column of the far heightfield is solid from the ground to the top of its canopy, but the
+// sides of a real canopy sit above bare trunk. The kind carries the tree's height above the ground
+// (HF_TREE + blocks), and the lower part of a side, below this share of that height, shows bark.
+const float HF_TRUNK_SHARE = 0.4;
+const vec3 HF_TRUNK_COLOR = vec3(0.30, 0.22, 0.12);
+
+vec3 hfTreeColor(vec3 leaf, vec2 ac, float depth, float treeH, int hax) {
+  if (hax != 1 && depth > (1.0 - HF_TRUNK_SHARE) * treeH) return HF_TRUNK_COLOR;
+  float shade = fract(sin(dot(ac, vec2(12.9898, 78.233))) * 43758.5453);
+  return leaf * (0.82 + 0.3 * shade);
+}
+
 // Color of far texel column at horizontal position `pxz` (relative to uCamBlock) as a ray passing at
 // height `yr` would see it: its top when the ray is over it, its side when the ray is a little below the
 // top, and nothing when the ray is deep inside it (a nearer column hides it). The far hit filter uses
@@ -383,6 +395,9 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   if (kind == 0) return false;
 
   float fH = float(H);
+  float treeH = float(max(kind - HF_TREE, 0));
+  if (kind >= HF_TREE) kind = HF_TREE;
+
   // A ray well above the column does not touch it here (ground in front of a cliff base, say), so it
   // adds nothing; only a ray within about a pixel of the top reads the top.
   if (yr - fH > max(1.0, tt * uPixelAngle)) return false;
@@ -392,7 +407,9 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   float y = depth > 0.0 ? yr : fH;
 
   uint id;
-  if (kind == 7) {
+  if (kind == HF_TREE) {
+    id = uint(uHfIds[12]);
+  } else if (kind == 7) {
     id = uint(uHfIds[13]);
   } else if (hax == 1 || depth < 1.0) {
     id = uint(uHfIds[(kind - 1) * 2]);
@@ -414,6 +431,7 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   gTapCap = 8;
   gHfTintOn = false;
   if (ok && kind == 7) albedo = attr.rgb;
+  if (ok && kind == HF_TREE) albedo = hfTreeColor(attr.rgb, vec2(ac), depth, treeH, hax);
   return ok;
 }
 
@@ -496,6 +514,8 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
         if (th >= 0.0) {
           vec4 attr = texelFetch(uHfAttr, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0);
           int kind = int(attr.a * 255.0 + 0.5);
+          float treeH = float(max(kind - HF_TREE, 0));
+          if (kind >= HF_TREE) kind = HF_TREE;
           if (kind > 0) {
             vec3 p = o + d * th;
             float yAbs = y0 + d.y * th;
@@ -525,8 +545,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
             if (ok && kind == 7) albedo = attr.rgb;   // water: the biome water color, not the stand-in block
             if (ok && kind == HF_TREE) {
               // A tree's canopy or trunk: its own color, a little different from tree to tree.
-              float shade = fract(sin(dot(vec2(ac), vec2(12.9898, 78.233))) * 43758.5453);
-              albedo = attr.rgb * (0.82 + 0.3 * shade);
+              albedo = hfTreeColor(attr.rgb, vec2(ac), depth, treeH, hax);
             }
             gHfTintOn = false;
             if (ok && th * uPixelAngle > 0.25 * T) {

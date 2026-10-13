@@ -119,6 +119,19 @@ class RenderTest {
     }
   }
 
+  /**
+   * The same forests from 600 blocks up and looking down, so most of the frame is far canopy: the
+   * colors of leaves and the bark under them, drawn from the heightfield.
+   */
+  @Test
+  void heightFieldTreesFromHigh() {
+    try (NativeTerrain terrain = new NativeTerrain(TREES_X, TREES_Z, TREES_YAW, 40f, true);
+        TestScene scene = new TestScene(atlas, terrain, terrain, TREES_X, TREES_Z, Lod.maxDist())) {
+      BufferedImage img = drawBig(scene, TREES_X, 600.0, TREES_Z, TREES_YAW, 22f, 0);
+      Golden.check("heightfield_trees_high", img);
+    }
+  }
+
   /** The same view tinted per pyramid level, to see where the heightfield levels start and end. */
   @Test
   void heightFieldLevelTint() {

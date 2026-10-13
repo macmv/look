@@ -90,7 +90,7 @@ fn heightfield_tiles_get_canopies() {
       );
       let mut out = [0u8; HF_BYTES];
       tile.write_heightfield(63, &mut out);
-      trees += (0..256).filter(|&c| out[512 + c * 4 + 3] == HF_TREE).count();
+      trees += (0..256).filter(|&c| out[512 + c * 4 + 3] >= HF_TREE).count();
       tiles += 1;
     }
     eprintln!(
