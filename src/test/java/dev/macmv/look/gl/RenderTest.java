@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
  * Draws fixed scenes through the real raycast shader and compares them with checked-in images.
  * Needs a display (CI: {@code xvfb-run ./gradlew test}); without one the tests are skipped, unless
  * {@code LOOK_REQUIRE_GL} is set, in which case that is a failure. The images are Mesa llvmpipe
- * output, so a hardware GPU is skipped too (see {@code LOOK_GL_ANY}). Regenerate the images with
+ * output, but the tests run on whatever GL renderer is available, including a hardware GPU. Regenerate the images with
  * {@code ./gradlew test -PupdateGolden} and look at them before committing.
  */
 class RenderTest {
@@ -52,12 +52,6 @@ class RenderTest {
     }
     assumeTrue(gl != null, () -> "no GL context: " + why[0]);
     System.out.println("Render tests on " + gl.describe());
-
-    // The checked-in images are Mesa software output. A GPU rounds differently along ray marching
-    // edges, so comparing against it is noise; LOOK_GL_ANY=1 does it anyway.
-    String renderer = gl.describe().toLowerCase();
-    boolean software = renderer.contains("llvmpipe") || renderer.contains("softpipe") || renderer.contains("swrast");
-    assumeTrue(software || System.getenv("LOOK_GL_ANY") != null, "not a software renderer (try LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a ...)");
     atlas = new TestAtlas(TestScene.SPRITES);
   }
 
