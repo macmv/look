@@ -32,6 +32,8 @@ public final class SeedSource implements VoxelSource {
 
   /** Tiles this many sections beyond a level's window are not worth computing or keeping. */
   private static final int WANT_MARGIN = 6;
+  /** Worker threads for the native terrain engine; 0 picks a default. */
+  private static final int SEED_THREADS = 0;
   /** Finished tiles reported to the world per frame, to keep the render thread's share small. */
   private static final int KEYS_PER_POLL = 512;
 
@@ -223,7 +225,7 @@ public final class SeedSource implements VoxelSource {
 
     try {
       NativeLib.load();
-      handle = NativeLib.terrainCreate(world.seed(), world.config(), Lod.outer(0) + WANT_MARGIN, Integer.getInteger("look.seedThreads", 0));
+      handle = NativeLib.terrainCreate(world.seed(), world.config(), Lod.outer(0) + WANT_MARGIN, SEED_THREADS);
       treeBlocks = resolveTreeBlocks(NativeLib.terrainTreeBlocks(handle));
       LookMod.LOGGER.info("Seed terrain engine started ({} bytes of config, {} tree blocks)", world.config().length, treeBlocks.length);
     } catch (RuntimeException | LinkageError e) {

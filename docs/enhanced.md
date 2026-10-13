@@ -16,7 +16,7 @@ Sky and atmosphere (4.1 to 4.3, steps 2 and 5) exist: `sky.glsl` (pasted into `v
 `#ifdef ENHANCED` by an `#include` line that `VoxelRenderer` expands) has an analytic Rayleigh/Mie sky,
 sun and moon discs with phases, stars, vanilla-style and soft volumetric clouds, `cloudShadow(pos, L)`
 (multiplied into the sun's visibility in `enhancedLight`), and aerial perspective with height, rain and night fog and the border
-fade. `SkyState` holds the feature bits, cloud style (`-Dlook.clouds=0|1|2`) and wind, and
+fade. `SkyState` holds the feature bits, cloud style (`SkyState.cloudStyle`, 0 off, 1 grid, 2 soft) and wind, and
 `LevelRendererMixin` cancels vanilla's `renderSky` and `renderClouds` in the overworld. Not done:
 aurora, rainbow, biome fog, cave fog, blindness and darkness fog, matching vanilla's entity fog to the
 horizon color, clouds at half resolution with temporal accumulation.

@@ -20,8 +20,8 @@ public final class SkyState {
    */
   public static int features = ALL;
 
-  /** 0 off, 1 vanilla-style blocky grid, 2 soft volumetric. Override with {@code -Dlook.clouds=}. */
-  public static int cloudStyle = Integer.getInteger("look.clouds", 2);
+  /** 0 off, 1 vanilla-style blocky grid, 2 soft volumetric. */
+  public static int cloudStyle = 2;
 
   /** Height of the cloud layer in blocks, and how far the wind has moved the pattern (x, z). */
   public static float cloudHeight = 192.33f;
