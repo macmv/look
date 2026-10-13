@@ -107,6 +107,10 @@ fn holds(level: &mut Level, predicate: &Predicate, pos: P) -> bool {
       let b = level.get(pos.0 + offset[0], pos.1 + offset[1], pos.2 + offset[2]);
       blocks.contains(&b.id)
     }
+    Predicate::Water { offset } => {
+      let b = level.get(pos.0 + offset[0], pos.1 + offset[1], pos.2 + offset[2]);
+      level.blocks.is_fluid(b) || level.blocks.is_water_plant(b)
+    }
     Predicate::Not(inner) => !holds(level, inner, pos),
     Predicate::AllOf(list) => list.iter().all(|p| holds(level, p, pos)),
   }
@@ -167,6 +171,9 @@ fn place_feature(level: &mut Level, rng: &mut WorldgenRandom, feature: &Feature,
       let pick = if rng.next_bool() { when_true } else { when_false };
       place(level, rng, pick, pos, None)
     }
+    Feature::Disk { target, rules, fallback, radius, half_height } => {
+      place_disk(level, target, rules, *fallback, radius.sample(rng), *half_height, pos)
+    }
     Feature::Seagrass { probability, short, tall } => {
       place_seagrass(level, rng, *probability, *short, tall, pos)
     }
@@ -177,6 +184,37 @@ fn place_feature(level: &mut Level, rng: &mut WorldgenRandom, feature: &Feature,
       place(level, rng, &list[i], pos, None)
     }
   }
+}
+
+/// `DiskFeature`.
+fn place_disk(
+  level: &mut Level,
+  target: &Predicate,
+  rules: &[(Predicate, Block)],
+  fallback: Block,
+  radius: i32,
+  half_height: i32,
+  pos: P,
+) -> bool {
+  let mut placed = false;
+  for z in pos.2 - radius..=pos.2 + radius {
+    for x in pos.0 - radius..=pos.0 + radius {
+      let (dx, dz) = (x - pos.0, z - pos.2);
+      if dx * dx + dz * dz > radius * radius {
+        continue;
+      }
+      for y in (pos.1 - half_height..=pos.1 + half_height).rev() {
+        let at = (x, y, z);
+        if !holds(level, target, at) {
+          continue;
+        }
+        let block =
+          rules.iter().find(|(r, _)| holds(level, r, at)).map_or(fallback, |&(_, block)| block);
+        placed |= level.set(x, y, z, block);
+      }
+    }
+  }
+  placed
 }
 
 fn is_water(level: &mut Level, x: i32, y: i32, z: i32) -> bool { level.get(x, y, z).id == WATER }

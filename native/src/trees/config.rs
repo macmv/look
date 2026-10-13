@@ -312,6 +312,10 @@ pub enum Predicate {
     offset: [i32; 3],
     blocks: Vec<BlockId>,
   },
+  /// `matching_fluids` of water: the block `offset` away holds water.
+  Water {
+    offset: [i32; 3],
+  },
   Not(Box<Predicate>),
   AllOf(Vec<Predicate>),
 }
@@ -371,6 +375,15 @@ pub enum Feature {
   },
   /// `SimpleBlockFeature`, for the plants (`Blocks::is_plant`) only.
   SimpleBlock(PlantProvider),
+  /// `DiskFeature`: replaces the blocks `target` matches, in a disk around the
+  /// origin, with the first of `rules` that holds there, else `fallback`.
+  Disk {
+    target:      Predicate,
+    rules:       Vec<(Predicate, Block)>,
+    fallback:    Block,
+    radius:      IntProvider,
+    half_height: i32,
+  },
   /// `SeagrassFeature`: tall seagrass with `probability`, else short.
   Seagrass {
     probability: f64,
@@ -397,6 +410,7 @@ impl PlacedFeature {
       Feature::Tree(_) | Feature::Mushroom(_) => false,
       Feature::RandomPatch { .. }
       | Feature::SimpleBlock(_)
+      | Feature::Disk { .. }
       | Feature::Seagrass { .. }
       | Feature::Kelp { .. }
       | Feature::SeaPickle { .. } => true,
@@ -495,6 +509,17 @@ fn parse_predicate(blocks: &mut Blocks, p: &Value) -> Result<Predicate> {
         blocks: names.into_iter().map(|n| blocks.intern(n)).collect(),
       }
     }
+    "minecraft:matching_fluids" => {
+      let names = match field(p, "fluids")? {
+        Value::String(one) => vec![one.as_str()],
+        Value::Array(list) => list.iter().filter_map(Value::as_str).collect(),
+        _ => return Err("fluids is not a fluid or a list".into()),
+      };
+      if names != ["minecraft:water"] {
+        return Err(format!("unsupported fluids {names:?}"));
+      }
+      Predicate::Water { offset: offset_of(p) }
+    }
     "minecraft:not" => Predicate::Not(Box::new(parse_predicate(blocks, field(p, "predicate")?)?)),
     "minecraft:all_of" => {
       let mut list = Vec::new();
@@ -560,6 +585,23 @@ fn parse_feature(blocks: &mut Blocks, v: &Value) -> Result<Feature> {
     },
     "minecraft:simple_block" => {
       Feature::SimpleBlock(parse_plant_provider(blocks, field(config, "to_place")?)?)
+    }
+    "minecraft:disk" => {
+      let provider = field(config, "state_provider")?;
+      let mut rules = Vec::new();
+      for r in field(provider, "rules")?.as_array().ok_or("rules is not a list")? {
+        rules.push((
+          parse_predicate(blocks, field(r, "if_true")?)?,
+          state_provider(blocks, field(r, "then")?)?,
+        ));
+      }
+      Feature::Disk {
+        target: parse_predicate(blocks, field(config, "target")?)?,
+        rules,
+        fallback: state_provider(blocks, field(provider, "fallback")?)?,
+        radius: IntProvider::parse(field(config, "radius")?)?,
+        half_height: int(config, "half_height")?,
+      }
     }
     "minecraft:seagrass" => {
       let tall = blocks.intern("minecraft:tall_seagrass");

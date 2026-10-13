@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 
 const FLOOR: i32 = 40;
 
-struct Ocean;
+/// An ocean whose floor is `top` (sand, or dirt when `dirt`).
+struct Ocean {
+  dirt: bool,
+}
 
 impl Ground for Ocean {
   fn min_y(&self) -> i32 { -64 }
@@ -26,8 +29,8 @@ impl Ground for Ocean {
 
   fn terrain_block(&mut self, _x: i32, y: i32, _z: i32) -> BlockId {
     match y {
-      39 => SAND,
-      36..=38 => DIRT,
+      39 if !self.dirt => SAND,
+      36..=39 => DIRT,
       _ => STONE,
     }
   }
@@ -57,6 +60,25 @@ fn deco() -> Decoration {
         "placement": with(json!({"type": "minecraft:noise_based_count",
           "noise_to_count_ratio": 120, "noise_factor": 80.0, "noise_offset": 0.0}))
       },
+      "3": {
+        "feature": {"type": "minecraft:disk", "config": {
+          "state_provider": {
+            "fallback": {"type": "minecraft:simple_state_provider", "state": {"Name": "minecraft:sand"}},
+            "rules": [{
+              "if_true": {"type": "minecraft:matching_blocks", "offset": [0, -1, 0], "blocks": "minecraft:air"},
+              "then": {"type": "minecraft:simple_state_provider", "state": {"Name": "minecraft:sandstone"}}
+            }]
+          },
+          "target": {"type": "minecraft:matching_blocks", "blocks": ["minecraft:dirt", "minecraft:grass_block"]},
+          "radius": {"type": "minecraft:uniform", "min_inclusive": 2, "max_inclusive": 6},
+          "half_height": 2
+        }},
+        "placement": [{"type": "minecraft:count", "count": 3}, {"type": "minecraft:in_square"},
+          {"type": "minecraft:heightmap", "heightmap": "OCEAN_FLOOR_WG"},
+          {"type": "minecraft:block_predicate_filter", "predicate":
+            {"type": "minecraft:matching_fluids", "fluids": "minecraft:water"}},
+          {"type": "minecraft:biome"}]
+      },
       "2": {
         "feature": {"type": "minecraft:sea_pickle", "config": {"count": 20}},
         "placement": [{"type": "minecraft:rarity_filter", "chance": 2},
@@ -65,7 +87,7 @@ fn deco() -> Decoration {
           {"type": "minecraft:biome"}]
       },
     }],
-    "biomes": [[[], [], [], [], [], [], [], [], [0, 1, 2]]],
+    "biomes": [[[], [], [], [], [], [], [], [], [0, 1, 2, 3]]],
     "skipped": []
   });
   let deco = Decoration::from_json(&config).unwrap();
@@ -73,9 +95,10 @@ fn deco() -> Decoration {
   deco
 }
 
-fn run(deco: &Decoration) -> Vec<(i32, i32, i32, String)> {
+fn run(deco: &Decoration) -> Vec<(i32, i32, i32, String)> { run_on(deco, Ocean { dirt: false }) }
+
+fn run_on(deco: &Decoration, mut ground: Ocean) -> Vec<(i32, i32, i32, String)> {
   let region = BTreeSet::from([0]);
-  let mut ground = Ocean;
   let mut level = Level::new(&deco.blocks, &mut ground);
   for cx in -3..3 {
     for cz in -3..3 {
@@ -138,4 +161,24 @@ fn sea_pickles_stand_on_the_floor() {
   let pickles = named(&blocks, "minecraft:sea_pickle").count();
   assert!(pickles > 20, "{pickles} sea pickles");
   assert!(named(&blocks, "minecraft:sea_pickle").all(|b| b.1 == FLOOR));
+}
+
+#[test]
+fn disks_replace_the_floor_they_target() {
+  let deco = deco();
+  let blocks = run_on(&deco, Ocean { dirt: true });
+  let sand: Vec<_> = named(&blocks, "minecraft:sand").collect();
+  assert!(sand.len() > 50, "{} sand blocks", sand.len());
+  // The disk reaches two blocks either way from the top of the floor.
+  assert!(sand.iter().all(|b| (FLOOR - 2..=FLOOR + 2).contains(&b.1)), "sand off the floor");
+  assert!(sand.iter().any(|b| b.1 == FLOOR - 1), "no sand in the floor block");
+}
+
+#[test]
+fn disks_leave_other_floors_alone() {
+  let deco = deco();
+  let blocks = run_on(&deco, Ocean { dirt: false });
+  // The top of the floor is sand already, which the disk does not target, but
+  // the dirt below it is within reach.
+  assert!(named(&blocks, "minecraft:sand").all(|b| b.1 <= FLOOR - 2), "sand over the floor");
 }
