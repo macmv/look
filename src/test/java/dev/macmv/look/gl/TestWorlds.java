@@ -71,4 +71,19 @@ final class TestWorlds {
     }
     return y == 59 ? TestScene.GRASS : (y >= 55 ? TestScene.DIRT : TestScene.STONE);
   };
+
+  /** Flat stone with a row of blocks at z = 6: glowstone, lava, redstone ore, plain stone for comparison, and glowstone again. */
+  static final TestScene.World EMISSIVE = (x, y, z) -> {
+    if (y < 60) return y < 57 ? TestScene.STONE : TestScene.DIRT;
+    if (y == 60 && z == 6 && x >= -4 && x <= 4 && (x & 1) == 0) {
+      return switch (x) {
+        case -4 -> TestScene.GLOWSTONE;
+        case -2 -> TestScene.LAVA;
+        case 0 -> TestScene.REDSTONE_ORE;
+        case 2 -> TestScene.STONE;
+        default -> TestScene.GLOWSTONE;
+      };
+    }
+    return 0;
+  };
 }

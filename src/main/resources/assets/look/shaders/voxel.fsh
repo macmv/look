@@ -1037,6 +1037,65 @@ vec3 heat(float x) {
 }
 
 #ifdef ENHANCED
+// --- Materials (docs/enhanced.md 5.1), Enhanced only -----------------------------------------------
+// One u32 per voxel id, see Materials.java for the layout. Other features read `materialOf(id)`:
+//   roughness, f0 (dielectric reflectance, or the albedo itself when `metal`) -> specular, reflections
+//   subsurface  -> foliage translucency (3.9)         flicker -> block light wobble (3.10)
+//   wetness     -> rain darkening and smoothing (4.9)  emission -> used below (5.4)
+// Only emission is consumed so far.
+uniform usamplerBuffer uMaterials;
+const float EMISSION_MAX = 4.0;   // Materials.EMISSION_MAX
+
+struct Material {
+  float roughness;     // 0 mirror .. 1 rough
+  float f0;            // reflectance at normal incidence of a dielectric, 0.04 typical
+  float emission;      // multiple of the albedo added to the HDR color, 0 for most blocks
+  bool metal;
+  bool subsurface;
+  bool flicker;
+  float wetness;       // 0..1, how much rain affects the block
+  bool texelEmission;  // emission applies only to bright saturated texels (flames, ore flecks)
+  bool texelSmooth;    // smoothness applies only to bright saturated texels (gems in ore)
+};
+
+Material materialOf(uint id) {
+  uint p = texelFetch(uMaterials, int(id)).r;
+  Material m;
+  m.roughness = float(p & 255u) / 255.0;
+  m.f0 = float((p >> 8) & 255u) / 255.0;
+  m.emission = float((p >> 16) & 255u) / 255.0 * EMISSION_MAX;
+  m.metal = ((p >> 24) & 1u) != 0u;
+  m.subsurface = ((p >> 25) & 1u) != 0u;
+  m.flicker = ((p >> 26) & 1u) != 0u;
+  m.wetness = float((p >> 27) & 7u) / 7.0;
+  m.texelEmission = ((p >> 30) & 1u) != 0u;
+  m.texelSmooth = ((p >> 31) & 1u) != 0u;
+  return m;
+}
+
+// 0..1: how much a texel looks like a glowing fleck rather than the host material. Bright and saturated.
+float texelGlow(vec3 albedo) {
+  float hi = max(max(albedo.r, albedo.g), albedo.b);
+  float chroma = hi - min(min(albedo.r, albedo.g), albedo.b);
+  return smoothstep(0.55, 0.85, hi) * smoothstep(0.15, 0.4, chroma);
+}
+
+// Emission of a texel, in multiples of its albedo: uniform for glowing cubes, masked for flames and flecks.
+float texelEmission(Material m, vec3 albedo) {
+  return m.emission * (m.texelEmission ? texelGlow(albedo) : 1.0);
+}
+
+// Roughness of a texel: gems inside an ore are smooth, the rock around them keeps the block's value.
+float texelRoughness(Material m, vec3 albedo) {
+  return m.texelSmooth ? mix(m.roughness, 0.1, texelGlow(albedo)) : m.roughness;
+}
+
+// Light added on top of the lit color, bypassing the lighting function (5.4).
+vec3 emissionOf(uint id, vec3 albedo) {
+  Material m = materialOf(id);
+  return albedo * texelEmission(m, albedo);
+}
+#define EMISSION(id, albedo) emissionOf(id, albedo)
 #ifndef SHADOW_PASS
 // ---------------------------------------------------------------------------------------------------
 // Sun shadows: lookups into the maps ShadowPass built, and the Enhanced lighting model on top of them.
@@ -1184,6 +1243,8 @@ vec3 enhancedLight(vec3 pos, vec3 n, vec2 light, float ao) {
   return direct + (ambient + blockRgb) * ao;
 }
 #endif
+#else
+#define EMISSION(id, albedo) vec3(0.0)
 #endif
 
 #ifdef SHADOW_PASS
@@ -1299,7 +1360,7 @@ void main() {
       albedo = mix(albedo, tint, 0.6);
     }
 
-    solidRgb = underFog(albedo * lit, tHit);
+    solidRgb = underFog(albedo * lit + EMISSION(id, albedo), tHit);
   }
 
   if (!water) {

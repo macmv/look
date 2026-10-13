@@ -220,6 +220,7 @@ public final class VoxelRenderer {
     GL33C.glUniform1i(p.loc("uFaces"), VoxelWorld.UNIT_FACES);
     GL33C.glUniform1i(p.loc("uAtlas"), VoxelWorld.UNIT_ATLAS);
     GL33C.glUniform1i(p.loc("uTint"), VoxelWorld.UNIT_TINT);
+    GL33C.glUniform1i(p.loc("uMaterials"), Materials.UNIT);
 
     // Angle one pixel covers, used to pick a mip level from the distance of a hit.
     float pixelAngle = 2f / (f.projection().m11() * Math.max(1, f.viewportHeight()));

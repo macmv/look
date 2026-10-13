@@ -423,4 +423,34 @@ class RenderTest {
     BufferedImage img = shadowScene(new float[] {0.6f, -0.55f, 0.1f}, 14.5, 66.0, -16.5, 41f, 22f);
     Golden.check("enhanced_moon", img);
   }
+
+  /**
+   * Emissive blocks in a dim world, Enhanced only: glowstone and lava glow all over, redstone ore only
+   * at its flecks, plain stone (second from the right) stays dark.
+   */
+  @Test
+  void enhancedEmission() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.EMISSIVE, 0, 6, 96)) {
+      var vanilla = scene.frame(W, H, 0.5, 62.0, 0.5, 0f, 14f, 70f, 0);
+      BufferedImage dim = gl.render(scene.enhanced(vanilla, 0.25f), scene, SKY, W, H);
+      Golden.check("enhanced_emission", dim);
+
+      // The same blocks in Vanilla get no emission: the glowstone is as dark as the stone around it.
+      BufferedImage plain = gl.render(scene.dimmed(vanilla, 0.25f), scene, SKY, W, H);
+      int glow = brightest(dim), glowVanilla = brightest(plain);
+      assertTrue(glow > glowVanilla + 40, "emission did not brighten the glowstone: " + glow + " vs " + glowVanilla);
+    }
+  }
+
+  /** Brightest channel in the box around the leftmost glowstone block. */
+  private static int brightest(BufferedImage img) {
+    int best = 0;
+    for (int y = 78; y < 104; y++) {
+      for (int x = 56; x < 90; x++) {
+        int p = img.getRGB(x, y);
+        best = Math.max(best, Math.max((p >> 16) & 255, Math.max((p >> 8) & 255, p & 255)));
+      }
+    }
+    return best;
+  }
 }
