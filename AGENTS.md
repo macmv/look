@@ -56,7 +56,7 @@ that (`HF_LEVELS`) are a ray-marched heightfield (`HeightField`) fed by tiles fr
   `ClientWorldDescriptor` receives it. The client regenerates terrain locally; nothing is cached.
 - `BlockClassifier`, `TintMap`, `LightMap` turn block ids/models/biomes/light into the u16 voxel ids
   and tables the shader reads. `TerrainExport` serializes the vanilla worldgen config for Rust.
-- `docs/LOADING.md` documents the tile / section / slot / GPU-visibility life cycles and what a
+- `docs/loading.md` documents the tile / section / slot / heightfield cell / GPU-visibility life cycles and what a
   Vulkan port would change; read it before touching residency or slot reuse.
 
 **Native side** (`native/`, crate `look_native`): pure Rust voxel data and a port of vanilla
