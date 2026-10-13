@@ -371,6 +371,22 @@ pub enum Feature {
   },
   /// `SimpleBlockFeature`, for the plants (`Blocks::is_plant`) only.
   SimpleBlock(PlantProvider),
+  /// `SeagrassFeature`: tall seagrass with `probability`, else short.
+  Seagrass {
+    probability: f64,
+    short:       Block,
+    tall:        Plant,
+  },
+  /// `KelpFeature`.
+  Kelp {
+    head: Block,
+    stem: Block,
+  },
+  /// `SeaPickleFeature`.
+  SeaPickle {
+    count:  IntProvider,
+    pickle: Block,
+  },
 }
 
 impl PlacedFeature {
@@ -379,7 +395,11 @@ impl PlacedFeature {
   pub fn places_plants(&self) -> bool {
     match &self.feature {
       Feature::Tree(_) | Feature::Mushroom(_) => false,
-      Feature::RandomPatch { .. } | Feature::SimpleBlock(_) => true,
+      Feature::RandomPatch { .. }
+      | Feature::SimpleBlock(_)
+      | Feature::Seagrass { .. }
+      | Feature::Kelp { .. }
+      | Feature::SeaPickle { .. } => true,
       Feature::RandomSelector { features, default } => {
         default.places_plants() || features.iter().any(|(f, _)| f.places_plants())
       }
@@ -541,6 +561,23 @@ fn parse_feature(blocks: &mut Blocks, v: &Value) -> Result<Feature> {
     "minecraft:simple_block" => {
       Feature::SimpleBlock(parse_plant_provider(blocks, field(config, "to_place")?)?)
     }
+    "minecraft:seagrass" => {
+      let tall = blocks.intern("minecraft:tall_seagrass");
+      let upper = blocks.intern("minecraft:tall_seagrass[half=upper]");
+      Feature::Seagrass {
+        probability: field(config, "probability")?.as_f64().ok_or("probability is not a number")?,
+        short:       Block::new(blocks.intern("minecraft:seagrass")),
+        tall:        Plant { lower: Block::new(tall), upper: Some(Block::new(upper)) },
+      }
+    }
+    "minecraft:kelp" => Feature::Kelp {
+      head: Block::new(blocks.intern("minecraft:kelp")),
+      stem: Block::new(blocks.intern("minecraft:kelp_plant")),
+    },
+    "minecraft:sea_pickle" => Feature::SeaPickle {
+      count:  IntProvider::parse(field(config, "count")?)?,
+      pickle: Block::new(blocks.intern("minecraft:sea_pickle")),
+    },
     "minecraft:random_selector" => {
       let mut features = Vec::new();
       for e in field(config, "features")?.as_array().ok_or("features is not a list")? {

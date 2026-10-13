@@ -4,8 +4,8 @@
 //! drawn from in the same order.
 
 use super::{
-  block::{mushroom, Block},
-  config::{Feature, Modifier, MushroomConfig, PlacedFeature, Plant, Predicate},
+  block::{mushroom, Block, WATER},
+  config::{Feature, IntProvider, Modifier, MushroomConfig, PlacedFeature, Plant, Predicate},
   tree::{place_tree, P},
   world::{Heightmap, Level},
 };
@@ -167,11 +167,120 @@ fn place_feature(level: &mut Level, rng: &mut WorldgenRandom, feature: &Feature,
       let pick = if rng.next_bool() { when_true } else { when_false };
       place(level, rng, pick, pos, None)
     }
+    Feature::Seagrass { probability, short, tall } => {
+      place_seagrass(level, rng, *probability, *short, tall, pos)
+    }
+    Feature::Kelp { head, stem } => place_kelp(level, rng, *head, *stem, pos),
+    Feature::SeaPickle { count, pickle } => place_sea_pickles(level, rng, count, *pickle, pos),
     Feature::SimpleRandom(list) => {
       let i = rng.next_int_bound(list.len() as i32) as usize;
       place(level, rng, &list[i], pos, None)
     }
   }
+}
+
+fn is_water(level: &mut Level, x: i32, y: i32, z: i32) -> bool { level.get(x, y, z).id == WATER }
+
+/// `SeagrassFeature`.
+fn place_seagrass(
+  level: &mut Level,
+  rng: &mut WorldgenRandom,
+  probability: f64,
+  short: Block,
+  tall: &Plant,
+  pos: P,
+) -> bool {
+  let dx = rng.next_int_bound(8) - rng.next_int_bound(8);
+  let dz = rng.next_int_bound(8) - rng.next_int_bound(8);
+  let (x, z) = (pos.0 + dx, pos.2 + dz);
+  let y = level.height(Heightmap::OceanFloor, x, z);
+  if !is_water(level, x, y, z) {
+    return false;
+  }
+  let is_tall = rng.next_double() < probability;
+  let below = level.get(x, y - 1, z);
+  if !level.blocks.has_sturdy_top(below) {
+    return false;
+  }
+  if is_tall {
+    if is_water(level, x, y + 1, z) {
+      level.set(x, y, z, tall.lower);
+      level.set(x, y + 1, z, tall.upper.unwrap_or(tall.lower));
+    }
+  } else {
+    level.set(x, y, z, short);
+  }
+  true
+}
+
+/// `KelpFeature`: a stem of up to ten blocks with a head on top, or, where the
+/// water runs out first, a head on the last block that fit.
+fn place_kelp(
+  level: &mut Level,
+  rng: &mut WorldgenRandom,
+  head: Block,
+  stem: Block,
+  pos: P,
+) -> bool {
+  let (x, z) = (pos.0, pos.2);
+  let mut y = level.height(Heightmap::OceanFloor, x, z);
+  if !is_water(level, x, y, z) {
+    return false;
+  }
+  let mut placed = 0;
+  let height = 1 + rng.next_int_bound(10);
+  for l in 0..=height {
+    // `GrowingPlantBlock.canSurvive` of a stem: kelp or a sturdy block below.
+    let below = level.get(x, y - 1, z);
+    let survives = level.blocks.is_kelp(below) || level.blocks.has_sturdy_top(below);
+    if is_water(level, x, y, z) && is_water(level, x, y + 1, z) && survives {
+      if l == height {
+        level.set(x, y, z, head);
+        rng.next_int_bound(4); // the head's age
+        placed += 1;
+      } else {
+        level.set(x, y, z, stem);
+      }
+    } else if l > 0 {
+      // The head goes on the last block of the stem, which needs kelp or a
+      // sturdy block under it, and not a head.
+      let under = level.get(x, y - 2, z);
+      let holds = level.blocks.is_kelp(under) || level.blocks.has_sturdy_top(under);
+      if holds && under.id != head.id {
+        level.set(x, y - 1, z, head);
+        rng.next_int_bound(4);
+        placed += 1;
+      }
+      break;
+    }
+    y += 1;
+  }
+  placed > 0
+}
+
+/// `SeaPickleFeature`.
+fn place_sea_pickles(
+  level: &mut Level,
+  rng: &mut WorldgenRandom,
+  count: &IntProvider,
+  pickle: Block,
+  pos: P,
+) -> bool {
+  let n = count.sample(rng);
+  let mut placed = 0;
+  for _ in 0..n {
+    let dx = rng.next_int_bound(8) - rng.next_int_bound(8);
+    let dz = rng.next_int_bound(8) - rng.next_int_bound(8);
+    let (x, z) = (pos.0 + dx, pos.2 + dz);
+    let y = level.height(Heightmap::OceanFloor, x, z);
+    rng.next_int_bound(4); // how many pickles
+    let below = level.get(x, y - 1, z);
+    if is_water(level, x, y, z) && level.blocks.has_sturdy_top(below) {
+      level.set(x, y, z, pickle);
+      placed += 1;
+    }
+  }
+  placed > 0
 }
 
 /// `AbstractHugeMushroomFeature` and its two caps.

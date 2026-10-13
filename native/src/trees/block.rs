@@ -37,8 +37,11 @@ pub const SNOW_BLOCK: BlockId = 10;
 pub const VINE: BlockId = 11;
 pub const COCOA: BlockId = 12;
 pub const BEE_NEST: BlockId = 13;
+pub const CLAY: BlockId = 14;
+pub const SANDSTONE: BlockId = 15;
+pub const MUD: BlockId = 16;
 
-const BUILTIN: [&str; 14] = [
+const BUILTIN: [&str; 17] = [
   "minecraft:air",
   "minecraft:water",
   "minecraft:grass_block",
@@ -53,6 +56,9 @@ const BUILTIN: [&str; 14] = [
   "minecraft:vine",
   "minecraft:cocoa",
   "minecraft:bee_nest",
+  "minecraft:clay",
+  "minecraft:sandstone",
+  "minecraft:mud",
 ];
 
 /// Vine faces, as state bits.
@@ -75,37 +81,42 @@ pub mod mushroom {
 }
 
 mod class {
-  pub const AIR: u16 = 1;
-  pub const FLUID: u16 = 2;
+  pub const AIR: u32 = 1;
+  pub const FLUID: u32 = 2;
   /// The `dirt` block tag.
-  pub const DIRT: u16 = 4;
-  pub const GRASS_BLOCK: u16 = 8;
-  pub const MYCELIUM: u16 = 16;
-  pub const LOG: u16 = 32;
-  pub const LEAVES: u16 = 64;
+  pub const DIRT: u32 = 4;
+  pub const GRASS_BLOCK: u32 = 8;
+  pub const MYCELIUM: u32 = 16;
+  pub const LOG: u32 = 32;
+  pub const LEAVES: u32 = 64;
   /// `blocksMotion`: what the ocean floor heightmap counts.
-  pub const SOLID: u16 = 128;
+  pub const SOLID: u32 = 128;
   /// `isSolidRender`: a full, light blocking cube.
-  pub const OPAQUE: u16 = 256;
-  pub const VINE: u16 = 512;
+  pub const OPAQUE: u32 = 256;
+  pub const VINE: u32 = 512;
   /// The `mushroom_grow_block` tag.
-  pub const MUSHROOM_GROW: u16 = 1024;
+  pub const MUSHROOM_GROW: u32 = 1024;
   /// Part of the `replaceable_by_trees` tag besides leaves.
-  pub const REPLACEABLE: u16 = 2048;
+  pub const REPLACEABLE: u32 = 2048;
   /// A plant that stands on the `dirt` tag (`BushBlock`).
-  pub const PLANT: u16 = 4096;
+  pub const PLANT: u32 = 4096;
   /// A plant that also stands on sand and terracotta (`DeadBushBlock`).
-  pub const DESERT_PLANT: u16 = 8192;
+  pub const DESERT_PLANT: u32 = 8192;
   /// Sand and terracotta, which desert plants stand on.
-  pub const DESERT_GROUND: u16 = 16384;
+  pub const DESERT_GROUND: u32 = 16384;
   /// A plant two blocks tall (`DoublePlantBlock`).
-  pub const DOUBLE: u16 = 32768;
+  pub const DOUBLE: u32 = 32768;
+  /// A plant that stands in water on any sturdy block: seagrass, kelp and sea
+  /// pickles.
+  pub const WATER_PLANT: u32 = 65536;
+  /// Kelp, the head or the stem.
+  pub const KELP: u32 = 131072;
 }
 
 /// The names the configs mention, numbered, with the classes of each.
 pub struct Blocks {
   names:   Vec<String>,
-  classes: Vec<u16>,
+  classes: Vec<u32>,
   index:   HashMap<String, BlockId>,
 }
 
@@ -138,7 +149,7 @@ impl Blocks {
 
   pub fn lookup(&self, name: &str) -> Option<BlockId> { self.index.get(name).copied() }
 
-  fn has(&self, b: Block, c: u16) -> bool { self.classes[b.id as usize] & c != 0 }
+  fn has(&self, b: Block, c: u32) -> bool { self.classes[b.id as usize] & c != 0 }
 
   pub fn is_air(&self, b: Block) -> bool { self.has(b, class::AIR) }
 
@@ -148,13 +159,26 @@ impl Blocks {
   pub fn is_dirt(&self, b: Block) -> bool { self.has(b, class::DIRT) }
 
   /// A plant `Feature`s may place with a simple block feature.
-  pub fn is_plant(&self, b: Block) -> bool { self.has(b, class::PLANT) }
+  pub fn is_plant(&self, b: Block) -> bool { self.has(b, class::PLANT | class::WATER_PLANT) }
+
+  /// A plant that grows under water (seagrass, kelp, sea pickles).
+  pub fn is_water_plant(&self, b: Block) -> bool { self.has(b, class::WATER_PLANT) }
+
+  /// Kelp, the head or the stem.
+  pub fn is_kelp(&self, b: Block) -> bool { self.has(b, class::KELP) }
+
+  /// Whether the top face of a block is a full square, which seagrass, kelp and
+  /// sea pickles stand on.
+  pub fn has_sturdy_top(&self, b: Block) -> bool { self.has(b, class::OPAQUE) }
 
   pub fn is_double_plant(&self, b: Block) -> bool { self.has(b, class::DOUBLE) }
 
   /// `BushBlock.mayPlaceOn` (or `DeadBushBlock`'s) for a plant and the block
   /// below it.
   pub fn plant_survives(&self, plant: Block, below: Block) -> bool {
+    if self.is_water_plant(plant) {
+      return self.has_sturdy_top(below);
+    }
     self.is_dirt(below)
       || (self.has(plant, class::DESERT_PLANT) && self.has(below, class::DESERT_GROUND))
   }
@@ -193,7 +217,7 @@ impl Default for Blocks {
   fn default() -> Self { Self::new() }
 }
 
-fn classify(name: &str) -> u16 {
+fn classify(name: &str) -> u32 {
   use class::*;
   // `name[half=upper]` is the same block as `name`, in another state.
   let name = name.split('[').next().unwrap_or(name);
@@ -215,10 +239,12 @@ fn classify(name: &str) -> u16 {
       return DIRT | SOLID | OPAQUE
     }
     "crimson_nylium" | "warped_nylium" => return SOLID | OPAQUE | MUSHROOM_GROW,
+    "seagrass" => return REPLACEABLE | WATER_PLANT,
+    "sea_pickle" => return WATER_PLANT,
+    "tall_seagrass" => return REPLACEABLE | WATER_PLANT | DOUBLE,
+    "kelp" | "kelp_plant" => return WATER_PLANT | KELP,
     "glow_lichen" | "sunflower" | "lilac" | "rose_bush" | "peony" | "hanging_roots"
-    | "pitcher_plant" | "seagrass" | "tall_seagrass" | "snow" | "moss_carpet" => {
-      return REPLACEABLE
-    }
+    | "pitcher_plant" | "snow" | "moss_carpet" => return REPLACEABLE,
     _ => {}
   }
   if short.ends_with("_leaves") {
