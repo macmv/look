@@ -209,7 +209,17 @@ final class TestScene implements AutoCloseable {
         0f, 1f, 0f,
         WATER,
         new float[] {0.02f, 0.02f, 0.2f}, -8f, 96f,
-        63f);
+        63f,
+        null);
+  }
+
+  /** The same frame drawn the Enhanced way: HDR target, then resolve. */
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f) {
+    VoxelRenderer.Atmosphere atm = new VoxelRenderer.Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f);
+    return new VoxelRenderer.Frame(
+        f.view(), f.projection(), f.camX(), f.camY(), f.camZ(), f.gridRows(), f.levelParams(), f.maxDist(), f.minY(),
+        f.atlasWidth(), f.atlasHeight(), f.atlasMaxLevel(), f.viewportHeight(), f.debug(), f.hfIds(), f.time(),
+        f.skyDarken(), f.ambientLight(), f.waterId(), f.fogColor(), f.fogStart(), f.fogEnd(), f.seaLevel(), atm);
   }
 
   /** Binds everything to its unit, like {@link VoxelWorld#bind}. */

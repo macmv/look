@@ -178,4 +178,32 @@ class RenderTest {
       Golden.check("hills_levels", img);
     }
   }
+
+  /**
+   * Enhanced mode draws through the HDR target and resolve pass, and until it gets its own lighting
+   * it must look like Vanilla. The 16-bit float target may move a value by a step or two.
+   */
+  @Test
+  void enhancedMatchesVanilla() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
+      for (double[] cam : new double[][] {{-17.5, 63.0, -9.5, 300, 22}, {-3.5, 56.5, -2.5, 300, 12}}) {
+        var vanilla = scene.frame(W, H, cam[0], cam[1], cam[2], (float) cam[3], (float) cam[4], 70f, 0);
+        BufferedImage a = gl.render(vanilla, scene, SKY, W, H);
+        BufferedImage b = gl.render(scene.enhanced(vanilla), scene, SKY, W, H);
+        int bad = 0;
+        for (int y = 0; y < H; y++) {
+          for (int x = 0; x < W; x++) {
+            int p = a.getRGB(x, y), q = b.getRGB(x, y);
+            for (int s = 0; s < 24; s += 8) {
+              if (Math.abs(((p >> s) & 255) - ((q >> s) & 255)) > 2) {
+                bad++;
+                break;
+              }
+            }
+          }
+        }
+        assertTrue(bad == 0, bad + " pixels differ between Vanilla and Enhanced");
+      }
+    }
+  }
 }

@@ -31,6 +31,9 @@ Java calls Rust through JNI. The calls are coarse and use direct buffers.
 5. The mixin cancels the `solid`, `cutout_mipped` and `cutout` layers. Vanilla then draws entities,
    block entities and the translucent layer. These pass the depth test against our depth.
 
+In Enhanced mode (F6) step 4 draws into an HDR target with a second shader program instead, and
+`EnhancedTarget.resolve` copies it, with depth, into the main framebuffer. See `enhanced.md`.
+
 Translucent blocks (water, glass) are still vanilla.
 
 ## 3. Level-of-detail pyramid

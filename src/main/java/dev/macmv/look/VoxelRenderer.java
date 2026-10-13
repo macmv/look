@@ -17,32 +17,24 @@ import org.lwjgl.system.MemoryStack;
  * depth into the main framebuffer. The world comes from {@link VoxelWorld}.
  */
 public final class VoxelRenderer {
-  private static int program;
+  /** The Vanilla program, and the one compiled with {@code #define ENHANCED}, made on first use. */
+  private static Program vanilla;
+  private static Program enhanced;
   private static int vao;
-  private static int uInvViewProj;
-  private static int uView;
-  private static int uProj;
-  private static int uCamBlock;
-  private static int uCamFrac;
-  private static int uGrid;
-  private static int uLevels;
-  private static int uBase;
-  private static int uLevel;
-  private static int uMaxDist;
-  private static int uDebug;
-  private static int uHfEnabled;
-  private static int uHfIds;
-  private static int uAtlasSize;
-  private static int uMaxLod;
-  private static int uPixelAngle;
-  private static int uMinY;
-  private static int uSkyDarken;
-  private static int uAmbientLight;
-  private static int uTime;
-  private static int uFogColor;
-  private static int uWaterId;
-  private static int uFogRange;
-  private static int uSeaLevel;
+
+  /** A linked program with its uniform locations looked up once. */
+  private static final class Program {
+    final int id;
+    private final java.util.HashMap<String, Integer> locations = new java.util.HashMap<>();
+
+    Program(int id) {
+      this.id = id;
+    }
+
+    int loc(String name) {
+      return locations.computeIfAbsent(name, n -> GL33C.glGetUniformLocation(id, n));
+    }
+  }
 
   private VoxelRenderer() {}
 
@@ -56,6 +48,7 @@ public final class VoxelRenderer {
    * @param waterId voxel id of a whole water voxel, whose sprite and tint the water surface uses
    * @param fogColor vanilla's fog color this frame, used under water
    * @param fogStart where vanilla's fog starts and ends this frame, which under water is the water fog
+   * @param atmosphere sun, moon and weather for the Enhanced program, null for Vanilla
    */
   public record Frame(
       Matrix4f view,
@@ -80,12 +73,23 @@ public final class VoxelRenderer {
       float[] fogColor,
       float fogStart,
       float fogEnd,
-      float seaLevel) {}
+      float seaLevel,
+      Atmosphere atmosphere) {}
+
+  /**
+   * What the Enhanced program needs to know about the sky. A frame with one is drawn with the
+   * Enhanced program (into the HDR target, see {@link EnhancedTarget}); a frame without is Vanilla.
+   *
+   * @param sunDir unit vector toward the sun, world space
+   * @param moonDir unit vector toward the moon
+   * @param moonPhase 0 (full) to 7, as {@code getMoonPhase}
+   * @param rain smoothed rain level, 0..1
+   * @param thunder smoothed thunder level, 0..1
+   */
+  public record Atmosphere(float[] sunDir, float[] moonDir, int moonPhase, float rain, float thunder) {}
 
   /** Must be called on the render thread with the main framebuffer bound. */
   public static void render(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ) {
-    if (program == 0) init();
-
     long updateStart = System.nanoTime();
     VoxelWorld.update();
     RenderStats.addUpdate(System.nanoTime() - updateStart);
@@ -110,13 +114,23 @@ public final class VoxelRenderer {
         sky[0], sky[1], sky[2],
         BlockClassifier.waterId(8),
         RenderSystem.getShaderFogColor(), RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd(),
-        Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getSeaLevel() : 63f);
+        Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getSeaLevel() : 63f,
+        LookState.enhanced ? atmosphere() : null);
 
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
 
     RenderStats.beginGpu();
-    draw(frame);
+    if (frame.atmosphere() != null) {
+      // Own HDR target first, then resolve it into the main framebuffer. Vanilla draws on top of that.
+      var main = Minecraft.getInstance().getMainRenderTarget();
+      EnhancedTarget.begin(main.width, main.height);
+      draw(frame);
+      main.bindWrite(true);
+      EnhancedTarget.resolve();
+    } else {
+      draw(frame);
+    }
     RenderStats.endGpu();
 
     GL33C.glActiveTexture(prevUnit);
@@ -128,20 +142,25 @@ public final class VoxelRenderer {
    * their units ({@link VoxelWorld#bind} does that in game).
    */
   public static void draw(Frame f) {
-    if (program == 0) init();
+    Program p = program(f.atmosphere() != null);
 
     // Vanilla caches GL state in GlStateManager, so go through it for anything it tracks.
     // Opaque pixels write alpha 1, so blending only shows on water with nothing solid behind it.
-    RenderSystem.enableBlend();
-    RenderSystem.blendFuncSeparate(
-        GlStateManager.SourceFactor.SRC_ALPHA, GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
-        GlStateManager.SourceFactor.ONE, GlStateManager.DestFactor.ZERO);
+    // Enhanced draws into a cleared HDR target instead, and the resolve pass does the blending.
+    if (f.atmosphere() == null) {
+      RenderSystem.enableBlend();
+      RenderSystem.blendFuncSeparate(
+          GlStateManager.SourceFactor.SRC_ALPHA, GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
+          GlStateManager.SourceFactor.ONE, GlStateManager.DestFactor.ZERO);
+    } else {
+      RenderSystem.disableBlend();
+    }
     RenderSystem.disableCull();
     RenderSystem.enableDepthTest();
     RenderSystem.depthFunc(GL33C.GL_LEQUAL);
     RenderSystem.depthMask(true);
 
-    GlStateManager._glUseProgram(program);
+    GlStateManager._glUseProgram(p.id);
     GlStateManager._glBindVertexArray(vao);
 
     try (MemoryStack stack = MemoryStack.stackPush()) {
@@ -150,56 +169,65 @@ public final class VoxelRenderer {
       Matrix4f invViewProj = new Matrix4f(f.projection()).mul(f.view()).invert();
 
       invViewProj.get(buf);
-      GL33C.glUniformMatrix4fv(uInvViewProj, false, buf);
+      GL33C.glUniformMatrix4fv(p.loc("uInvViewProj"), false, buf);
       f.view().get(buf);
-      GL33C.glUniformMatrix4fv(uView, false, buf);
+      GL33C.glUniformMatrix4fv(p.loc("uView"), false, buf);
       f.projection().get(buf);
-      GL33C.glUniformMatrix4fv(uProj, false, buf);
+      GL33C.glUniformMatrix4fv(p.loc("uProj"), false, buf);
     }
 
     int bx = (int) Math.floor(f.camX());
     int by = (int) Math.floor(f.camY());
     int bz = (int) Math.floor(f.camZ());
-    GL33C.glUniform3i(uCamBlock, bx, by, bz);
-    GL33C.glUniform3f(uCamFrac, (float) (f.camX() - bx), (float) (f.camY() - by), (float) (f.camZ() - bz));
-    GL33C.glUniform3i(uGrid, VoxelWorld.GRID_XZ, f.gridRows(), VoxelWorld.GRID_XZ);
-    GL33C.glUniform1i(uLevels, Lod.LEVELS);
-    GL33C.glUniform1f(uBase, Lod.BASE_BLOCKS);
-    GL33C.glUniform3iv(uLevel, f.levelParams());
+    GL33C.glUniform3i(p.loc("uCamBlock"), bx, by, bz);
+    GL33C.glUniform3f(p.loc("uCamFrac"), (float) (f.camX() - bx), (float) (f.camY() - by), (float) (f.camZ() - bz));
+    GL33C.glUniform3i(p.loc("uGrid"), VoxelWorld.GRID_XZ, f.gridRows(), VoxelWorld.GRID_XZ);
+    GL33C.glUniform1i(p.loc("uLevels"), Lod.LEVELS);
+    GL33C.glUniform1f(p.loc("uBase"), Lod.BASE_BLOCKS);
+    GL33C.glUniform3iv(p.loc("uLevel"), f.levelParams());
 
-    GL33C.glUniform1f(uMaxDist, f.maxDist());
+    GL33C.glUniform1f(p.loc("uMaxDist"), f.maxDist());
 
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uIndirection"), VoxelWorld.UNIT_INDIRECTION);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uBricks"), VoxelWorld.UNIT_BRICKS);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uColors"), VoxelWorld.UNIT_COLORS);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uFaces"), VoxelWorld.UNIT_FACES);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uAtlas"), VoxelWorld.UNIT_ATLAS);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uTint"), VoxelWorld.UNIT_TINT);
+    GL33C.glUniform1i(p.loc("uIndirection"), VoxelWorld.UNIT_INDIRECTION);
+    GL33C.glUniform1i(p.loc("uBricks"), VoxelWorld.UNIT_BRICKS);
+    GL33C.glUniform1i(p.loc("uColors"), VoxelWorld.UNIT_COLORS);
+    GL33C.glUniform1i(p.loc("uFaces"), VoxelWorld.UNIT_FACES);
+    GL33C.glUniform1i(p.loc("uAtlas"), VoxelWorld.UNIT_ATLAS);
+    GL33C.glUniform1i(p.loc("uTint"), VoxelWorld.UNIT_TINT);
 
     // Angle one pixel covers, used to pick a mip level from the distance of a hit.
     float pixelAngle = 2f / (f.projection().m11() * Math.max(1, f.viewportHeight()));
-    GL33C.glUniform2f(uAtlasSize, f.atlasWidth(), f.atlasHeight());
-    GL33C.glUniform1f(uMaxLod, f.atlasMaxLevel());
-    GL33C.glUniform1f(uPixelAngle, pixelAngle);
-    GL33C.glUniform1i(uMinY, f.minY());
+    GL33C.glUniform2f(p.loc("uAtlasSize"), f.atlasWidth(), f.atlasHeight());
+    GL33C.glUniform1f(p.loc("uMaxLod"), f.atlasMaxLevel());
+    GL33C.glUniform1f(p.loc("uPixelAngle"), pixelAngle);
+    GL33C.glUniform1i(p.loc("uMinY"), f.minY());
 
-    GL33C.glUniform1i(uDebug, f.debug());
-    GL33C.glUniform1i(uHfEnabled, f.hfIds() != null ? 1 : 0);
-    if (f.hfIds() != null) GL33C.glUniform1iv(uHfIds, f.hfIds());
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfHeight"), HeightField.UNIT_HEIGHT);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfAttr"), HeightField.UNIT_ATTR);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfTiles"), HeightField.UNIT_TILES);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfSuper"), HeightField.UNIT_SUPER);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfCeiling"), HeightField.ceiling());
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLightIndirection"), LightMap.UNIT_INDIRECTION);
-    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLight"), LightMap.UNIT_LIGHT);
-    GL33C.glUniform1f(uTime, f.time());
-    GL33C.glUniform1f(uSkyDarken, f.skyDarken());
-    GL33C.glUniform1f(uAmbientLight, f.ambientLight());
-    GL33C.glUniform1i(uWaterId, f.waterId());
-    GL33C.glUniform3f(uFogColor, f.fogColor()[0], f.fogColor()[1], f.fogColor()[2]);
-    GL33C.glUniform2f(uFogRange, f.fogStart(), f.fogEnd());
-    GL33C.glUniform1f(uSeaLevel, f.seaLevel());
+    GL33C.glUniform1i(p.loc("uDebug"), f.debug());
+    GL33C.glUniform1i(p.loc("uHfEnabled"), f.hfIds() != null ? 1 : 0);
+    if (f.hfIds() != null) GL33C.glUniform1iv(p.loc("uHfIds"), f.hfIds());
+    GL33C.glUniform1i(p.loc("uHfHeight"), HeightField.UNIT_HEIGHT);
+    GL33C.glUniform1i(p.loc("uHfAttr"), HeightField.UNIT_ATTR);
+    GL33C.glUniform1i(p.loc("uHfTiles"), HeightField.UNIT_TILES);
+    GL33C.glUniform1i(p.loc("uHfSuper"), HeightField.UNIT_SUPER);
+    GL33C.glUniform1i(p.loc("uHfCeiling"), HeightField.ceiling());
+    GL33C.glUniform1i(p.loc("uLightIndirection"), LightMap.UNIT_INDIRECTION);
+    GL33C.glUniform1i(p.loc("uLight"), LightMap.UNIT_LIGHT);
+    GL33C.glUniform1f(p.loc("uTime"), f.time());
+    GL33C.glUniform1f(p.loc("uSkyDarken"), f.skyDarken());
+    GL33C.glUniform1f(p.loc("uAmbientLight"), f.ambientLight());
+    GL33C.glUniform1i(p.loc("uWaterId"), f.waterId());
+    GL33C.glUniform3f(p.loc("uFogColor"), f.fogColor()[0], f.fogColor()[1], f.fogColor()[2]);
+    GL33C.glUniform2f(p.loc("uFogRange"), f.fogStart(), f.fogEnd());
+    GL33C.glUniform1f(p.loc("uSeaLevel"), f.seaLevel());
+
+    Atmosphere atm = f.atmosphere();
+    if (atm != null) {
+      GL33C.glUniform3f(p.loc("uSunDir"), atm.sunDir()[0], atm.sunDir()[1], atm.sunDir()[2]);
+      GL33C.glUniform3f(p.loc("uMoonDir"), atm.moonDir()[0], atm.moonDir()[1], atm.moonDir()[2]);
+      GL33C.glUniform1i(p.loc("uMoonPhase"), atm.moonPhase());
+      GL33C.glUniform1f(p.loc("uRain"), atm.rain());
+      GL33C.glUniform1f(p.loc("uThunder"), atm.thunder());
+    }
 
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
     RenderSystem.disableBlend();
@@ -228,52 +256,64 @@ public final class VoxelRenderer {
     return new float[] {time, skyDarken, ambient};
   }
 
-  private static void init() {
-    int vs = compile(GL33C.GL_VERTEX_SHADER, "voxel.vsh");
-    int fs = compile(GL33C.GL_FRAGMENT_SHADER, "voxel.fsh");
+  /** Sun, moon and weather from the client level, for the Enhanced program. */
+  private static Atmosphere atmosphere() {
+    ClientLevel level = Minecraft.getInstance().level;
+    float partial = Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
+    if (level == null) return new Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f);
 
-    program = GL33C.glCreateProgram();
-    GL33C.glAttachShader(program, vs);
-    GL33C.glAttachShader(program, fs);
-    GL33C.glLinkProgram(program);
-    if (GL33C.glGetProgrami(program, GL33C.GL_LINK_STATUS) == 0) {
-      throw new IllegalStateException("Failed to link voxel program: " + GL33C.glGetProgramInfoLog(program));
+    // Vanilla turns the sky about the z axis: the sun is overhead at angle 0 and rises toward +x.
+    float angle = level.getSunAngle(partial);
+    float sx = -(float) Math.sin(angle), sy = (float) Math.cos(angle);
+    return new Atmosphere(
+        new float[] {sx, sy, 0f}, new float[] {-sx, -sy, 0f},
+        level.getMoonPhase(), level.getRainLevel(partial), level.getThunderLevel(partial));
+  }
+
+  private static Program program(boolean enhancedMode) {
+    if (vao == 0) {
+      // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
+      vao = GL33C.glGenVertexArrays();
+    }
+    if (enhancedMode) {
+      if (enhanced == null) enhanced = link("#define ENHANCED\n");
+      return enhanced;
+    }
+    if (vanilla == null) vanilla = link("");
+    return vanilla;
+  }
+
+  /** Links the raycast program; {@code defines} go right after {@code #version}, so Vanilla's source is unchanged. */
+  private static Program link(String defines) {
+    int vs = compile(GL33C.GL_VERTEX_SHADER, "voxel.vsh", "");
+    int fs = compile(GL33C.GL_FRAGMENT_SHADER, "voxel.fsh", defines);
+
+    int id = GL33C.glCreateProgram();
+    GL33C.glAttachShader(id, vs);
+    GL33C.glAttachShader(id, fs);
+    GL33C.glLinkProgram(id);
+    if (GL33C.glGetProgrami(id, GL33C.GL_LINK_STATUS) == 0) {
+      throw new IllegalStateException("Failed to link voxel program: " + GL33C.glGetProgramInfoLog(id));
     }
     GL33C.glDeleteShader(vs);
     GL33C.glDeleteShader(fs);
-
-    uInvViewProj = GL33C.glGetUniformLocation(program, "uInvViewProj");
-    uView = GL33C.glGetUniformLocation(program, "uView");
-    uProj = GL33C.glGetUniformLocation(program, "uProj");
-    uCamBlock = GL33C.glGetUniformLocation(program, "uCamBlock");
-    uCamFrac = GL33C.glGetUniformLocation(program, "uCamFrac");
-    uGrid = GL33C.glGetUniformLocation(program, "uGrid");
-    uLevels = GL33C.glGetUniformLocation(program, "uLevels");
-    uBase = GL33C.glGetUniformLocation(program, "uBase");
-    uLevel = GL33C.glGetUniformLocation(program, "uLevel");
-    uMaxDist = GL33C.glGetUniformLocation(program, "uMaxDist");
-    uDebug = GL33C.glGetUniformLocation(program, "uDebug");
-    uHfEnabled = GL33C.glGetUniformLocation(program, "uHfEnabled");
-    uHfIds = GL33C.glGetUniformLocation(program, "uHfIds");
-    uAtlasSize = GL33C.glGetUniformLocation(program, "uAtlasSize");
-    uMaxLod = GL33C.glGetUniformLocation(program, "uMaxLod");
-    uPixelAngle = GL33C.glGetUniformLocation(program, "uPixelAngle");
-    uSkyDarken = GL33C.glGetUniformLocation(program, "uSkyDarken");
-    uAmbientLight = GL33C.glGetUniformLocation(program, "uAmbientLight");
-    uMinY = GL33C.glGetUniformLocation(program, "uMinY");
-    uTime = GL33C.glGetUniformLocation(program, "uTime");
-    uFogColor = GL33C.glGetUniformLocation(program, "uFogColor");
-    uWaterId = GL33C.glGetUniformLocation(program, "uWaterId");
-    uFogRange = GL33C.glGetUniformLocation(program, "uFogRange");
-    uSeaLevel = GL33C.glGetUniformLocation(program, "uSeaLevel");
-
-    // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
-    vao = GL33C.glGenVertexArrays();
+    return new Program(id);
   }
 
-  static int compile(int type, String name) {
+  static int vao() {
+    program(false);
+    return vao;
+  }
+
+  static int compile(int type, String name, String defines) {
     int shader = GL33C.glCreateShader(type);
-    GL33C.glShaderSource(shader, readShader(name));
+    String source = readShader(name);
+    if (!defines.isEmpty()) {
+      // #version has to stay the first line.
+      int eol = source.indexOf('\n') + 1;
+      source = source.substring(0, eol) + defines + source.substring(eol);
+    }
+    GL33C.glShaderSource(shader, source);
     GL33C.glCompileShader(shader);
     if (GL33C.glGetShaderi(shader, GL33C.GL_COMPILE_STATUS) == 0) {
       throw new IllegalStateException("Failed to compile " + name + ": " + GL33C.glGetShaderInfoLog(shader));
@@ -281,7 +321,7 @@ public final class VoxelRenderer {
     return shader;
   }
 
-  private static String readShader(String name) {
+  static String readShader(String name) {
     String path = "/assets/" + LookMod.ID + "/shaders/" + name;
     try (InputStream in = VoxelRenderer.class.getResourceAsStream(path)) {
       if (in == null) throw new IllegalStateException("Missing shader " + path);

@@ -6,8 +6,11 @@ Render Mode has two settings (F6, `LookState.enhanced`):
 - **Enhanced**: the target is the feature set of Complementary Shaders (Reimagined and Unbound):
   sun and moon shadows, god rays, waves, reflections, atmosphere, clouds, bloom and so on.
 
-This document lists the features of that pack and says how each one is built here. Nothing below
-exists yet. `LookState.enhanced` has no consumers so far.
+This document lists the features of that pack and says how each one is built here. Only step 1 of
+section 11 exists so far: with Enhanced on, the world is drawn by a second program (`ENHANCED`
+define) into an HDR target (`EnhancedTarget`) and resolved into the main framebuffer with a plain
+tonemap, looking the same as Vanilla. The sun, moon and rain uniforms are declared and set
+(`VoxelRenderer.Atmosphere`) but nothing reads them yet.
 
 The feature list comes from memory of the pack's option menus. It is probably not complete. Before
 building a section, check the pack's actual option list for that area.

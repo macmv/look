@@ -44,6 +44,15 @@ uniform vec3 uFogColor;           // vanilla's fog this frame, used when the cam
 uniform vec2 uFogRange;           // fog start and end
 uniform float uSeaLevel;          // height of the sea: the far heightfield stores the seabed under it, and water fills up to here
 
+#ifdef ENHANCED
+// Compiled in only for Enhanced mode (docs/enhanced.md), so the Vanilla program is unchanged.
+uniform vec3 uSunDir;             // unit vector toward the sun, world space
+uniform vec3 uMoonDir;            // unit vector toward the moon
+uniform int uMoonPhase;           // 0 full .. 7
+uniform float uRain;              // smoothed rain level, 0..1
+uniform float uThunder;           // smoothed thunder level, 0..1
+#endif
+
 in vec2 vNdc;
 out vec4 fragColor;
 

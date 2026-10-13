@@ -9,6 +9,7 @@ import static org.lwjgl.glfw.GLFW.GLFW_TRUE;
 import static org.lwjgl.glfw.GLFW.GLFW_VISIBLE;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import dev.macmv.look.EnhancedTarget;
 import dev.macmv.look.VoxelRenderer;
 import java.awt.image.BufferedImage;
 import java.nio.ByteBuffer;
@@ -101,7 +102,15 @@ final class GlContext implements AutoCloseable {
     GL33C.glClear(GL33C.GL_COLOR_BUFFER_BIT | GL33C.GL_DEPTH_BUFFER_BIT);
 
     scene.bind();
-    VoxelRenderer.draw(frame);
+    if (frame.atmosphere() == null) {
+      VoxelRenderer.draw(frame);
+    } else {
+      EnhancedTarget.begin(w, h);
+      VoxelRenderer.draw(frame);
+      GL33C.glBindFramebuffer(GL33C.GL_FRAMEBUFFER, fbo);
+      GL33C.glViewport(0, 0, w, h);
+      EnhancedTarget.resolve();
+    }
     GL33C.glFinish();
 
     int err = GL33C.glGetError();
