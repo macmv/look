@@ -192,6 +192,7 @@ int variantRow(uint id, ivec3 cell) {
 // Grass color of a heightfield hit, which has no loaded chunk and no tint layer to read it from.
 vec3 gHfTint = vec3(1.0);
 bool gHfTintOn = false;
+int gTapCap = 8;   // most texture taps surface() takes along a grazing hit, the far filter takes one
 
 // Multiplier for a face table tint: -1 grass, -2 foliage (from the biome tint texture), else a 0xRRGGBB constant.
 // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
@@ -227,7 +228,7 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
   float cosine = max(abs(d[axis]), 0.05);
   vec2 along = axis == 0 ? d.yz : (axis == 1 ? d.xz : d.xy);
   along = normalize(along + vec2(1e-6));
-  int taps = uDebug == 3 ? 1 : int(clamp(ceil(1.0 / cosine), 1.0, 8.0));
+  int taps = uDebug == 3 ? 1 : int(clamp(ceil(1.0 / cosine), 1.0, float(gTapCap)));
   float spread = r * (1.0 / cosine - 1.0);
 
   int base = variantRow(id, cell) * FACE_ROW_TEXELS + face * 4;
@@ -366,6 +367,55 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
   return found;
 }
 
+// Color of far texel column at horizontal position `pxz` (relative to uCamBlock) as a ray passing at
+// height `yr` would see it: its top when the ray is over it, its side when the ray is a little below the
+// top, and nothing when the ray is deep inside it (a nearer column hides it). The far hit filter uses
+// this to read what else is under the pixel from the neighboring texels, with no ray of its own.
+bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 albedo) {
+  float T = float(1 << sh);
+  ivec2 ac = (uCamBlock.xz + ivec2(floor(pxz))) >> sh;
+  ivec3 tc = ivec3(ac & (HF_WINDOW * 16 - 1), layer);
+  int H = texelFetch(uHfHeight, tc, 0).r;
+  if (H == HF_NONE) return false;
+  vec4 attr = texelFetch(uHfAttr, tc, 0);
+  int kind = int(attr.a * 255.0 + 0.5);
+  if (kind == 0) return false;
+
+  float fH = float(H);
+  // A ray well above the column does not touch it here (ground in front of a cliff base, say), so it
+  // adds nothing; only a ray within about a pixel of the top reads the top.
+  if (yr - fH > max(1.0, tt * uPixelAngle)) return false;
+  float depth = max(fH - yr, 0.0);
+  if (depth > 4.0 * T) return false;
+  int hax = depth > 0.0 ? (abs(d.x) > abs(d.z) ? 0 : 2) : 1;
+  float y = depth > 0.0 ? yr : fH;
+
+  uint id;
+  if (kind == 7) {
+    id = uint(uHfIds[13]);
+  } else if (hax == 1 || depth < 1.0) {
+    id = uint(uHfIds[(kind - 1) * 2]);
+  } else if (depth < 4.0) {
+    id = uint(uHfIds[(kind - 1) * 2 + 1]);
+  } else {
+    id = uint(uHfIds[12]);
+  }
+
+  float ty = floor(y / T) * T;
+  vec2 lxz = clamp((vec2(uCamBlock.xz - ac * (1 << sh)) + pxz) / T, 0.0, 1.0);
+  vec3 local = vec3(lxz.x, (y - ty) / T, lxz.y);
+  ivec3 corner = ivec3(ac.x * (1 << sh), int(ty), ac.y * (1 << sh));
+
+  gHfTint = attr.rgb;
+  gHfTintOn = true;
+  gTapCap = 1;
+  bool ok = surface(id, corner, T, hax, d, local, tt, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
+  gTapCap = 8;
+  gHfTintOn = false;
+  if (ok && kind == 7) albedo = attr.rgb;
+  return ok;
+}
+
 // Ray march over the far heightfield (see HeightField.java): texels are columns, solid below their
 // height, walked in 2D one tile at a time (tiles the ray passes over are skipped by their highest
 // texel), then texel by texel inside a tile. `t` is where the ray enters the first far level; the
@@ -471,6 +521,32 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
             bool ok = surface(id, corner, T, hax, d, local, th, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
             if (ok && kind == 7) albedo = attr.rgb;   // water: the biome water color, not the stand-in block
             gHfTintOn = false;
+            if (ok && th * uPixelAngle > 0.25 * T) {
+              // A pixel that covers several texels would show one of them at random, and the surface
+              // here changes from texel to texel (grass, stone, snow, water, a cliff side), so it grains.
+              // Average it with four more spots of the pixel's footprint on the ground, read from the
+              // neighboring texels: two along the ray, where the footprint is stretched by the grazing
+              // angle, and two across it.
+              float r = th * uPixelAngle;
+              float lh = max(length(d.xz), 1e-4);
+              vec2 hd = d.xz / lh;
+              vec2 cross2 = vec2(-hd.y, hd.x);
+              float alongLen = min(r / max(abs(d.y), 0.05), 4.0 * T);
+              vec2 pc = (o + d * th).xz;
+              vec3 sum = albedo * 2.0;
+              float wsum = 2.0;
+              for (int k = 0; k < 4; k++) {
+                float sg = (k & 1) == 0 ? -0.5 : 0.5;
+                vec2 off = k < 2 ? hd * (sg * alongLen) : cross2 * (sg * r);
+                float dt = k < 2 ? sg * alongLen / lh : 0.0;
+                vec3 a2;
+                if (hfSample(pc + off, layer, sh, yAbs + d.y * dt, d, th + dt, a2)) {
+                  sum += a2;
+                  wsum += 1.0;
+                }
+              }
+              albedo = sum / wsum;
+            }
             if (ok) {
               tHit = th;
               hitId = id;

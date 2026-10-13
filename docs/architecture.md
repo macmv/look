@@ -28,8 +28,7 @@ Java calls Rust through JNI. The calls are coarse and use direct buffers.
 3. `VoxelRenderer.render` calls `VoxelWorld.update`. This step builds and uploads sections, within a
    2 ms budget.
 4. `VoxelRenderer.render` sets the shader uniforms and draws the triangle.
-5. If antialiasing is on, `Taa` resolves the result into the main framebuffer.
-6. The mixin cancels the `solid`, `cutout_mipped` and `cutout` layers. Vanilla then draws entities,
+5. The mixin cancels the `solid`, `cutout_mipped` and `cutout` layers. Vanilla then draws entities,
    block entities and the translucent layer. These pass the depth test against our depth.
 
 Translucent blocks (water, glass) are still vanilla.
@@ -177,24 +176,23 @@ the bundled library.
 
 The alpha channel marks the hit type: 0 none, 0.5 heightfield, 1 other.
 
-## 10. Antialiasing (`Taa`)
+## 10. Far hit filter
 
-Far heightfield texels are about as wide as a pixel, so they shimmer. `Taa` fixes this without
-extra rays:
+Far heightfield texels are about as wide as a pixel, and neighboring texels differ (grass, stone,
+snow, water, cliff sides), so a single ray per pixel grains. In `traceHeightfield`, a hit whose pixel
+covers more than a quarter of a texel is averaged with four more spots of the pixel's footprint on
+the ground: two along the ray, where grazing angles stretch the footprint, and two across it.
 
-- Each frame, rays that reach the heightfield aim at a different point in the pixel (16-sample
-  Halton sequence, `uJitter`).
-- The voxel pass draws into its own buffers: color and hit distance.
-- `taa_resolve.fsh` blends the new frame with the previous one. It reprojects the old frame by hit
-  distance. It clamps the old color to the neighbor colors, so moving objects do not smear.
-- Pixels that do not hit the heightfield pass through unchanged.
+- `hfSample` reads each spot from the neighboring texel column with no ray of its own: its top when
+  the ray passes within about a pixel of the top, its side when the ray is below the top, and nothing
+  when the ray is well above it (ground in front of a cliff base) or deep inside it.
+- Near hits and voxel bricks are not filtered.
 
 ## 11. Keys and debug tools
 
 | Key | Action |
 |-----|--------|
 | F4 | `VoxelWorld.verify`. Checks GPU bytes against what was uploaded, and refills against resident data. |
-| F6 | Antialiasing on or off. |
 | F7 | Voxel renderer or vanilla renderer. |
 | F8 | Cycle debug views (step heatmap, level tint, no mipmaps, unlit, and others). |
 | F9 | Reload: drop all voxel data and rebuild. |
