@@ -83,6 +83,8 @@ public final class TintMap {
   private static int tex;
   private static boolean needsClear = true;
   private static ByteBuffer scratch;
+  /** What was uploaded to each layer (RGBA, row major), to compare against the GPU in {@link #verifyGpu}. */
+  private static final byte[][] shadow = new byte[LAYERS][SIZE * SIZE * 4];
 
   private TintMap() {}
 
@@ -299,6 +301,9 @@ public final class TintMap {
       GL33C.glTexSubImage3D(
           GL33C.GL_TEXTURE_2D_ARRAY, 0, p[0], p[1], 0, CHUNK_TEXELS, CHUNK_TEXELS, NEAR_LAYERS,
           GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, scratch);
+      for (int layer = 0; layer < NEAR_LAYERS; layer++) {
+        mirror(layer, p[0], p[1], CHUNK_TEXELS, pendingData.get(i), layer * CHUNK_TEXELS * CHUNK_TEXELS * 4);
+      }
     }
     pendingPos.clear();
     pendingData.clear();
@@ -310,6 +315,7 @@ public final class TintMap {
       GL33C.glTexSubImage3D(
           GL33C.GL_TEXTURE_2D_ARRAY, 0, p[1], p[2], p[0], p[3], p[3], 1,
           GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, scratch);
+      mirror(p[0], p[1], p[2], p[3], pendingFarData.get(i), 0);
     }
     pendingFarPos.clear();
     pendingFarData.clear();
@@ -348,11 +354,61 @@ public final class TintMap {
           buf.put((byte) (c >> 16)).put((byte) (c >> 8)).put((byte) c).put((byte) (layer == 0 || layer == 4 || layer >= FAR_FIRST ? 0 : 0xFF));
         }
         buf.flip();
+        buf.get(shadow[layer]).flip();
         GL33C.glTexSubImage3D(
             GL33C.GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, SIZE, SIZE, 1, GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, buf);
       }
     } finally {
       MemoryUtil.memFree(buf);
     }
+  }
+
+  /** Copies a {@code side} x {@code side} block of texels at ({@code x}, {@code z}) into the shadow of {@code layer}. */
+  private static void mirror(int layer, int x, int z, int side, byte[] data, int offset) {
+    for (int row = 0; row < side; row++) {
+      System.arraycopy(data, offset + row * side * 4, shadow[layer], ((z + row) * SIZE + x) * 4, side * 4);
+    }
+  }
+
+  /**
+   * Reads the whole tint texture back and compares it to what {@link #flush} uploaded, texel by
+   * texel. A mismatch means the GPU holds something nobody sent (GL state, a bad upload); no
+   * mismatch with wrong colors on screen means the CPU produced them. Slow; meant for F4.
+   */
+  public static List<String> verifyGpu(int unit) {
+    List<String> bad = new ArrayList<>();
+    if (tex == 0 || needsClear) return bad;
+
+    int prevUnit = com.mojang.blaze3d.platform.GlStateManager._getActiveTexture();
+    ByteBuffer buf = MemoryUtil.memAlloc(SIZE * SIZE * LAYERS * 4);
+    try {
+      GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + unit);
+      GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, tex);
+      GL33C.glPixelStorei(GL33C.GL_PACK_ALIGNMENT, 4);
+      GL33C.glGetTexImage(GL33C.GL_TEXTURE_2D_ARRAY, 0, GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, buf);
+
+      for (int layer = 0; layer < LAYERS; layer++) {
+        byte[] want = shadow[layer];
+        int base = layer * SIZE * SIZE * 4;
+        int wrong = 0;
+        for (int i = 0; i < SIZE * SIZE; i++) {
+          boolean same = true;
+          for (int c = 0; c < 4; c++) same &= buf.get(base + i * 4 + c) == want[i * 4 + c];
+          if (same) continue;
+          if (wrong++ < 3) {
+            int o = i * 4;
+            bad.add(String.format("tint layer %d texel (%d,%d): gpu %02x%02x%02x%02x, uploaded %02x%02x%02x%02x",
+                layer, i % SIZE, i / SIZE,
+                buf.get(base + o), buf.get(base + o + 1), buf.get(base + o + 2), buf.get(base + o + 3),
+                want[o], want[o + 1], want[o + 2], want[o + 3]));
+          }
+        }
+        if (wrong > 0) bad.add("tint layer " + layer + ": " + wrong + " texels differ from what was uploaded");
+      }
+    } finally {
+      MemoryUtil.memFree(buf);
+      GL33C.glActiveTexture(prevUnit);
+    }
+    return bad;
   }
 }

@@ -793,6 +793,7 @@ public final class VoxelWorld {
     bad.addAll(table.checkInvariants());
     bad.addAll(HeightField.checkInvariants());
     bad.addAll(HeightField.verifyGpu());
+    bad.addAll(TintMap.verifyGpu(UNIT_TINT));
 
     // 2. States against the table: a LOADED section owns its cell, nobody else owns a cell.
     int loaded = 0;
