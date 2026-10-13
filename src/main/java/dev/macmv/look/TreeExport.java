@@ -5,11 +5,16 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.serialization.JsonOps;
 import java.util.List;
+import java.util.stream.Stream;
 import net.minecraft.core.Holder;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.core.HolderSet;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.resources.RegistryOps;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.FeatureSorter;
 import net.minecraft.world.level.levelgen.feature.AbstractHugeMushroomFeature;
+import net.minecraft.world.level.levelgen.feature.RandomPatchFeature;
 import net.minecraft.world.level.levelgen.feature.SimpleBlockFeature;
 import net.minecraft.world.level.levelgen.feature.TreeFeature;
 import net.minecraft.world.level.levelgen.placement.PlacedFeature;
@@ -37,6 +42,10 @@ public final class TreeExport {
 
   /** @param biomes the biome source's possible biomes, in the order the terrain export numbers them */
   public static JsonObject export(List<Holder<Biome>> biomes) {
+    // Knowing only the blocks and fluids, the codecs write every nested feature inline instead of by name, and
+    // can still write the block sets of predicates.
+    RegistryOps<JsonElement> ops = RegistryOps.create(JsonOps.INSTANCE, HolderLookup.Provider.create(Stream.<HolderLookup.RegistryLookup<?>>of(BuiltInRegistries.BLOCK.asLookup(), BuiltInRegistries.FLUID.asLookup())));
+
     List<FeatureSorter.StepFeatureData> steps =
         FeatureSorter.buildFeaturesPerStep(biomes, holder -> holder.value().getGenerationSettings().features(), true);
 
@@ -52,7 +61,7 @@ public final class TreeExport {
         boolean tree = growsTrees(feature);
         if (!tree && !mayPlacePlants(feature)) continue;
         try {
-          JsonElement json = PlacedFeature.DIRECT_CODEC.encodeStart(JsonOps.INSTANCE, feature).getOrThrow();
+          JsonElement json = PlacedFeature.DIRECT_CODEC.encodeStart(ops, feature).getOrThrow();
           if (!tree && !placesPlants(json)) continue;
           byIndex.add(Integer.toString(i), json);
           wanted[step][i] = true;
@@ -97,7 +106,10 @@ public final class TreeExport {
       List.of("\"minecraft:short_grass\"", "\"minecraft:fern\"", "\"minecraft:tall_grass\"", "\"minecraft:large_fern\"", "\"minecraft:dead_bush\"");
 
   private static boolean mayPlacePlants(PlacedFeature feature) {
-    return feature.getFeatures().anyMatch(configured -> configured.feature() instanceof SimpleBlockFeature);
+    // A patch's config does not list the feature inside it, so the patch itself is what shows up.
+    return feature
+        .getFeatures()
+        .anyMatch(configured -> configured.feature() instanceof RandomPatchFeature || configured.feature() instanceof SimpleBlockFeature);
   }
 
   private static boolean placesPlants(JsonElement json) {
