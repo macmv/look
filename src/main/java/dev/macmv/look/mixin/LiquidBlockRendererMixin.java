@@ -17,7 +17,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * Keeps water out of vanilla's section meshes while the voxel renderer is on: the raycast pass draws
  * water itself, translucent and in the same ray as what is behind it. Lava and everything else
  * translucent (glass, ice) stay vanilla. Toggling the renderer rebuilds the meshes, see
- * {@link LookState#poll}.
+ * {@link LookState#setVoxelEnabled}.
  */
 @Mixin(LiquidBlockRenderer.class)
 public class LiquidBlockRendererMixin {

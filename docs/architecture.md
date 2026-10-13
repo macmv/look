@@ -9,7 +9,7 @@ Look is a Fabric 1.21.1 client mod. It replaces the vanilla chunk renderer with 
 - The mod draws one fullscreen triangle.
 - The fragment shader (`voxel.fsh`) casts one ray for each pixel.
 - The shader writes color and depth. Vanilla entities, particles and weather then draw on top.
-- Vanilla still builds its chunk meshes. The F7 key switches between the two renderers at once.
+- Vanilla still builds its chunk meshes. The video settings switch between the two renderers at once.
 
 The mod has two parts:
 
@@ -23,15 +23,14 @@ Java calls Rust through JNI. The calls are coarse and use direct buffers.
 ## 2. Frame flow
 
 1. Vanilla calls `LevelRenderer.renderSectionLayer` for the `solid` layer.
-2. `LevelRendererMixin` takes the call. It runs `LookState.poll` (key presses), then
-   `VoxelRenderer.render`.
+2. `LevelRendererMixin` takes the call. It runs `VoxelRenderer.render`.
 3. `VoxelRenderer.render` calls `VoxelWorld.update`. This step builds and uploads sections, within a
    2 ms budget.
 4. `VoxelRenderer.render` sets the shader uniforms and draws the triangle.
 5. The mixin cancels the `solid`, `cutout_mipped` and `cutout` layers. Vanilla then draws entities,
    block entities and the translucent layer. These pass the depth test against our depth.
 
-In Enhanced mode (F6) step 4 draws into an HDR target with a second shader program instead, and
+In Enhanced mode step 4 draws into an HDR target with a second shader program instead, and
 `EnhancedTarget.resolve` copies it, with depth, into the main framebuffer. See `enhanced.md`.
 
 Translucent blocks (water, glass) are still vanilla.
@@ -191,15 +190,10 @@ the ground: two along the ray, where grazing angles stretch the footprint, and t
   when the ray is well above it (ground in front of a cliff base) or deep inside it.
 - Near hits and voxel bricks are not filtered.
 
-## 11. Keys and debug tools
+## 11. Settings and debug tools
 
-| Key | Action |
-|-----|--------|
-| F4 | `VoxelWorld.verify`. Checks GPU bytes against what was uploaded, and refills against resident data. |
-| F7 | Voxel renderer or vanilla renderer. |
-| F8 | Cycle debug views (step heatmap, level tint, no mipmaps, unlit, and others). |
-| F9 | Reload: drop all voxel data and rebuild. |
-| F10 | Cycle the far-terrain style (smooth, terraces, and others). |
+The renderer switch, Shaders (Enhanced mode) switch and debug view are on the Look and Shaders tabs
+of the video settings screen (`LookVideoScreen`, options in `LookSettings`). There are no key binds.
 
 `RenderStats` and `DebugHud` show timing on screen.
 
