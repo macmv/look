@@ -189,6 +189,8 @@ public final class VoxelRenderer {
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfHeight"), HeightField.UNIT_HEIGHT);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfAttr"), HeightField.UNIT_ATTR);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfTiles"), HeightField.UNIT_TILES);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfSuper"), HeightField.UNIT_SUPER);
+    GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uHfCeiling"), HeightField.ceiling());
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLightIndirection"), LightMap.UNIT_INDIRECTION);
     GL33C.glUniform1i(GL33C.glGetUniformLocation(program, "uLight"), LightMap.UNIT_LIGHT);
     GL33C.glUniform1f(uTime, f.time());

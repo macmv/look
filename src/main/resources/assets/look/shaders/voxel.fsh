@@ -20,6 +20,8 @@ uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and fi
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
 uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water, tree color for trees), a: kind (0 none, 1 + surface, 7 water, 8 + height above ground for trees)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
+uniform isampler2DArray uHfSuper;   // highest tile of each 8 x 8 tiles, to skip those at once
+uniform int uHfCeiling;             // HeightField.ceiling(): no visible column stands higher
 uniform int uDebug;        // 5: no biome tint, 6: mip level fixed at 2, 7: alpha test off, 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
 uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
@@ -58,7 +60,8 @@ const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level
 const int HF_TREE = 8;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
 const int HF_NONE = -32768;      // HeightField.NONE
 const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
-const float HF_CEILING = 400.0;    // no heightfield column or tree stands above this
+const int HF_SUPER_SHIFT = 3;      // HeightField.SUPER: tiles per super cell, as a shift
+const int HF_SUPER_CELLS = 16;     // HeightField.SUPER_CELLS
 const float HF_BLEND_TILES = 2.0; // tiles before a level hands over that its heights blend toward the next
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
 const int QUAD_HDR_START = META_START + 8192 * META_TEXELS;  // BlockClassifier.HDR_START / 4
@@ -563,6 +566,8 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
   float reach = uBase * float(1 << last) - 16.0 * float(1 << (last - HF_FINER));
   ivec2 s = ivec2(d.x > 0.0 ? 1 : -1, d.z > 0.0 ? 1 : -1);
   int axis = 1;
+  // Nothing in the window stands higher than this (the sea fills up to its level, so that counts too).
+  float ceilY = max(float(uHfCeiling), uSeaLevel) + 1.0;
 
   for (int it = 0; it < 640; it++) {
     if (t > uMaxDist) return false;
@@ -572,11 +577,11 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     float h = max(abs(rel.x), abs(rel.z));
     if (h >= reach) return false;
     float ry = y0 + d.y * t;
-    if (ry > 400.0 && d.y >= 0.0) return false;   // above the world and climbing
+    if (ry > ceilY && d.y >= 0.0) return false;   // above every column and climbing
     if (ry < -100.0 && d.y <= 0.0) return false;
-    if (ry > HF_CEILING + 1.0 && d.y < 0.0) {
+    if (ry > ceilY + 1.0 && d.y < 0.0) {
       // Above every column and coming down: nothing to hit before the ray reaches the ceiling.
-      t = max((HF_CEILING - y0) / d.y, t) + EPS;
+      t = max((ceilY - y0) / d.y, t) + EPS;
       axis = 1;
       continue;
     }
@@ -592,6 +597,36 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     vec2 camRem = vec2(uCamBlock.xz & ((1 << sh) - 1));   // blocks into the camera's cell
     ivec2 c = ivec2(floor((rel.xz + camRem) / T));          // cell relative to the camera's
     ivec2 tile = (camCell + c) >> 4;
+
+    // Eight tiles at a time: a ray over a whole super cell goes to where it leaves it, or hands over to
+    // the next level (the data here says nothing about what lies past that).
+    ivec2 stile = tile >> HF_SUPER_SHIFT;
+    int smax = texelFetch(uHfSuper, ivec3(stile & (HF_SUPER_CELLS - 1), layer), 0).r;
+    {
+      ivec2 slo = (stile << (HF_SUPER_SHIFT + 4)) - camCell;
+      vec2 sedge = vec2(slo) + vec2(d.x > 0.0 ? float(128) : 0.0, d.z > 0.0 ? float(128) : 0.0);
+      vec2 tsEdge = (sedge * T - camRem - o.xz) * invD.xz;
+      float hand = uBase * float(1 << lvl) - 16.0 * float(1 << (lvl - HF_FINER));
+      vec2 tWall = (vec2(d.x > 0.0 ? hand : -hand, d.z > 0.0 ? hand : -hand) - o.xz) * invD.xz;
+      float ex = min(tsEdge.x, tWall.x);
+      float ez = min(tsEdge.y, tWall.y);
+      float ts = min(ex, ez);
+      float low = min(ry, y0 + d.y * ts);
+      bool over = smax == HF_NONE;
+      if (!over && low > max(float(smax), uSeaLevel)) {
+        float m = max(float(smax), uSeaLevel);
+        if (lvl < last) {
+          int cs = texelFetch(uHfSuper, ivec3((stile >> 1) & (HF_SUPER_CELLS - 1), layer + 1), 0).r;
+          if (cs != HF_NONE) m = max(m, float(cs));
+        }
+        over = low > m;
+      }
+      if (over && ts > t) {
+        axis = ex < ez ? 0 : 2;
+        t = ts + eps;
+        continue;
+      }
+    }
     int tmax = texelFetch(uHfTiles, ivec3(tile & (HF_WINDOW - 1), layer), 0).r;
     // Water texels hold their seabed, but the sea fills them up to its level.
     if (tmax != HF_NONE) tmax = max(tmax, int(uSeaLevel));

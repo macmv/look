@@ -38,6 +38,10 @@ public final class HeightField {
   public static final int UNIT_HEIGHT = 18;
   public static final int UNIT_ATTR = 19;
   public static final int UNIT_TILES = 20;
+  public static final int UNIT_SUPER = 21;
+  /** A super cell holds the highest tile maximum of {@code SUPER x SUPER} tiles, so rays skip 8 tiles at once. */
+  public static final int SUPER = 8;
+  public static final int SUPER_CELLS = WINDOW_TILES / SUPER;
 
   /** Height of a texel, or the maximum of a tile, that has no terrain (and is skipped). */
   public static final short NONE = Short.MIN_VALUE;
@@ -59,6 +63,9 @@ public final class HeightField {
     final TileCell[] state = new TileCell[WINDOW_TILES * WINDOW_TILES];
     /** The maximum the GPU holds for each cell once the queued uploads and hides have been flushed. */
     final short[] gpuMax = new short[WINDOW_TILES * WINDOW_TILES];
+    /** The highest {@link #gpuMax} of each super cell, as the GPU holds it once the dirty cells are rewritten. */
+    final short[] superMax = new short[SUPER_CELLS * SUPER_CELLS];
+    final boolean[] superDirty = new boolean[SUPER_CELLS * SUPER_CELLS];
     int cursor;
     int camTileX = Integer.MIN_VALUE;
     int camTileZ;
@@ -77,6 +84,8 @@ public final class HeightField {
       Arrays.fill(requested, NO_KEY);
       Arrays.fill(state, TileCell.EMPTY);
       Arrays.fill(gpuMax, NONE);
+      Arrays.fill(superMax, NONE);
+      Arrays.fill(superDirty, false);
       cursor = 0;
       camTileX = Integer.MIN_VALUE;
       clearGpu = true;
@@ -136,6 +145,10 @@ public final class HeightField {
   private static int heightTex;
   private static int attrTex;
   private static int tilesTex;
+  private static int superTex;
+  private static ByteBuffer superNone;
+  /** No visible tile of any level reaches higher than this (NONE when there are none). */
+  private static short ceiling = NONE;
   private static int frame;
 
   static {
@@ -160,6 +173,15 @@ public final class HeightField {
     uploads.clear();
     hides.clear();
     Arrays.fill(residentCount, 0);
+  }
+
+  /**
+   * Height no visible column of the heightfield rises above, for rays to jump to when they come down
+   * from higher up. {@code Short.MIN_VALUE} when nothing is visible; before the textures exist,
+   * the height of the world.
+   */
+  public static int ceiling() {
+    return heightTex == 0 ? 400 : ceiling;
   }
 
   /** Whether any tile was ever uploaded (the textures exist only then). */
@@ -197,6 +219,10 @@ public final class HeightField {
       GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TILES);
       GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, tilesTex);
       GL33C.glGetTexImage(GL33C.GL_TEXTURE_2D_ARRAY, 0, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, tb);
+      ByteBuffer sb = ByteBuffer.allocateDirect(SUPER_CELLS * SUPER_CELLS * LEVELS * 2).order(ByteOrder.nativeOrder());
+      GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_SUPER);
+      GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, superTex);
+      GL33C.glGetTexImage(GL33C.GL_TEXTURE_2D_ARRAY, 0, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, sb);
       GL33C.glPixelStorei(GL33C.GL_PACK_ALIGNMENT, 4);
 
       for (int lv = 0; lv < LEVELS; lv++) {
@@ -233,6 +259,22 @@ public final class HeightField {
               } else {
                 hiddenJunk++;
               }
+            }
+          }
+        }
+        int superBad = 0;
+        for (int sz = 0; sz < SUPER_CELLS; sz++) {
+          for (int sx = 0; sx < SUPER_CELLS; sx++) {
+            short want = NONE;
+            for (int z = 0; z < SUPER; z++) {
+              for (int x = 0; x < SUPER; x++) {
+                short m = tb.getShort(((lv * WINDOW_TILES + sz * SUPER + z) * WINDOW_TILES + sx * SUPER + x) * 2);
+                if (m > want) want = m;
+              }
+            }
+            short got = sb.getShort(((lv * SUPER_CELLS + sz) * SUPER_CELLS + sx) * 2);
+            if (got != want && superBad++ < 3) {
+              bad.add(String.format("far level %d super cell (%d,%d): max %d but its tiles' max is %d", lv, sx, sz, got, want));
             }
           }
         }
@@ -384,6 +426,8 @@ public final class HeightField {
       if (levels[i].clearGpu) {
         levels[i].clearGpu = false;
         Arrays.fill(levels[i].gpuMax, NONE);
+        Arrays.fill(levels[i].superMax, NONE);
+        Arrays.fill(levels[i].superDirty, false);
         hideLayer(i);
       }
     }
@@ -391,6 +435,7 @@ public final class HeightField {
     for (int[] h : hides) {
       writeTileMax(h[0], h[1] % WINDOW_TILES, h[1] / WINDOW_TILES, NONE);
       levels[h[0]].gpuMax[h[1]] = NONE;
+      dirtySuper(h[0], h[1]);
     }
     hides.clear();
 
@@ -412,9 +457,50 @@ public final class HeightField {
           GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, attrs);
       writeTileMax(u.level, u.cellX, u.cellZ, u.max);
       levels[u.level].gpuMax[u.cellZ * WINDOW_TILES + u.cellX] = u.max;
+      dirtySuper(u.level, u.cellZ * WINDOW_TILES + u.cellX);
     }
     uploads.clear();
+    flushSuper();
     GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);
+  }
+
+  private static void dirtySuper(int level, int cell) {
+    int cx = cell % WINDOW_TILES;
+    int cz = cell / WINDOW_TILES;
+    levels[level].superDirty[(cz / SUPER) * SUPER_CELLS + cx / SUPER] = true;
+  }
+
+  /** Recomputes the super cells whose tiles changed, writes the ones whose maximum moved, and the ceiling. */
+  private static void flushSuper() {
+    short top = NONE;
+    for (int i = 0; i < LEVELS; i++) {
+      Level l = levels[i];
+      for (int s = 0; s < l.superMax.length; s++) {
+        if (l.superDirty[s]) {
+          l.superDirty[s] = false;
+          int sx = s % SUPER_CELLS;
+          int sz = s / SUPER_CELLS;
+          short max = NONE;
+          for (int z = 0; z < SUPER; z++) {
+            for (int x = 0; x < SUPER; x++) {
+              short m = l.gpuMax[(sz * SUPER + z) * WINDOW_TILES + sx * SUPER + x];
+              if (m > max) max = m;
+            }
+          }
+          if (max != l.superMax[s]) {
+            l.superMax[s] = max;
+            one.clear();
+            one.putShort(0, max);
+            one.limit(2);
+            GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_SUPER);
+            GL33C.glTexSubImage3D(
+                GL33C.GL_TEXTURE_2D_ARRAY, 0, sx, sz, i, 1, 1, 1, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, one);
+          }
+        }
+        if (l.superMax[s] > top) top = l.superMax[s];
+      }
+    }
+    ceiling = top;
   }
 
   private static void writeTileMax(int level, int cellX, int cellZ, short max) {
@@ -435,6 +521,9 @@ public final class HeightField {
     heightTex = makeArray(UNIT_HEIGHT, GL33C.GL_R16I, SIZE, LEVELS);
     attrTex = makeArray(UNIT_ATTR, GL33C.GL_RGBA8, SIZE, LEVELS);
     tilesTex = makeArray(UNIT_TILES, GL33C.GL_R16I, WINDOW_TILES, LEVELS);
+    superTex = makeArray(UNIT_SUPER, GL33C.GL_R16I, SUPER_CELLS, LEVELS);
+    superNone = ByteBuffer.allocateDirect(SUPER_CELLS * SUPER_CELLS * 2).order(order);
+    for (int i = 0; i < SUPER_CELLS * SUPER_CELLS; i++) superNone.putShort(i * 2, NONE);
 
     // Every tile starts out empty, so rays skip it.
     none = ByteBuffer.allocateDirect(WINDOW_TILES * WINDOW_TILES * 2).order(order);
@@ -459,6 +548,9 @@ public final class HeightField {
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TILES);
     GL33C.glTexSubImage3D(
         GL33C.GL_TEXTURE_2D_ARRAY, 0, 0, 0, level, WINDOW_TILES, WINDOW_TILES, 1, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, none);
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_SUPER);
+    GL33C.glTexSubImage3D(
+        GL33C.GL_TEXTURE_2D_ARRAY, 0, 0, 0, level, SUPER_CELLS, SUPER_CELLS, 1, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, superNone);
   }
 
   private static int makeArray(int unit, int format, int size, int layers) {
@@ -485,5 +577,7 @@ public final class HeightField {
     GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, attrTex);
     GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_TILES);
     GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, tilesTex);
+    GL33C.glActiveTexture(GL33C.GL_TEXTURE0 + UNIT_SUPER);
+    GL33C.glBindTexture(GL33C.GL_TEXTURE_2D_ARRAY, superTex);
   }
 }

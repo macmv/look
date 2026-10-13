@@ -127,7 +127,7 @@ final class TestScene implements AutoCloseable {
   private final int faceBuf, faceTex;
   private final int tintTex;
   private final int lightIndirectionTex, lightBuf, lightTex;
-  private final int hfHeightTex, hfAttrTex, hfTilesTex;
+  private final int hfHeightTex, hfAttrTex, hfTilesTex, hfSuperTex;
   private final int atlasSampler;
   private int slots;
 
@@ -174,10 +174,12 @@ final class TestScene implements AutoCloseable {
       hfHeightTex = dummyArray(HeightField.UNIT_HEIGHT, GL33C.GL_R16I, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT);
       hfAttrTex = dummyArray(HeightField.UNIT_ATTR, GL33C.GL_RGBA8, GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE);
       hfTilesTex = dummyArray(HeightField.UNIT_TILES, GL33C.GL_R16I, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT);
+      hfSuperTex = dummyArray(HeightField.UNIT_SUPER, GL33C.GL_R16I, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT);
     } else {
       hfHeightTex = hfArray(HeightField.UNIT_HEIGHT, GL33C.GL_R16I, HeightField.SIZE);
       hfAttrTex = hfArray(HeightField.UNIT_ATTR, GL33C.GL_RGBA8, HeightField.SIZE);
       hfTilesTex = hfArray(HeightField.UNIT_TILES, GL33C.GL_R16I, HeightField.WINDOW_TILES);
+      hfSuperTex = hfArray(HeightField.UNIT_SUPER, GL33C.GL_R16I, HeightField.SUPER_CELLS);
       fillHeightField(far, camX, camZ);
     }
 
@@ -224,6 +226,7 @@ final class TestScene implements AutoCloseable {
     unit(HeightField.UNIT_HEIGHT, GL33C.GL_TEXTURE_2D_ARRAY, hfHeightTex);
     unit(HeightField.UNIT_ATTR, GL33C.GL_TEXTURE_2D_ARRAY, hfAttrTex);
     unit(HeightField.UNIT_TILES, GL33C.GL_TEXTURE_2D_ARRAY, hfTilesTex);
+    unit(HeightField.UNIT_SUPER, GL33C.GL_TEXTURE_2D_ARRAY, hfSuperTex);
   }
 
   private static void unit(int unit, int target, int tex) {
@@ -399,6 +402,20 @@ final class TestScene implements AutoCloseable {
       upload(HeightField.UNIT_HEIGHT, i, size, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, heights);
       upload(HeightField.UNIT_ATTR, i, size, GL33C.GL_RGBA, GL33C.GL_UNSIGNED_BYTE, attrs);
       upload(HeightField.UNIT_TILES, i, tiles, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, maxes);
+      int sc = HeightField.SUPER_CELLS;
+      ByteBuffer supers = ByteBuffer.allocateDirect(sc * sc * 2).order(ByteOrder.nativeOrder());
+      for (int sz = 0; sz < sc; sz++) {
+        for (int sx = 0; sx < sc; sx++) {
+          short m = HeightField.NONE;
+          for (int z = 0; z < HeightField.SUPER; z++) {
+            for (int x = 0; x < HeightField.SUPER; x++) {
+              m = (short) Math.max(m, maxes.getShort(((sz * HeightField.SUPER + z) * tiles + sx * HeightField.SUPER + x) * 2));
+            }
+          }
+          supers.putShort((sz * sc + sx) * 2, m);
+        }
+      }
+      upload(HeightField.UNIT_SUPER, i, sc, GL33C.GL_RED_INTEGER, GL33C.GL_SHORT, supers);
       GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);
     }
   }
@@ -559,7 +576,7 @@ final class TestScene implements AutoCloseable {
   public void close() {
     GL33C.glDeleteTextures(new int[] {
       indirectionTex, brickTex, colorTex, faceTex, tintTex, lightIndirectionTex, lightTex,
-      hfHeightTex, hfAttrTex, hfTilesTex});
+      hfHeightTex, hfAttrTex, hfTilesTex, hfSuperTex});
     GL33C.glDeleteBuffers(new int[] {brickBuf, colorBuf, faceBuf, lightBuf});
     GL33C.glDeleteSamplers(atlasSampler);
   }
