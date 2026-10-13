@@ -1,0 +1,90 @@
+#!/bin/bash
+# Which render-test goldens changed, and how.
+#
+#   scripts/golden-diff            failed tests: golden vs build/render-tests/*-actual.png
+#   scripts/golden-diff --head     after -PupdateGolden: working tree goldens vs the ones in HEAD
+#   scripts/golden-diff NAME...    only these images (without .png)
+#
+# Prints one line per image: the percentage of pixels that differ by more than FUZZ, then draws
+# old | new | mask (via `show`) for every changed image. The mask is the new image faded, with the
+# differing pixels in red.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+GOLDEN=src/test/resources/golden
+ACTUAL=build/render-tests
+FUZZ=2%   # about 5/255, a hair above Golden.CHANNEL_TOLERANCE
+OUT=build/golden-diff
+
+mode=actual
+names=()
+for a in "$@"; do
+  case "$a" in
+    --head) mode=head ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+    *) names+=("${a%.png}") ;;
+  esac
+done
+
+rm -rf "$OUT"
+mkdir -p "$OUT/old" "$OUT/new"
+
+# Fill $OUT/old and $OUT/new with the two sides, named NAME.png.
+if [ "$mode" = head ]; then
+  # Goldens are LFS pointers in HEAD; smudge them to real PNGs. New files have no old side.
+  for f in $(git diff --name-only HEAD -- "$GOLDEN"; git ls-files --others --exclude-standard -- "$GOLDEN"); do
+    n=$(basename "$f" .png)
+    cp "$f" "$OUT/new/$n.png"
+    git cat-file -e "HEAD:$f" 2>/dev/null && git show "HEAD:$f" | git lfs smudge > "$OUT/old/$n.png"
+  done
+else
+  for f in "$ACTUAL"/*-actual.png; do
+    [ -e "$f" ] || { echo "no $ACTUAL/*-actual.png; run ./gradlew test first" >&2; exit 1; }
+    n=$(basename "$f" -actual.png)
+    cp "$f" "$OUT/new/$n.png"
+    [ -e "$GOLDEN/$n.png" ] && cp "$GOLDEN/$n.png" "$OUT/old/$n.png"
+  done
+fi
+
+printf '%-32s %s\n' IMAGE DIFFERING
+changed=()
+for f in "$OUT"/new/*.png; do
+  n=$(basename "$f" .png)
+  if [ ${#names[@]} -gt 0 ] && [[ ! " ${names[*]} " =~ " $n " ]]; then continue; fi
+
+  if [ ! -e "$OUT/old/$n.png" ]; then
+    printf '%-32s %s\n' "$n" "new (no old image)"
+    continue
+  fi
+
+  # AE with a fuzz counts the pixels whose channels differ by more than the fuzz. compare exits 1
+  # when the images differ, which is not an error here.
+  size=$(magick identify -format '%[fx:w*h]' "$f")
+  if ! ae=$(magick compare -metric AE -fuzz "$FUZZ" "$OUT/old/$n.png" "$f" null: 2>&1); then :; fi
+  ae=${ae%% *}
+  ae=${ae%%.*}
+  case "$ae" in ''|*[!0-9]*) printf '%-32s %s\n' "$n" "size differs / unreadable"; changed+=("$n"); continue ;; esac
+
+  if [ "$ae" -eq 0 ]; then
+    printf '%-32s %s\n' "$n" "same"
+    continue
+  fi
+  printf '%-32s %6.2f%%  (%d px)\n' "$n" "$(echo "$ae * 100 / $size" | bc -l)" "$ae"
+  changed+=("$n")
+done
+
+echo
+echo "${#changed[@]} changed"
+
+for n in "${changed[@]}"; do
+  o="$OUT/old/$n.png"; w="$OUT/new/$n.png"; m="$OUT/$n-mask.png"
+  panels=( \( "$o" -gravity north -background black -splice 0x24 -fill white -annotate +0+4 "old: $n" \)
+           \( "$w" -gravity north -background black -splice 0x24 -fill white -annotate +0+4 "new" \) )
+  # Red where the pixels differ, the new image dimmed elsewhere.
+  magick compare -metric AE -fuzz "$FUZZ" -highlight-color red -lowlight-color none "$o" "$w" "$m" 2>/dev/null || true
+  magick "$w" -fill black -colorize 70% "$m" -composite "$m"
+  panels+=( \( "$m" -gravity north -background black -splice 0x24 -fill white -annotate +0+4 "diff" \) )
+  magick "${panels[@]}" +append "$OUT/$n-triptych.png"
+  show "$OUT/$n-triptych.png"
+done
