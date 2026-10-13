@@ -53,6 +53,7 @@ const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level
 const int HF_TREE = 8;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
 const int HF_NONE = -32768;      // HeightField.NONE
 const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
+const float HF_BLEND_TILES = 2.0;  // tiles before a level hands over that its heights blend toward the next
 const int META_TEXELS = 3;       // BlockClassifier.META_FLOATS / 4
 const int QUAD_HDR_START = META_START + 8192 * META_TEXELS;  // BlockClassifier.HDR_START / 4
 const int QUAD_POOL_START = QUAD_HDR_START + 8192 * 3;       // BlockClassifier.POOL_START / 4
@@ -368,6 +369,32 @@ bool quadSurface(uint id, ivec3 cell, vec3 ol, vec3 d, float t0, float t1, vec2 
   return found;
 }
 
+// Height of far texel `ac` (absolute, in texels of `layer`) as it is drawn. Near the outer edge of a
+// level the height is blended toward the next, coarser level's height at the same spot, reaching it
+// where the ray hands over to that level, so the two levels meet with no step between them (they are
+// point samples of the same terrain at different resolutions, so they disagree by a few blocks).
+// The coarse level holds tiles well inside the hand-over, so the whole blend band has data.
+// Returns HF_NONE where the texel has no terrain.
+float hfHeight(ivec2 ac, int layer) {
+  int H = texelFetch(uHfHeight, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0).r;
+  if (H == HF_NONE) return float(HF_NONE);
+  int lvl = layer + uLevels;
+  int last = uLevels + HF_LEVELS - 1;
+  if (lvl >= last) return float(H);
+
+  float T = float(1 << (lvl - HF_FINER));
+  vec2 center = (vec2(ac) + 0.5) * T - vec2(uCamBlock.xz);
+  float hc = max(abs(center.x), abs(center.y));
+  float handoff = uBase * float(1 << lvl) - 16.0 * float(1 << (lvl - HF_FINER));
+  float w = smoothstep(handoff - HF_BLEND_TILES * 16.0 * T, handoff, hc);
+  if (w <= 0.0) return float(H);
+
+  ivec2 cc = (uCamBlock.xz + ivec2(floor(center))) >> (lvl - HF_FINER + 1);
+  int Hc = texelFetch(uHfHeight, ivec3(cc & (HF_WINDOW * 16 - 1), layer + 1), 0).r;
+  if (Hc == HF_NONE) return float(H);
+  return mix(float(H), float(Hc), w);
+}
+
 // Color of far texel column at horizontal position `pxz` (relative to uCamBlock) as a ray passing at
 // height `yr` would see it: its top when the ray is over it, its side when the ray is a little below the
 // top, and nothing when the ray is deep inside it (a nearer column hides it). The far hit filter uses
@@ -376,13 +403,12 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   float T = float(1 << sh);
   ivec2 ac = (uCamBlock.xz + ivec2(floor(pxz))) >> sh;
   ivec3 tc = ivec3(ac & (HF_WINDOW * 16 - 1), layer);
-  int H = texelFetch(uHfHeight, tc, 0).r;
-  if (H == HF_NONE) return false;
+  float fH = hfHeight(ac, layer);
+  if (fH == float(HF_NONE)) return false;
   vec4 attr = texelFetch(uHfAttr, tc, 0);
   int kind = int(attr.a * 255.0 + 0.5);
   if (kind == 0) return false;
 
-  float fH = float(H);
   // A ray well above the column does not touch it here (ground in front of a cliff base, say), so it
   // adds nothing; only a ray within about a pixel of the top reads the top.
   if (yr - fH > max(1.0, tt * uPixelAngle)) return false;
@@ -455,6 +481,11 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     ivec2 c = ivec2(floor((rel.xz + camRem) / T));          // cell relative to the camera's
     ivec2 tile = (camCell + c) >> 4;
     int tmax = texelFetch(uHfTiles, ivec3(tile & (HF_WINDOW - 1), layer), 0).r;
+    if (tmax != HF_NONE && lvl < last) {
+      // Heights blend toward the coarser level's near the hand-over, which may stand higher.
+      int cmax = texelFetch(uHfTiles, ivec3((tile >> 1) & (HF_WINDOW - 1), layer + 1), 0).r;
+      if (cmax != HF_NONE) tmax = max(tmax, cmax);
+    }
 
     // Where the ray leaves this tile.
     ivec2 lo = (tile << 4) - camCell;
@@ -478,9 +509,8 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     for (int j = 0; j < 34; j++) {
       steps++;
       ivec2 ac = camCell + c;
-      int H = texelFetch(uHfHeight, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0).r;
-      if (H != HF_NONE) {
-        float fH = float(H);
+      float fH = hfHeight(ac, layer);
+      if (fH != float(HF_NONE)) {
         float th = -1.0;
         int hax = axis;
         if (y0 + d.y * tc <= fH) {
