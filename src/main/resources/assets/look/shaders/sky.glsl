@@ -10,8 +10,8 @@
 //   cloudShadow(worldPos, L)             1 = sunlit, 0 = in cloud shadow; multiply into sun visibility (3.1)
 //   aerialPerspective(c, t, d, y0)       fog over any color
 //
-// Colors leave here as display values: the resolve pass only clamps today. When it gets a real
-// tonemap, drop skyTone() and feed the raw radiance instead.
+// Colors leave here as HDR radiance (the sun disc is well above 1, so it blooms); the resolve pass
+// applies exposure and the tonemap, the same as for terrain.
 
 uniform int uSkyFeatures;         // bit 0 sky, 1 clouds, 2 fog (SkyState)
 uniform int uCloudStyle;          // 0 off, 1 vanilla grid, 2 soft
@@ -26,7 +26,6 @@ const float SKY_BETA_M = 21e-6;
 const float SKY_HR = 8e3;
 const float SKY_HM = 1.2e3;
 const float SKY_SUN_I = 22.0;
-const float SKY_EXPOSURE = 1.8;
 
 const float CLOUD_CELL = 12.0;
 const float CLOUD_THICK = 4.0;       // vanilla grid
@@ -123,11 +122,7 @@ vec3 atmosphereScatter(vec3 d, vec3 L, int nView, int nLight) {
   return mix(raw, vec3(dot(raw, vec3(0.3, 0.55, 0.15))) * vec3(0.95, 1.0, 1.1), 0.12);
 }
 
-vec3 skyTone(vec3 c) {
-  return 1.0 - exp(-c * SKY_EXPOSURE);
-}
-
-// The sky without sun, moon, stars or clouds, as a display color. Directions below the horizon use the
+// The sky without sun, moon, stars or clouds, as radiance. Directions below the horizon use the
 // horizon color, which is what distant terrain fades into.
 vec3 skyBackground(vec3 d, int nView, int nLight) {
   vec3 dc = normalize(vec3(d.x, max(d.y, 0.0) + 0.012, d.z));
@@ -142,7 +137,7 @@ vec3 skyBackground(vec3 d, int nView, int nLight) {
   float lum = dot(raw, vec3(0.3, 0.55, 0.15));
   vec3 grey = vec3(lum) * vec3(0.85, 0.88, 0.95) * (1.0 - 0.45 * uThunder);
   raw = mix(raw, grey, clamp(uRain * 0.85, 0.0, 1.0));
-  return skyTone(raw);
+  return raw;
 }
 
 vec3 skyStars(vec3 d) {
@@ -163,7 +158,7 @@ vec3 skyStars(vec3 d) {
   return tint * b * vis;
 }
 
-// Sun disc and moon with its phase, as display colors.
+// Sun disc and moon with its phase, as radiance.
 vec3 skySunMoon(vec3 d) {
   vec3 col = vec3(0.0);
   float clear = 1.0 - uRain;

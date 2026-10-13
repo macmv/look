@@ -1201,12 +1201,16 @@ const float MOON_INTENSITY = 0.14;
 const float BLOCK_INTENSITY = 1.3;
 const float MIN_LIGHT = 0.025;    // the floor of the ambient term; the dimension's ambient light adds to it
 
+// From sky.glsl, which is pasted in after the light model.
+vec3 skyTransmittance(vec3 L);
+float cloudShadow(vec3 worldPos, vec3 L);
+
 // Color and strength of the direct light, sun by day and moon by night, fading to nothing at the horizon.
 vec3 directLightColor() {
   float sunAmt = smoothstep(0.0, 0.15, uSunDir.y);
   float moonAmt = smoothstep(0.0, 0.15, uMoonDir.y);
-  // Sunlight turns orange as it nears the horizon (the atmosphere model will give this later).
-  vec3 sunC = mix(vec3(1.0, 0.42, 0.14), vec3(1.0, 0.96, 0.88), smoothstep(0.05, 0.5, uSunDir.y)) * SUN_INTENSITY;
+  // The atmosphere reddens and dims the sunlight toward the horizon.
+  vec3 sunC = sunAmt > 0.0 ? skyTransmittance(uSunDir) * SUN_INTENSITY : vec3(0.0);
   // Moon phase 0 is full, 4 new.
   float phase = 1.0 - float(min(uMoonPhase, 8 - uMoonPhase)) / 4.0;
   vec3 moonC = vec3(0.45, 0.55, 0.95) * MOON_INTENSITY * (0.3 + 0.7 * phase);
@@ -1235,6 +1239,7 @@ vec3 enhancedLight(vec3 pos, vec3 n, vec2 light, float ao) {
   if (ndl > 0.0) {
     // Outside the maps, whether the sky is visible stands in for the shadow.
     float vis = sunVisibility(pos, n, smoothstep(0.35, 0.9, light.x));
+    vis *= cloudShadow(vec3(uCamBlock) + pos, uShadowDir);
     direct = directLightColor() * (ndl * vis);
   }
   vec3 ambient = skyAmbient(n) * (light.x * light.x) + vec3(MIN_LIGHT + 0.4 * uAmbientLight);

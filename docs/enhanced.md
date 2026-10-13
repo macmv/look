@@ -15,7 +15,7 @@ tonemap, looking the same as Vanilla. The sun, moon and rain uniforms are declar
 Sky and atmosphere (4.1 to 4.3, steps 2 and 5) exist: `sky.glsl` (pasted into `voxel.fsh` inside
 `#ifdef ENHANCED` by an `#include` line that `VoxelRenderer` expands) has an analytic Rayleigh/Mie sky,
 sun and moon discs with phases, stars, vanilla-style and soft volumetric clouds, `cloudShadow(pos, L)`
-(not yet used by any lighting), and aerial perspective with height, rain and night fog and the border
+(multiplied into the sun's visibility in `enhancedLight`), and aerial perspective with height, rain and night fog and the border
 fade. `SkyState` holds the feature bits, cloud style (`-Dlook.clouds=0|1|2`) and wind, and
 `LevelRendererMixin` cancels vanilla's `renderSky` and `renderClouds` in the overworld. Not done:
 aurora, rainbow, biome fog, cave fog, blindness and darkness fog, matching vanilla's entity fog to the
@@ -442,8 +442,7 @@ Threshold + downsample/upsample chain on the HDR world pass output, added back b
 Only the voxel world blooms in the first version; entities draw after the resolve pass (9.1).
 
 Built (`PostChain`): threshold with a soft knee, 13-tap downsample chain, tent upsample, added in
-`resolve.fsh`. Bloom does not spill onto sky pixels, because the resolve pass discards pixels the world
-pass missed. Knobs in `EnhancedSettings`.
+`resolve.fsh`. The sky is HDR radiance with alpha 1, so it blooms like terrain (the sun disc most). Knobs in `EnhancedSettings`.
 
 ### 7.3 Auto-exposure
 
