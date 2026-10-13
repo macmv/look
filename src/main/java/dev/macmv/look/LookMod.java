@@ -11,6 +11,7 @@ public final class LookMod implements ClientModInitializer {
   @Override
   public void onInitializeClient() {
     ClientWorldDescriptor.register();
+    LookSettings.load();
     NativeLib.load();
     LOGGER.info("Loaded {}", NativeLib.version());
   }

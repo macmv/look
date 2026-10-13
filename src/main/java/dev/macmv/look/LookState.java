@@ -26,12 +26,26 @@ public final class LookState {
   public static int debug = 0;
 
   private static final String[] DEBUG_NAMES = {"off", "step heatmap", "LOD levels", "no mipmaps", "unlit", "no biome tint", "mip level fixed at 2", "alpha test off"};
+  public static final int DEBUG_COUNT = DEBUG_NAMES.length;
 
   private LookState() {}
 
   /** Name of the current debug view. */
   public static String debugName() {
     return DEBUG_NAMES[debug];
+  }
+
+  public static String debugName(int view) {
+    return DEBUG_NAMES[view];
+  }
+
+  /** Switch between the voxel renderer and vanilla's chunk renderer. */
+  public static void setVoxelEnabled(boolean enabled) {
+    if (voxelEnabled == enabled) return;
+    voxelEnabled = enabled;
+    // Vanilla's meshes leave water out while the voxel renderer is on, so they need building again.
+    Minecraft mc = Minecraft.getInstance();
+    if (mc.levelRenderer != null) mc.levelRenderer.allChanged();
   }
 
   /** Call once per frame on the render thread. Key presses are only delivered with no screen open. */
@@ -50,10 +64,8 @@ public final class LookState {
     }
 
     while (LookKeys.TOGGLE_RENDERER.consumeClick()) {
-      voxelEnabled = !voxelEnabled;
+      setVoxelEnabled(!voxelEnabled);
       mc.gui.setOverlayMessage(Component.literal("Look renderer: " + (voxelEnabled ? "voxel" : "vanilla")), false);
-      // Vanilla's meshes leave water out while the voxel renderer is on, so they need building again.
-      if (mc.levelRenderer != null) mc.levelRenderer.allChanged();
     }
 
     while (LookKeys.TOGGLE_RENDER_MODE.consumeClick()) {

@@ -11,7 +11,9 @@
     "GuiMixin",
     "LevelRendererMixin",
     "LiquidBlockRendererMixin",
+    "MinecraftMixin",
     "OptionsMixin",
+    "OptionsSubScreenAccessor",
     "WeightedBakedModelAccessor"
   ],
   "injectors": {
