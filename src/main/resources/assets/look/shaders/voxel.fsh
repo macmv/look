@@ -51,6 +51,22 @@ uniform vec3 uMoonDir;            // unit vector toward the moon
 uniform int uMoonPhase;           // 0 full .. 7
 uniform float uRain;              // smoothed rain level, 0..1
 uniform float uThunder;           // smoothed thunder level, 0..1
+
+// --- Sun shadows (ShadowPass.java, docs/enhanced.md 3.3). Positions are relative to uCamBlock. ---
+uniform int uSunLighting;         // 1: sun / moon and sky ambient lighting, 0: vanilla's light (Nether, End)
+uniform vec3 uShadowDir;          // unit vector toward the light: the sun by day, the moon by night
+uniform vec3 uShadowRight;        // the shadow maps' axes: orthonormal with uShadowDir
+uniform vec3 uShadowUp;
+uniform vec3 uShadowCenter[2];    // per cascade (0 near, 1 far): center of the map, snapped to texels
+uniform float uShadowHalf[2];     // half width of the map in blocks
+uniform float uShadowRay[2];      // distance from the map's plane to its center, along uShadowDir
+uniform float uShadowTexels[2];   // texels per side
+#ifdef SHADOW_PASS
+uniform int uShadowCascade;       // the cascade being drawn
+#else
+uniform sampler2D uShadowMap0;    // R32F: ray distance from the plane to the first hit, SHADOW_MISS for none
+uniform sampler2D uShadowMap1;
+#endif
 #endif
 
 in vec2 vNdc;
@@ -1020,6 +1036,176 @@ vec3 heat(float x) {
   return vec3(clamp(4.0 * x - 2.0, 0.0, 1.0), clamp(2.0 - abs(4.0 * x - 2.0), 0.0, 1.0), clamp(2.0 - 4.0 * x, 0.0, 1.0));
 }
 
+#ifdef ENHANCED
+#ifndef SHADOW_PASS
+// ---------------------------------------------------------------------------------------------------
+// Sun shadows: lookups into the maps ShadowPass built, and the Enhanced lighting model on top of them.
+// ---------------------------------------------------------------------------------------------------
+
+const float SHADOW_MISS = 1.0e6;
+const vec2 POISSON[12] = vec2[12](
+  vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
+  vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
+  vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
+
+// Interleaved gradient noise (Jimenez): a cheap blue-ish noise from the pixel position, to rotate the kernel.
+float shadowNoise() {
+  return fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+}
+
+// Stored distance of texel `t` of cascade `c`.
+float shadowFetch(int c, ivec2 t) {
+  int n = int(uShadowTexels[c]);
+  t = clamp(t, ivec2(0), ivec2(n - 1));
+  return c == 0 ? texelFetch(uShadowMap0, t, 0).r : texelFetch(uShadowMap1, t, 0).r;
+}
+
+// Where `pos` is in cascade `c`: xy the (fractional) texel, z the ray distance from the map's plane to
+// the point, the number to compare with shadowFetch.
+vec3 shadowCoords(int c, vec3 pos) {
+  vec3 q = pos - uShadowCenter[c];
+  vec2 uv = vec2(dot(q, uShadowRight), dot(q, uShadowUp)) / uShadowHalf[c] * 0.5 + 0.5;
+  return vec3(uv * uShadowTexels[c], uShadowRay[c] - dot(q, uShadowDir));
+}
+
+// How far toward the edge of cascade `c`'s box `pos` is: 0 at the center, 1 at the edge, and 2 where
+// the map has no rays (behind the plane or past the far end of the rays).
+float shadowExtent(int c, vec3 pos) {
+  vec3 sc = shadowCoords(c, pos);
+  float n = uShadowTexels[c];
+  float e = max(abs(sc.x / n - 0.5), abs(sc.y / n - 0.5)) * 2.0;
+  if (sc.z < 0.0 || sc.z > uShadowRay[c] + 2.0 * uShadowHalf[c]) e = 2.0;
+  return e;
+}
+
+// Filtered visibility of `pos` (on a surface facing `n`, with n . L = ndl) in cascade `c`: a blocker
+// search to size the penumbra (it narrows toward the occluder, "contact hardening"), then a Poisson
+// kernel of that size, rotated per pixel.
+float shadowCascade(int c, vec3 pos, vec3 n, float ndl, float rot) {
+  float s = 2.0 * uShadowHalf[c] / uShadowTexels[c];   // blocks per texel
+  float tanT = clamp(sqrt(max(1.0 - ndl * ndl, 0.0)) / max(ndl, 0.05), 0.0, 4.0);
+  // Push the point off the surface along its normal and give the compare a slope scaled bias.
+  vec3 sc = shadowCoords(c, pos + n * (0.02 + s * 0.75));
+  float rd = sc.z - (0.03 + s * (0.4 + 0.3 * tanT));
+
+  float sn = sin(rot), cs = cos(rot);
+  mat2 R = mat2(cs, sn, -sn, cs);
+
+  float sum = 0.0, cnt = 0.0;
+  for (int i = 0; i < 8; i++) {
+    float ds = shadowFetch(c, ivec2(floor(sc.xy + R * POISSON[i] * 3.0)));
+    if (ds < rd) { sum += ds; cnt += 1.0; }
+  }
+  if (cnt == 0.0) return 1.0;
+
+  float width = clamp(0.035 * (sc.z - sum / cnt), s, 1.2);   // blocks
+  float radius = clamp(width / s, 1.0, 12.0);                 // texels
+  float lit = 0.0;
+  for (int i = 0; i < 12; i++) {
+    float ds = shadowFetch(c, ivec2(floor(sc.xy + R * POISSON[i] * radius)));
+    lit += ds >= rd ? 1.0 : 0.0;
+  }
+  return lit / 12.0;
+}
+
+// Fraction of the light that reaches `pos`, a point on a surface facing `normal`: the near map, the
+// far one past it, and `fallback` beyond the far map's fade (distance fade, docs 3.5).
+float sunVisibility(vec3 pos, vec3 normal, float fallback) {
+  float ndl = dot(normal, uShadowDir);
+  if (ndl <= 0.0) return 0.0;
+
+  float rot = 6.2831853 * shadowNoise();
+  float e0 = shadowExtent(0, pos);
+  if (e0 < 0.75) return shadowCascade(0, pos, normal, ndl, rot);
+
+  float e1 = shadowExtent(1, pos);
+  float far = e1 >= 0.95 ? fallback : mix(shadowCascade(1, pos, normal, ndl, rot), fallback, smoothstep(0.7, 0.95, e1));
+  if (e0 >= 0.95) return far;
+  return mix(shadowCascade(0, pos, normal, ndl, rot), far, smoothstep(0.75, 0.95, e0));
+}
+
+float sunVisibility(vec3 pos, vec3 normal) {
+  return sunVisibility(pos, normal, 1.0);
+}
+
+// One tap, no normal offset, no filtering: for callers that sample many times per pixel, like volumetric light.
+float sunVisibilityFast(vec3 pos) {
+  int c = shadowExtent(0, pos) < 0.9 ? 0 : 1;
+  if (shadowExtent(c, pos) >= 1.0) return 1.0;
+  vec3 sc = shadowCoords(c, pos);
+  return shadowFetch(c, ivec2(floor(sc.xy))) >= sc.z - 0.1 ? 1.0 : 0.0;
+}
+
+// --- The light model (docs 3.1, 3.2). Units: 1.0 is a white surface in vanilla's full light. ---
+const float SUN_INTENSITY = 0.7;
+const float MOON_INTENSITY = 0.14;
+const float BLOCK_INTENSITY = 1.3;
+const float MIN_LIGHT = 0.025;    // the floor of the ambient term; the dimension's ambient light adds to it
+
+// Color and strength of the direct light, sun by day and moon by night, fading to nothing at the horizon.
+vec3 directLightColor() {
+  float sunAmt = smoothstep(0.0, 0.15, uSunDir.y);
+  float moonAmt = smoothstep(0.0, 0.15, uMoonDir.y);
+  // Sunlight turns orange as it nears the horizon (the atmosphere model will give this later).
+  vec3 sunC = mix(vec3(1.0, 0.42, 0.14), vec3(1.0, 0.96, 0.88), smoothstep(0.05, 0.5, uSunDir.y)) * SUN_INTENSITY;
+  // Moon phase 0 is full, 4 new.
+  float phase = 1.0 - float(min(uMoonPhase, 8 - uMoonPhase)) / 4.0;
+  vec3 moonC = vec3(0.45, 0.55, 0.95) * MOON_INTENSITY * (0.3 + 0.7 * phase);
+  float weather = (1.0 - 0.85 * uRain) * (1.0 - 0.5 * uThunder);
+  return (sunC * sunAmt + moonC * moonAmt) * weather;
+}
+
+// Light from the sky for a surface facing n: sky above, horizon at the sides, ground bounce below.
+vec3 skyAmbient(vec3 n) {
+  float day = smoothstep(-0.1, 0.25, uSunDir.y);
+  vec3 zenith = mix(vec3(0.03, 0.05, 0.12), vec3(0.40, 0.55, 0.90), day);
+  vec3 horizon = mix(vec3(0.03, 0.045, 0.09), vec3(0.50, 0.56, 0.68), day);
+  vec3 ground = mix(vec3(0.015, 0.02, 0.03), vec3(0.24, 0.22, 0.19), day);
+  // Dusk and dawn warm the horizon.
+  float twilight = 1.0 - smoothstep(0.0, 0.35, abs(uSunDir.y));
+  horizon = mix(horizon, vec3(0.75, 0.45, 0.35) * 0.7, twilight * 0.5);
+  vec3 c = n.y > 0.0 ? mix(horizon, zenith, n.y) : mix(horizon, ground, -n.y);
+  return c * (1.0 - 0.4 * uRain);
+}
+
+// Irradiance on a surface at `pos` facing `n`, to multiply with its albedo. `light` is sky, block in
+// 0..1 and `ao` the voxel ambient occlusion factor.
+vec3 enhancedLight(vec3 pos, vec3 n, vec2 light, float ao) {
+  float ndl = max(dot(n, uShadowDir), 0.0);
+  vec3 direct = vec3(0.0);
+  if (ndl > 0.0) {
+    // Outside the maps, whether the sky is visible stands in for the shadow.
+    float vis = sunVisibility(pos, n, smoothstep(0.35, 0.9, light.x));
+    direct = directLightColor() * (ndl * vis);
+  }
+  vec3 ambient = skyAmbient(n) * (light.x * light.x) + vec3(MIN_LIGHT + 0.4 * uAmbientLight);
+  float b = light.y;
+  vec3 blockRgb = mix(vec3(1.0, 0.52, 0.2), vec3(1.0, 0.85, 0.65), b * b * b) * (pow(b, 2.2) * BLOCK_INTENSITY);
+  return direct + (ambient + blockRgb) * ao;
+}
+#endif
+#endif
+
+#ifdef SHADOW_PASS
+// The shadow pass: one ray per texel of the cascade, from its plane along -uShadowDir, writing how far
+// it got. Water does not stop it.
+void main() {
+  float h = uShadowHalf[uShadowCascade];
+  vec3 o = uShadowCenter[uShadowCascade] + uShadowDir * uShadowRay[uShadowCascade]
+      + uShadowRight * (vNdc.x * h) + uShadowUp * (vNdc.y * h);
+  vec3 d = -uShadowDir;
+  d = vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
+
+  gTapCap = 1;
+  float tHit;
+  uint id;
+  int axis, level, steps, hitKind;
+  ivec3 voxel;
+  vec3 albedo, hitNormal;
+  bool hit = trace(o, d, tHit, id, axis, voxel, level, albedo, steps, hitNormal, hitKind);
+  fragColor = vec4(hit ? tHit : 1.0e6, 0.0, 0.0, 1.0);
+}
+#else
 void main() {
   vec4 n = uInvViewProj * vec4(vNdc, -1.0, 1.0);
   vec4 f = uInvViewProj * vec4(vNdc, 1.0, 1.0);
@@ -1093,8 +1279,19 @@ void main() {
       light = mix(vec2(1.0, 0.0), l / 15.0, fade);
     }
 
+#ifdef ENHANCED
+    vec3 lit;
+    if (uSunLighting != 0) {
+      // HDR, so no clamp. Unshaded models (plants) are lit as if facing up.
+      vec3 ln = (hitKind & 4) != 0 ? vec3(0.0, 1.0, 0.0) : hitNormal;
+      lit = enhancedLight(o + d * tHit, ln, light, ao);
+    } else {
+      lit = min(lightRgb(light) * shade * ao, vec3(1.0));
+    }
+#else
     vec3 lit = lightRgb(light) * shade * ao;
     lit = min(lit, vec3(1.0));
+#endif
     if (uDebug == 4) lit = vec3(1.0);
 
     if (uDebug == 2) {
@@ -1140,6 +1337,9 @@ void main() {
   wn[gWaterAxis] = d[gWaterAxis] > 0.0 ? -1.0 : 1.0;
   float wshade = gWaterExit ? 0.85 : dot(wn * wn, vec3(0.6, wn.y > 0.0 ? 1.0 : 0.5, 0.8));
   vec3 waterLit = uDebug == 4 ? vec3(1.0) : min(lightRgb(wl) * wshade, vec3(1.0));
+#ifdef ENHANCED
+  if (uSunLighting != 0 && uDebug != 4) waterLit = enhancedLight(o + d * gWaterT, gWaterExit ? -d : wn, wl, 1.0);
+#endif
   vec3 waterRgb = underFog(waterAlbedo * waterLit, gWaterT);
 
   if (hit) {
@@ -1148,3 +1348,4 @@ void main() {
     fragColor = vec4(waterRgb, alpha);
   }
 }
+#endif

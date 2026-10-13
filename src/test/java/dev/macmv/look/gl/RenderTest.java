@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import dev.macmv.look.Lod;
+import dev.macmv.look.ShadowPass;
 import java.awt.image.BufferedImage;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -205,5 +206,38 @@ class RenderTest {
         assertTrue(bad == 0, bad + " pixels differ between Vanilla and Enhanced");
       }
     }
+  }
+
+  /** Camera over the shadow scene, looking at the origin from +x, -z, with the sun to the side so shadows fall across the view. */
+  private static BufferedImage shadowScene(float[] sun, double x, double y, double z, float yaw, float pitch) {
+    ShadowPass.configure(32f, 512, 64f, 512);
+    try (TestScene scene = new TestScene(atlas, TestWorlds.SHADOWS, 0, 0, 96)) {
+      var vanilla = scene.frame(SW, SH, x, y, z, yaw, pitch, 70f, 0);
+      return gl.render(scene.enhanced(vanilla, sun), scene, SKY, SW, SH, true);
+    }
+  }
+
+  private static final int SW = 640;
+  private static final int SH = 360;
+
+  /** Afternoon sun: the pillar, post and slab throw shadows over the grass, soft at the far end. */
+  @Test
+  void enhancedSunShadows() {
+    BufferedImage img = shadowScene(new float[] {-0.6f, 0.55f, -0.1f}, 14.5, 66.0, -16.5, 41f, 22f);
+    Golden.check("enhanced_shadows", img);
+  }
+
+  /** Low sun: long shadows, orange light. */
+  @Test
+  void enhancedSunsetShadows() {
+    BufferedImage img = shadowScene(new float[] {-0.8f, 0.2f, -0.1f}, 14.5, 63.0, -16.5, 41f, 12f);
+    Golden.check("enhanced_sunset", img);
+  }
+
+  /** The moon is up (the sun is below the horizon): dim blue light and its own shadows. */
+  @Test
+  void enhancedMoonShadows() {
+    BufferedImage img = shadowScene(new float[] {0.6f, -0.55f, 0.1f}, 14.5, 66.0, -16.5, 41f, 22f);
+    Golden.check("enhanced_moon", img);
   }
 }
