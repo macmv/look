@@ -236,12 +236,19 @@ final class TestScene implements AutoCloseable {
 
   /** The same frame drawn the Enhanced way: HDR target, then resolve. */
   VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f) {
-    return enhanced(f, new float[] {0f, 1f, 0f}, f.skyDarken());
+    return enhanced(f, new float[] {0f, 1f, 0f});
   }
 
   /** The Enhanced frame with the sun toward {@code sun} (the moon opposite it). */
   VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, float[] sun) {
-    return enhanced(f, sun, f.skyDarken());
+    float n = (float) Math.sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
+    float[] s = {sun[0] / n, sun[1] / n, sun[2] / n};
+    return enhanced(f, new VoxelRenderer.Atmosphere(s, new float[] {-s[0], -s[1], -s[2]}, 0, 0f, 0f));
+  }
+
+  /** Enhanced with a given sun, moon and weather. */
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, VoxelRenderer.Atmosphere atm) {
+    return enhanced(f, atm, f.skyDarken());
   }
 
   /** The Vanilla frame with the sky dimmed to {@code skyDarken}. */
@@ -254,13 +261,10 @@ final class TestScene implements AutoCloseable {
 
   /** Enhanced, with the sky dimmed to {@code skyDarken} so that emission stands out. */
   VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, float skyDarken) {
-    return enhanced(f, new float[] {0f, 1f, 0f}, skyDarken);
+    return enhanced(f, new VoxelRenderer.Atmosphere(new float[] {0f, 1f, 0f}, new float[] {0f, -1f, 0f}, 0, 0f, 0f), skyDarken);
   }
 
-  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, float[] sun, float skyDarken) {
-    float n = (float) Math.sqrt(sun[0] * sun[0] + sun[1] * sun[1] + sun[2] * sun[2]);
-    float[] s = {sun[0] / n, sun[1] / n, sun[2] / n};
-    VoxelRenderer.Atmosphere atm = new VoxelRenderer.Atmosphere(s, new float[] {-s[0], -s[1], -s[2]}, 0, 0f, 0f);
+  VoxelRenderer.Frame enhanced(VoxelRenderer.Frame f, VoxelRenderer.Atmosphere atm, float skyDarken) {
     return new VoxelRenderer.Frame(
         f.view(), f.projection(), f.camX(), f.camY(), f.camZ(), f.gridRows(), f.levelParams(), f.maxDist(), f.minY(),
         f.atlasWidth(), f.atlasHeight(), f.atlasMaxLevel(), f.viewportHeight(), f.debug(), f.hfIds(), f.time(),

@@ -1267,6 +1267,10 @@ void main() {
   fragColor = vec4(hit ? tHit : 1.0e6, 0.0, 0.0, 1.0);
 }
 #else
+#ifdef ENHANCED
+#include "sky.glsl"
+#endif
+
 void main() {
   vec4 n = uInvViewProj * vec4(vNdc, -1.0, 1.0);
   vec4 f = uInvViewProj * vec4(vNdc, 1.0, 1.0);
@@ -1290,6 +1294,14 @@ void main() {
   bool hit = trace(o, d, tHit, id, axis, voxel, level, albedo, steps, hitNormal, hitKind);
   bool water = gWaterT >= 0.0;
 
+#ifdef ENHANCED
+  // Enhanced owns the sky: shade misses instead of leaving them to vanilla, at the far depth.
+  if (!hit && !water && uDebug != 1 && (uSkyFeatures & 1) != 0) {
+    gl_FragDepth = 1.0;
+    fragColor = vec4(skyPixel(vec3(uCamBlock) + o, d), 1.0);
+    return;
+  }
+#endif
   if (!hit && !water && uDebug != 1) discard;
 
   // Same depth vanilla would have written for this point (camera-relative position). Water in front of
@@ -1361,6 +1373,9 @@ void main() {
     }
 
     solidRgb = underFog(albedo * lit + EMISSION(id, albedo), tHit);
+#ifdef ENHANCED
+    solidRgb = atmosphereHit(solidRgb, vec3(uCamBlock) + o, d, tHit);
+#endif
   }
 
   if (!water) {
@@ -1402,6 +1417,14 @@ void main() {
   if (uSunLighting != 0 && uDebug != 4) waterLit = enhancedLight(o + d * gWaterT, gWaterExit ? -d : wn, wl, 1.0);
 #endif
   vec3 waterRgb = underFog(waterAlbedo * waterLit, gWaterT);
+#ifdef ENHANCED
+  waterRgb = atmosphereHit(waterRgb, vec3(uCamBlock) + o, d, gWaterT);
+  if (!hit && (uSkyFeatures & 1) != 0) {
+    // Water with nothing behind it: the sky shows through, so blend here instead of with the target.
+    fragColor = vec4(mix(skyPixel(vec3(uCamBlock) + o, d), waterRgb, alpha), 1.0);
+    return;
+  }
+#endif
 
   if (hit) {
     fragColor = vec4(mix(solidRgb, waterRgb, alpha), 1.0);
