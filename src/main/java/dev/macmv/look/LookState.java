@@ -14,7 +14,8 @@ import net.minecraft.network.chat.Component;
  * </ul>
  *
  * Vanilla keeps compiling section meshes while the voxel renderer is on, and the voxel world keeps
- * queueing changes while vanilla renders, so switching either way is instant.
+ * queueing changes while vanilla renders. Switching is instant for the voxel world, and vanilla's
+ * meshes are rebuilt (they leave water out while the voxel renderer is on).
  */
 public final class LookState {
   public static boolean voxelEnabled = true;
@@ -48,6 +49,8 @@ public final class LookState {
     while (LookKeys.TOGGLE_RENDERER.consumeClick()) {
       voxelEnabled = !voxelEnabled;
       mc.gui.setOverlayMessage(Component.literal("Look renderer: " + (voxelEnabled ? "voxel" : "vanilla")), false);
+      // Vanilla's meshes leave water out while the voxel renderer is on, so they need building again.
+      if (mc.levelRenderer != null) mc.levelRenderer.allChanged();
     }
 
     while (LookKeys.TOGGLE_DEBUG.consumeClick()) {

@@ -300,6 +300,13 @@ public final class WorldSource implements VoxelSource {
             }
             for (int i = 0; i < 4; i++) exposed[i] = isOpen(samples[i + 4]);
             id = LodReduce.reduce(samples, exposed);
+            if (BlockClassifier.isWater(id)) {
+              // A voxel is water all the way up when water is in its upper half too. Otherwise the
+              // surface is in the middle, which is where the sea level of a cell this size usually is.
+              boolean upper = false;
+              for (int i = 4; i < 8; i++) upper |= BlockClassifier.isWater(samples[i]);
+              id = BlockClassifier.waterId(8) | (upper ? 0 : 4 << BlockClassifier.FILL_SHIFT);
+            }
           }
           if (id != 0) solid++;
           out.putShort(((y * 16 + z) * 16 + x) << 1, (short) id);

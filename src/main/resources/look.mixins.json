@@ -7,6 +7,7 @@
     "ClientChunkCacheMixin",
     "GuiMixin",
     "LevelRendererMixin",
+    "LiquidBlockRendererMixin",
     "MultiNoiseBiomeSourceAccessor",
     "OptionsMixin",
     "WeightedBakedModelAccessor"

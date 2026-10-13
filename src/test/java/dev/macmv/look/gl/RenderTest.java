@@ -84,6 +84,24 @@ class RenderTest {
     }
   }
 
+  /** Water seen from the bank: the floor shows through the surface, and the post stands in it. */
+  @Test
+  void pondFromTheBank() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
+      BufferedImage img = draw(scene, -17.5, 63.0, -9.5, 300f, 22f, 0);
+      Golden.check("pond_bank", img);
+    }
+  }
+
+  /** The same pond from under the surface: fogged, with the surface seen from below. */
+  @Test
+  void pondUnderWater() {
+    try (TestScene scene = new TestScene(atlas, TestWorlds.POND, 0, 0, 96)) {
+      BufferedImage img = draw(scene, -3.5, 56.5, -2.5, 300f, 12f, 0);
+      Golden.check("pond_under", img);
+    }
+  }
+
   @Test
   void hillsToTheHorizon() {
     try (TestScene scene = new TestScene(atlas, TestWorlds.HILLS, 0, 0, 700)) {

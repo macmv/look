@@ -28,10 +28,12 @@ import org.lwjgl.system.MemoryUtil;
  *   <li>0, 1: grass and foliage color at the surface of the column;
  *   <li>2, 3: the same for the biome underneath, when the column has a second one (caves);
  *   <li>4: R is where the lower biome ends, see {@link #SPLIT_UNIT}. Read with texelFetch.
+ *   <li>{@link #WATER_LAYER}: water color at the surface of the column.
  *   <li>{@link #FAR_FIRST} + level: grass color of predicted terrain (see {@link SeedSource}), for
  *       columns without a loaded chunk. Texels are {@link #farCell} blocks wide and alpha says
  *       whether one is filled.
  *   <li>{@link #FAR_FOLIAGE_FIRST} + level: the same for foliage, which predicted trees use.
+ *   <li>{@link #FAR_WATER_FIRST} + level: the same for water.
  * </ul>
  * Columns with one biome have the lower layers equal to the upper ones. The shader samples the
  * color layers with bilinear filtering.
@@ -54,14 +56,19 @@ public final class TintMap {
   /** The split layer stores the lower biome's top as this many blocks above the level floor. */
   public static final int SPLIT_UNIT = 2;
   /** Layers filled from loaded chunks. */
-  private static final int NEAR_LAYERS = 5;
+  private static final int NEAR_LAYERS = 6;
+  public static final int WATER_LAYER = 5;
   public static final int FAR_FIRST = NEAR_LAYERS;
   /** {@code FAR_FIRST + Lod.LEVELS + level}: foliage color of predicted terrain, laid out like the grass. */
   public static final int FAR_FOLIAGE_FIRST = NEAR_LAYERS + Lod.LEVELS;
-  public static final int LAYERS = NEAR_LAYERS + 2 * Lod.LEVELS;
+  /** {@code FAR_FIRST + 2 * Lod.LEVELS + level}: water color of predicted terrain. */
+  public static final int FAR_WATER_FIRST = NEAR_LAYERS + 2 * Lod.LEVELS;
+  public static final int LAYERS = NEAR_LAYERS + 3 * Lod.LEVELS;
   private static final int CHUNK_TEXELS = 16 / CELL;
   /** Neighbor refills per {@link #flush}. */
   private static final int REFILLS_PER_FLUSH = 6;
+  /** Vanilla's water color for a column with no biome to ask. */
+  private static final int DEFAULT_WATER = 0x3F76E4;
 
   private static final Set<Long> filled = new HashSet<>();
   private static final Set<Long> stale = new LinkedHashSet<>();
@@ -108,6 +115,12 @@ public final class TintMap {
   /** Like {@link #queueFar}, for the foliage colors. */
   public static void queueFarFoliage(int level, int x, int z, int side, byte[] rgba) {
     pendingFarPos.add(new int[] {FAR_FOLIAGE_FIRST + level, x & (SIZE - 1), z & (SIZE - 1), side});
+    pendingFarData.add(rgba);
+  }
+
+  /** Like {@link #queueFar}, for the water colors. */
+  public static void queueFarWater(int level, int x, int z, int side, byte[] rgba) {
+    pendingFarPos.add(new int[] {FAR_WATER_FIRST + level, x & (SIZE - 1), z & (SIZE - 1), side});
     pendingFarData.add(rgba);
   }
 
@@ -158,7 +171,7 @@ public final class TintMap {
     }
 
     byte[] data = new byte[NEAR_LAYERS * CHUNK_TEXELS * CHUNK_TEXELS * 4];
-    int[] colors = new int[2];
+    int[] colors = new int[3];
 
     for (int tz = 0; tz < CHUNK_TEXELS; tz++) {
       for (int tx = 0; tx < CHUNK_TEXELS; tx++) {
@@ -171,6 +184,7 @@ public final class TintMap {
         blend(near, pos.x, pos.z, x, y, z, r, colors);
         put(data, 0, texel, colors[0]);
         put(data, 1, texel, colors[1]);
+        put(data, WATER_LAYER, texel, colors[2]);
 
         // Look for a second biome below the surface; there is only ever one more.
         Biome top = chunk.getNoiseBiome(x >> 2, y >> 2, z >> 2).value();
@@ -196,12 +210,12 @@ public final class TintMap {
   }
 
   /**
-   * Box average of the grass (out[0]) and foliage (out[1]) colors of the columns within {@code r}
+   * Box average of the grass (out[0]), foliage (out[1]) and water (out[2]) colors of the columns within {@code r}
    * blocks of (x, z), all at height {@code y}, like vanilla. {@code near} is the 3x3 chunks around
    * (cx, cz); columns in unloaded chunks are skipped.
    */
   private static void blend(LevelChunk[] near, int cx, int cz, int x, int y, int z, int r, int[] out) {
-    long[] sum = new long[6];
+    long[] sum = new long[9];
     int n = 0;
     for (int bz = z - r; bz <= z + r; bz++) {
       for (int bx = x - r; bx <= x + r; bx++) {
@@ -210,12 +224,16 @@ public final class TintMap {
         Biome biome = c.getNoiseBiome(bx >> 2, y >> 2, bz >> 2).value();
         int g = biome.getGrassColor(bx, bz);
         int f = biome.getFoliageColor();
+        int w = biome.getWaterColor();
         sum[0] += g >> 16 & 255;
         sum[1] += g >> 8 & 255;
         sum[2] += g & 255;
         sum[3] += f >> 16 & 255;
         sum[4] += f >> 8 & 255;
         sum[5] += f & 255;
+        sum[6] += w >> 16 & 255;
+        sum[7] += w >> 8 & 255;
+        sum[8] += w & 255;
         n++;
       }
     }
@@ -223,10 +241,12 @@ public final class TintMap {
     if (n == 0) {
       out[0] = GrassColor.getDefaultColor();
       out[1] = FoliageColor.getDefaultColor();
+      out[2] = DEFAULT_WATER;
       return;
     }
     out[0] = (int) (sum[0] / n) << 16 | (int) (sum[1] / n) << 8 | (int) (sum[2] / n);
     out[1] = (int) (sum[3] / n) << 16 | (int) (sum[4] / n) << 8 | (int) (sum[5] / n);
+    out[2] = (int) (sum[6] / n) << 16 | (int) (sum[7] / n) << 8 | (int) (sum[8] / n);
   }
 
   private static void put(byte[] data, int layer, int texel, int rgb) {
@@ -316,6 +336,7 @@ public final class TintMap {
     Arrays.fill(colors, GrassColor.getDefaultColor());
     colors[1] = colors[3] = FoliageColor.getDefaultColor();
     colors[4] = 0;
+    colors[WATER_LAYER] = DEFAULT_WATER;
     ByteBuffer buf = MemoryUtil.memAlloc(SIZE * SIZE * 4);
     try {
       GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 4);

@@ -48,9 +48,6 @@ public final class SeedSource implements VoxelSource {
     {Blocks.STONE, Blocks.STONE},
   };
 
-  /** Stand-in for water, which is not a voxel. Close enough to the ocean from a distance. */
-  private static final Block WATER = Blocks.LIGHT_BLUE_CONCRETE;
-
   /** The native engine, or 0 when there is no generator to predict. */
   private long handle;
   private boolean resolved;
@@ -60,7 +57,7 @@ public final class SeedSource implements VoxelSource {
   private int[] treeIds = new int[0];
 
   private final ByteBuffer keys = NativeLib.allocate(KEYS_PER_POLL * 8);
-  private final ByteBuffer tint = NativeLib.allocate(512);
+  private final ByteBuffer tint = NativeLib.allocate(768);
   private final long[] stats = new long[3];
 
   private SeedSource() {}
@@ -102,7 +99,7 @@ public final class SeedSource implements VoxelSource {
 
   /**
    * The voxel ids of the predicted terrain (see {@link #pushIds}): per surface kind the top and filler
-   * id, then stone and the water stand-in. Empty until the engine runs.
+   * id, then stone and water. Empty until the engine runs.
    */
   public int[] voxelIds() {
     return ids;
@@ -140,6 +137,9 @@ public final class SeedSource implements VoxelSource {
         byte[] foliage = new byte[side * side * 4];
         tint.get(256, foliage);
         TintMap.queueFarFoliage(level, sx * side, sz * side, side, foliage);
+        byte[] water = new byte[side * side * 4];
+        tint.get(512, water);
+        TintMap.queueFarWater(level, sx * side, sz * side, side, water);
       }
       int min = VoxelWorld.levelMin(level);
       for (int sy = min; sy < min + VoxelWorld.levelRows(level); sy++) VoxelWorld.invalidate(level, sx, sy, sz);
@@ -154,7 +154,7 @@ public final class SeedSource implements VoxelSource {
       now[i * 2 + 1] = BlockClassifier.voxelId(SURFACES[i][1].defaultBlockState());
     }
     now[SURFACES.length * 2] = BlockClassifier.voxelId(Blocks.STONE.defaultBlockState());
-    now[SURFACES.length * 2 + 1] = BlockClassifier.voxelId(WATER.defaultBlockState());
+    now[SURFACES.length * 2 + 1] = BlockClassifier.waterId(8);
 
     if (!Arrays.equals(now, ids)) {
       ids = now;

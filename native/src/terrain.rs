@@ -160,7 +160,9 @@ pub enum TileKind {
 /// (a texture of at most 8 x 8 texels comes before).
 pub const FAR_TINT_FOLIAGE: usize = 256;
 /// Bytes `Tile::write_far_tint` needs.
-pub const FAR_TINT_BYTES: usize = 2 * FAR_TINT_FOLIAGE;
+/// Offset in bytes of the water colors.
+pub const FAR_TINT_WATER: usize = 2 * FAR_TINT_FOLIAGE;
+pub const FAR_TINT_BYTES: usize = 3 * FAR_TINT_FOLIAGE;
 
 pub fn far_tint_layout(level: u32) -> (usize, usize) {
   let cell = 8usize.max(2usize << level);
@@ -185,7 +187,8 @@ impl Tile {
 
   /// Writes the tile as RGBA texels of the far tint textures, row major, and
   /// returns the texels per side. The grass colors come first, then (at
-  /// `FAR_TINT_FOLIAGE`) the foliage colors in the same layout. A texel takes
+  /// `FAR_TINT_FOLIAGE`) the foliage colors and (at `FAR_TINT_WATER`) the
+  /// water colors in the same layout. A texel takes
   /// the color of the first grass column of its group (so a coast does not
   /// tint its grass with the sea's biome), else of the group's middle column.
   /// Texels with no terrain have alpha 0.
@@ -206,7 +209,12 @@ impl Tile {
         }
         let o = (tz * side + tx) * 4;
         let alpha = if self.top[pick] == NO_TERRAIN { 0 } else { 0xFF };
-        for (rgb, o) in [(self.grass[pick], o), (self.foliage[pick], FAR_TINT_FOLIAGE + o)] {
+        let colors = [
+          (self.grass[pick], o),
+          (self.foliage[pick], FAR_TINT_FOLIAGE + o),
+          (self.water[pick], FAR_TINT_WATER + o),
+        ];
+        for (rgb, o) in colors {
           out[o] = (rgb >> 16) as u8;
           out[o + 1] = (rgb >> 8) as u8;
           out[o + 2] = rgb as u8;
@@ -257,9 +265,10 @@ impl Tile {
               }
             } else if vy + size >= top {
               // The voxel holding the surface. When that is under water this
-              // voxel is the water, and the seabed is hidden by
-              // it anyway.
-              voxel = if top < sea {
+              // voxel is the water, unless voxels are single blocks: coarser
+              // ones would lose the shallows, and the seabed is a voxel
+              // below that is not far off.
+              voxel = if top < sea && size > 1 {
                 with_fill(ids.water, sea - vy, size)
               } else {
                 with_fill(top_id, top - vy, size)
@@ -954,6 +963,18 @@ mod tests {
     assert_eq!(col[7], 13 | (7 << FILL_SHIFT));
     assert_eq!(col[8], 0);
     assert_eq!(col[2], 13);
+  }
+
+  #[test]
+  fn single_blocks_keep_the_seabed_under_the_water() {
+    let mut tile = Tile::empty();
+    tile.top[0] = 60;
+    // Level 0: the block at 59 is the seabed, the water starts above it.
+    let col = column(&brick(&tile, 0, 3));
+    assert_eq!(col[11], 10);
+    assert_eq!(col[12], 13);
+    assert_eq!(col[14], 13);
+    assert_eq!(col[15], 0);
   }
 
   #[test]

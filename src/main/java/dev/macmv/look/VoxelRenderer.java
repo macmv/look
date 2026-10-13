@@ -39,6 +39,9 @@ public final class VoxelRenderer {
   private static int uSkyDarken;
   private static int uAmbientLight;
   private static int uTime;
+  private static int uFogColor;
+  private static int uWaterId;
+  private static int uFogRange;
 
   private VoxelRenderer() {}
 
@@ -49,6 +52,9 @@ public final class VoxelRenderer {
    * @param levelParams per pyramid level (lowest section y, rows, first row), see {@link SectionLayout}
    * @param hfIds {@code SeedSource.voxelIds()} when the heightfield is drawn, else null
    * @param viewportHeight pixels, to size the mip level picked for a hit
+   * @param waterId voxel id of a whole water voxel, whose sprite and tint the water surface uses
+   * @param fogColor vanilla's fog color this frame, used under water
+   * @param fogStart where vanilla's fog starts and ends this frame, which under water is the water fog
    */
   public record Frame(
       Matrix4f view,
@@ -68,7 +74,11 @@ public final class VoxelRenderer {
       int[] hfIds,
       float time,
       float skyDarken,
-      float ambientLight) {}
+      float ambientLight,
+      int waterId,
+      float[] fogColor,
+      float fogStart,
+      float fogEnd) {}
 
   /** Must be called on the render thread with the main framebuffer bound. */
   public static void render(Matrix4f view, Matrix4f projection, double camX, double camY, double camZ) {
@@ -95,7 +105,9 @@ public final class VoxelRenderer {
         Minecraft.getInstance().getMainRenderTarget().height,
         LookState.debug,
         hf ? hfIds : null,
-        sky[0], sky[1], sky[2]);
+        sky[0], sky[1], sky[2],
+        BlockClassifier.waterId(8),
+        RenderSystem.getShaderFogColor(), RenderSystem.getShaderFogStart(), RenderSystem.getShaderFogEnd());
 
     int prevUnit = GlStateManager._getActiveTexture();
     VoxelWorld.bind();
@@ -116,7 +128,11 @@ public final class VoxelRenderer {
     if (program == 0) init();
 
     // Vanilla caches GL state in GlStateManager, so go through it for anything it tracks.
-    RenderSystem.disableBlend();
+    // Opaque pixels write alpha 1, so blending only shows on water with nothing solid behind it.
+    RenderSystem.enableBlend();
+    RenderSystem.blendFuncSeparate(
+        GlStateManager.SourceFactor.SRC_ALPHA, GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
+        GlStateManager.SourceFactor.ONE, GlStateManager.DestFactor.ZERO);
     RenderSystem.disableCull();
     RenderSystem.enableDepthTest();
     RenderSystem.depthFunc(GL33C.GL_LEQUAL);
@@ -175,8 +191,12 @@ public final class VoxelRenderer {
     GL33C.glUniform1f(uTime, f.time());
     GL33C.glUniform1f(uSkyDarken, f.skyDarken());
     GL33C.glUniform1f(uAmbientLight, f.ambientLight());
+    GL33C.glUniform1i(uWaterId, f.waterId());
+    GL33C.glUniform3f(uFogColor, f.fogColor()[0], f.fogColor()[1], f.fogColor()[2]);
+    GL33C.glUniform2f(uFogRange, f.fogStart(), f.fogEnd());
 
     GL33C.glDrawArrays(GL33C.GL_TRIANGLES, 0, 3);
+    RenderSystem.disableBlend();
 
     GlStateManager._glBindVertexArray(0);
     GlStateManager._glUseProgram(0);
@@ -236,6 +256,9 @@ public final class VoxelRenderer {
     uAmbientLight = GL33C.glGetUniformLocation(program, "uAmbientLight");
     uMinY = GL33C.glGetUniformLocation(program, "uMinY");
     uTime = GL33C.glGetUniformLocation(program, "uTime");
+    uFogColor = GL33C.glGetUniformLocation(program, "uFogColor");
+    uWaterId = GL33C.glGetUniformLocation(program, "uWaterId");
+    uFogRange = GL33C.glGetUniformLocation(program, "uFogRange");
 
     // Core profile needs a VAO bound even though the triangle comes from gl_VertexID.
     vao = GL33C.glGenVertexArrays();

@@ -37,6 +37,9 @@ uniform usamplerBuffer uLight;    // 4096 u8 per slot: sky light << 4 | block li
 uniform float uSkyDarken;         // vanilla's sky brightness for the time of day and weather, 0.2..1
 uniform float uAmbientLight;      // dimension ambient light, lifts the darkest light levels
 uniform float uTime;              // game ticks, wrapped to a multiple of the sway period
+uniform int uWaterId;             // voxel id of water, for the texture of its surface
+uniform vec3 uFogColor;           // vanilla's fog this frame, used when the camera is under water
+uniform vec2 uFogRange;           // fog start and end
 
 in vec2 vNdc;
 out vec4 fragColor;
@@ -46,7 +49,8 @@ const int TINT_BLOCKS = 2048;  // blocks the tint texture covers before wrapping
 const int TINT_CELL = 4;       // TintMap.CELL
 const int TINT_SPLIT_UNIT = 2; // TintMap.SPLIT_UNIT
 const int TINT_SIZE = 512;     // TintMap.SIZE
-const int TINT_FAR_FIRST = 5;  // TintMap.FAR_FIRST
+const int TINT_FAR_FIRST = 6;  // TintMap.FAR_FIRST
+const int TINT_WATER_LAYER = 5;  // TintMap.WATER_LAYER
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
 const int META_START = (8192 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level - 2) blocks wide
@@ -195,10 +199,29 @@ int variantRow(uint id, ivec3 cell) {
 vec3 gHfTint = vec3(1.0);
 bool gHfTintOn = false;
 int gTapCap = 8;   // most texture taps surface() takes along a grazing hit, the far filter takes one
+bool gKeepSeeThrough = false;  // surface() returns see-through texels too (water is drawn with its alpha)
+float gSurfAlpha = 1.0;        // alpha of the texture surface() last sampled
+
+// Water along the ray, tracked by trace(). Only the first surface between water and not-water is kept:
+// vanilla draws water as one translucent layer, whatever the depth.
+float gWaterT = -1.0;     // distance to that surface, -1 when the ray crossed none
+int gWaterAxis = 1;
+bool gWaterExit = false;  // the ray was in the water and left it (seen from below)
+ivec3 gWaterVoxel = ivec3(0);
+int gWaterLevel = 0;
+bool gWet = false;        // the ray is in water right now
+bool gUnder = false;      // the ray started in water: the camera is under water
+ivec3 gLastWaterVoxel = ivec3(0);
+int gLastWaterLevel = 0;
 
 // Multiplier for a face table tint: -1 grass, -2 foliage (from the biome tint texture), else a 0xRRGGBB constant.
 // Grass of predicted terrain (no loaded chunk) comes from the far layer of the voxel's level.
 vec3 tintColor(float tint, vec2 column, float lowLayer, vec3 farTint) {
+  if (tint < -2.5) {
+    if (gHfTintOn) return gHfTint;
+    if (farTint.z >= 0.0) return textureLod(uTint, vec3(farTint.xy, farTint.z + 2.0 * float(uLevels)), 0.0).rgb;
+    return textureLod(uTint, vec3(column, float(TINT_WATER_LAYER)), 0.0).rgb;
+  }
   if (tint < -0.5) {
     if (uDebug == 5) return vec3(1.0);
     if (gHfTintOn && tint > -1.5) return gHfTint;
@@ -263,7 +286,8 @@ bool surface(uint id, ivec3 corner, float vs, int axis, vec3 d, vec3 local, floa
     alpha = layer == 0 ? s.a : max(alpha, s.a);
   }
 
-  if (alpha < 0.5 && uDebug != 7) {
+  gSurfAlpha = alpha;
+  if (alpha < 0.5 && uDebug != 7 && !gKeepSeeThrough) {
     // No layers at all means no model data: use the map color. Otherwise it is a see-through texel.
     if (texelFetch(uFaces, base + 1).w < 0.5) {
       uint c = texelFetch(uColors, int(id)).r;
@@ -395,6 +419,49 @@ float hfHeight(ivec2 ac, int layer) {
   return mix(float(H), float(Hc), w);
 }
 
+// Tint inputs of the voxel with min corner `voxel` (block coordinates) at level `lvl`: the world column
+// of its center, the lower biome layer, and where its predicted grass color is when no chunk filled it.
+void voxelTint(ivec3 voxel, int lvl, float vs, out vec2 column, out float lowLayer, out vec3 farTint) {
+  ivec3 center = voxel + int(0.5 * vs);
+  column = (vec2(voxel.xz & (TINT_BLOCKS - 1)) + 0.5 * vs) / float(TINT_BLOCKS);
+  // Below the column's split height the second biome applies (layers 2 and 3).
+  float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
+  lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
+
+  // No loaded chunk filled this column: use the predicted grass color, if there is one.
+  farTint = vec3(0.0, 0.0, -1.0);
+  if (texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 0), 0).a < 0.5) {
+    int farShift = max(3, lvl + 1);   // TintMap.farCell
+    ivec3 farTexel = ivec3((center.xz >> farShift) & (TINT_SIZE - 1), TINT_FAR_FIRST + lvl);
+    if (texelFetch(uTint, farTexel, 0).a > 0.5) {
+      farTint = vec3((vec2(voxel.xz) + 0.5 * vs) / float(TINT_SIZE << farShift), float(farTexel.z));
+    }
+  }
+}
+
+// True when the level-`lvl` voxel at integer coordinate `vc` is water.
+bool isWaterVoxel(int lvl, ivec3 vc) {
+  ivec3 sec = vc >> 4;
+  ivec3 rows = uLevel[lvl];
+  if (sec.y < rows.x || sec.y >= rows.x + rows.y) return false;
+  uint slot = readSlot(lvl, sec);
+  if (slot == 0u) return false;
+  ivec3 l = vc & 15;
+  uint id = texelFetch(uBricks, int(slot - 1u) * 4096 + (l.y * 16 + l.z) * 16 + l.x).r & ID_MASK;
+  return id != 0u && ((texelFetch(uColors, int(id)).r >> 25) & 3u) == 3u;
+}
+
+// The ray crosses a surface between water and not-water at distance `t`, through face `ax`; `exiting`
+// when it comes out of the water. Only the first one is kept.
+void markWater(float t, int ax, bool exiting) {
+  if (gWaterT >= 0.0) return;
+  gWaterT = t;
+  gWaterAxis = ax;
+  gWaterExit = exiting;
+  gWaterVoxel = gLastWaterVoxel;
+  gWaterLevel = gLastWaterLevel;
+}
+
 // Color of far texel column at horizontal position `pxz` (relative to uCamBlock) as a ray passing at
 // height `yr` would see it: its top when the ray is over it, its side when the ray is a little below the
 // top, and nothing when the ray is deep inside it (a nearer column hides it). The far hit filter uses
@@ -436,10 +503,11 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   gHfTint = attr.rgb;
   gHfTintOn = true;
   gTapCap = 1;
+  gKeepSeeThrough = kind == 7;
   bool ok = surface(id, corner, T, hax, d, local, tt, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
   gTapCap = 8;
+  gKeepSeeThrough = false;
   gHfTintOn = false;
-  if (ok && kind == 7) albedo = attr.rgb;
   return ok;
 }
 
@@ -551,8 +619,9 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
 
             gHfTint = attr.rgb;
             gHfTintOn = true;
+            gKeepSeeThrough = kind == 7;   // water: its texture tinted with the biome's water color, opaque
             bool ok = surface(id, corner, T, hax, d, local, th, vec2(0.0), 0.0, vec3(0.0, 0.0, -1.0), albedo);
-            if (ok && kind == 7) albedo = attr.rgb;   // water: the biome water color, not the stand-in block
+            gKeepSeeThrough = false;
             if (ok && kind == HF_TREE) {
               // A tree's canopy or trunk: its own color, a little different from tree to tree.
               float shade = fract(sin(dot(vec2(ac), vec2(12.9898, 78.233))) * 43758.5453);
@@ -638,6 +707,10 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
     if (lvl >= uLevels) {
       // Past the voxel levels the ray never comes back to them: the rest is the heightfield.
       if (uHfEnabled == 0) return false;
+      if (gWet) {
+        markWater(t, 1, true);
+        gWet = false;
+      }
       return traceHeightfield(o, d, t, tHit, hitId, hitAxis, hitVoxel, hitLevel, albedo, steps, hitNormal, hitKind);
     }
     float vs = float(1 << lvl);       // blocks per voxel
@@ -658,6 +731,10 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
     if (sec.y >= rows.x && sec.y < rows.x + rows.y) slot = readSlot(lvl, sec);
 
     if (slot == 0u) {
+      if (gWet) {
+        markWater(t, axis, true);
+        gWet = false;
+      }
       // Jump to where the ray leaves this (empty) section.
       vec3 bound = vec3(secMin - uCamBlock) + up * (vs * 16.0);
       vec3 tb = (bound - o) * invD;
@@ -678,7 +755,60 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
       steps++;
       uint raw = texelFetch(uBricks, base + (v.y * 16 + v.z) * 16 + v.x).r;
       uint id = raw & ID_MASK;
-      if (id != 0u) {
+      uint cw = id != 0u ? texelFetch(uColors, int(id)).r : 0u;
+      bool waterVoxel = ((cw >> 25) & 3u) == 3u;
+
+      // Water: either a water voxel, or a block that holds some (kelp, waterlogged slabs). Its height
+      // is the fill of the voxel, else the one of its id, and a whole voxel when water sits above it.
+      float wh = 0.0;
+      if (waterVoxel || (cw >> 31) != 0u) {
+        uint fl = raw >> FILL_SHIFT;
+        wh = fl != 0u ? float(fl) / 8.0 : float((cw >> 27) & 15u) / 8.0;
+        if (wh < 1.0 && fl == 0u && isWaterVoxel(lvl, (secMin >> lvl) + v + ivec3(0, 1, 0))) wh = 1.0;
+      }
+      if (wh > 0.0 || gWet) {
+        ivec3 wv = secMin + (v << lvl);
+        if (wh > 0.0) {
+          gLastWaterVoxel = wv;
+          gLastWaterLevel = lvl;
+        }
+        float ly = (o.y + d.y * tc - float(wv.y - uCamBlock.y)) / vs;   // height in the voxel where the ray enters it
+        float tExit = min(tMax.x, min(tMax.y, tMax.z));
+        bool wetNow = wh > 0.0 && ly <= wh + 1e-3;
+        if (gWet && !wetNow) {
+          markWater(tc, axis, true);
+          gWet = false;
+        }
+        if (!gWet && wh > 0.0) {
+          float te = -1.0;
+          int ax = axis;
+          if (wetNow) {
+            te = tc;
+          } else if (d.y < 0.0) {
+            // Enters above the water in this voxel: comes down onto its top.
+            float tTop = tc + (wh - ly) * vs / d.y;
+            if (tTop < tExit) {
+              te = tTop;
+              ax = 1;
+            }
+          }
+          if (te >= 0.0) {
+            if (tc <= 0.0) gUnder = true;   // the camera is in the water: no surface to draw, just fog
+            else markWater(te, ax, false);
+            gWet = true;
+          }
+        }
+        if (gWet && wh > 0.0 && wh < 1.0 && d.y > 0.0) {
+          // Rises out of the top of the water inside this voxel.
+          float tUp = tc + (wh - ly) * vs / d.y;
+          if (tUp < tExit) {
+            markWater(tUp, 1, true);
+            gWet = false;
+          }
+        }
+      }
+
+      if (id != 0u && !waterVoxel) {
         ivec3 voxel = secMin + (v << lvl);   // min corner, block
         float th = tc;                       // where the ray meets the voxel
         int hax = axis;
@@ -707,23 +837,12 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
 
         if (inside) {
           // The texture covers the whole voxel, so a pixel spans 1/vs as many texels per ray length.
-          ivec3 center = voxel + int(0.5 * vs);
-          vec2 column = (vec2(voxel.xz & (TINT_BLOCKS - 1)) + 0.5 * vs) / float(TINT_BLOCKS);
-          // Below the column's split height the second biome applies (layers 2 and 3).
-          float split = texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 4), 0).r * 255.0 * float(TINT_SPLIT_UNIT);
-          float lowLayer = float(center.y - uMinY) < split ? 2.0 : 0.0;
+          vec2 column;
+          float lowLayer;
+          vec3 farTint;
+          voxelTint(voxel, lvl, vs, column, lowLayer, farTint);
 
-          // No loaded chunk filled this column: use the predicted grass color, if there is one.
-          vec3 farTint = vec3(0.0, 0.0, -1.0);
-          if (texelFetch(uTint, ivec3((center.xz & (TINT_BLOCKS - 1)) / TINT_CELL, 0), 0).a < 0.5) {
-            int farShift = max(3, lvl + 1);   // TintMap.farCell
-            ivec3 farTexel = ivec3((center.xz >> farShift) & (TINT_SIZE - 1), TINT_FAR_FIRST + lvl);
-            if (texelFetch(uTint, farTexel, 0).a > 0.5) {
-              farTint = vec3((vec2(voxel.xz) + 0.5 * vs) / float(TINT_SIZE << farShift), float(farTexel.z));
-            }
-          }
-
-          int kind = int((texelFetch(uColors, int(id)).r >> 25) & 3u);
+          int kind = int((cw >> 25) & 3u);
           if (kind == 0) {
             if (surface(id, voxel, vs, hax, d, local, th, column, lowLayer, farTint, albedo)) {
               tHit = th;
@@ -774,6 +893,20 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
   return false;
 }
 
+// Vanilla's light curve, lifted by the dimension's ambient light, as a color. `light` is sky, block (0..1).
+vec3 lightRgb(vec2 light) {
+  vec2 curved = mix(light / (4.0 - 3.0 * light), vec2(1.0), uAmbientLight);
+  float b = curved.y;
+  vec3 blockRgb = vec3(b, b * ((b * 0.6 + 0.4) * 0.6 + 0.4), b * ((b * b * 0.6 + 0.4) * 0.6 + 0.4));
+  return vec3(curved.x * uSkyDarken) + blockRgb;
+}
+
+// Under water vanilla fogs everything to the water's fog color. Above water there is no fog here.
+vec3 underFog(vec3 c, float t) {
+  if (!gUnder) return c;
+  return mix(uFogColor, c, clamp((uFogRange.y - t) / max(uFogRange.y - uFogRange.x, 1e-3), 0.0, 1.0));
+}
+
 vec3 heat(float x) {
   x = clamp(x, 0.0, 1.0);
   return vec3(clamp(4.0 * x - 2.0, 0.0, 1.0), clamp(2.0 - abs(4.0 * x - 2.0), 0.0, 1.0), clamp(2.0 - 4.0 * x, 0.0, 1.0));
@@ -800,13 +933,16 @@ void main() {
   vec3 hitNormal;
   int hitKind;
   bool hit = trace(o, d, tHit, id, axis, voxel, level, albedo, steps, hitNormal, hitKind);
+  bool water = gWaterT >= 0.0;
 
-  if (!hit && uDebug != 1) discard;
+  if (!hit && !water && uDebug != 1) discard;
 
-  // Same depth vanilla would have written for this point (camera-relative position).
+  // Same depth vanilla would have written for this point (camera-relative position). Water in front of
+  // a hit leaves the depth of the hit, so entities in the water still draw over it; water with nothing
+  // behind it writes its own.
   float depth = 1.0;
-  if (hit) {
-    vec3 rel = nearP + d * tHit;
+  if (hit || water) {
+    vec3 rel = nearP + d * (hit ? tHit : gWaterT);
     vec4 clip = uProj * (uView * vec4(rel, 1.0));
     // Past the projection's far plane (only a few times the render distance) there is no depth
     // left to write, so keep the farthest value: everything vanilla draws is nearer anyway.
@@ -820,47 +956,77 @@ void main() {
     return;
   }
 
-  // Flat per-face shading, same factors vanilla uses for its directional light.
-  float shade = (hitKind & 4) != 0 ? 1.0 : dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
+  vec3 solidRgb = vec3(0.0);
+  if (hit) {
+    // Flat per-face shading, same factors vanilla uses for its directional light.
+    float shade = (hitKind & 4) != 0 ? 1.0 : dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
 
-  // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
-  vec2 light = vec2(1.0, 0.0);
-  float ao = 1.0;
-  if (level == 0) {
-    // Fade out over the second half of level 0, where the LOD switch happens.
-    float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
-    vec2 l;
-    if ((hitKind & 4) != 0) {
-      // Plants (unshaded models) get no AO and the light of their own cell, like in vanilla.
-      l = lightAt(voxel);
-    } else {
-      vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
-      vec3 an = abs(hitNormal);
-      int a = an.x >= an.y && an.x >= an.z ? 0 : (an.y >= an.z ? 1 : 2);
-      ivec3 cell = voxel;
-      // A face inside the cell (the top of a candle or a slab) is lit from the cell itself; a face on
-      // the cell boundary from the cell in front, which is what the AO looks at.
-      if ((hitKind & 3) != 0 && (hitNormal[a] > 0.0 ? p[a] < 0.999 : p[a] > 0.001)) cell[a] -= hitNormal[a] > 0.0 ? 1 : -1;
-      float occ = ambientOcclusion(cell, a, -hitNormal, p, l);
-      ao = mix(1.0, occ, fade);
+    // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
+    vec2 light = vec2(1.0, 0.0);
+    float ao = 1.0;
+    if (level == 0) {
+      // Fade out over the second half of level 0, where the LOD switch happens.
+      float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
+      vec2 l;
+      if ((hitKind & 4) != 0) {
+        // Plants (unshaded models) get no AO and the light of their own cell, like in vanilla.
+        l = lightAt(voxel);
+      } else {
+        vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
+        vec3 an = abs(hitNormal);
+        int a = an.x >= an.y && an.x >= an.z ? 0 : (an.y >= an.z ? 1 : 2);
+        ivec3 cell = voxel;
+        // A face inside the cell (the top of a candle or a slab) is lit from the cell itself; a face on
+        // the cell boundary from the cell in front, which is what the AO looks at.
+        if ((hitKind & 3) != 0 && (hitNormal[a] > 0.0 ? p[a] < 0.999 : p[a] > 0.001)) cell[a] -= hitNormal[a] > 0.0 ? 1 : -1;
+        float occ = ambientOcclusion(cell, a, -hitNormal, p, l);
+        ao = mix(1.0, occ, fade);
+      }
+      light = mix(vec2(1.0, 0.0), l / 15.0, fade);
     }
-    light = mix(vec2(1.0, 0.0), l / 15.0, fade);
+
+    vec3 lit = lightRgb(light) * shade * ao;
+    lit = min(lit, vec3(1.0));
+    if (uDebug == 4) lit = vec3(1.0);
+
+    if (uDebug == 2) {
+      vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
+      albedo = mix(albedo, tint, 0.6);
+    }
+
+    solidRgb = underFog(albedo * lit, tHit);
   }
 
-  // Vanilla's light curve, lifted by the dimension's ambient light.
-  vec2 curved = mix(light / (4.0 - 3.0 * light), vec2(1.0), uAmbientLight);
-  float b = curved.y;
-  vec3 blockRgb = vec3(b, b * ((b * 0.6 + 0.4) * 0.6 + 0.4), b * ((b * b * 0.6 + 0.4) * 0.6 + 0.4));
-
-  vec3 lit = vec3(curved.x * uSkyDarken) + blockRgb;
-  lit *= shade * ao;
-  lit = min(lit, vec3(1.0));
-  if (uDebug == 4) lit = vec3(1.0);
-
-  if (uDebug == 2) {
-    vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
-    albedo = mix(albedo, tint, 0.6);
+  if (!water) {
+    fragColor = vec4(solidRgb, 1.0);
+    return;
   }
 
-  fragColor = vec4(albedo * lit, 1.0);
+  // The first surface between water and not-water on the ray: the still-water texture tinted by the
+  // biome, lit like a block, drawn with the texture's alpha over whatever is behind it. Like vanilla,
+  // that alpha is the same however deep the water is.
+  float vs = float(1 << gWaterLevel);
+  vec3 local = clamp((o + d * gWaterT - vec3(gWaterVoxel - uCamBlock)) / vs, 0.0, 1.0);
+  vec2 column;
+  float lowLayer;
+  vec3 farTint;
+  voxelTint(gWaterVoxel, gWaterLevel, vs, column, lowLayer, farTint);
+  vec3 waterAlbedo;
+  gKeepSeeThrough = true;
+  surface(uint(uWaterId), gWaterVoxel, vs, gWaterAxis, d, local, gWaterT, column, lowLayer, farTint, waterAlbedo);
+  float alpha = gSurfAlpha;
+
+  vec2 wl = vec2(1.0, 0.0);
+  if (gWaterLevel == 0) wl = lightAt(gWaterVoxel + ivec3(0, int(local.y >= 0.999), 0)) / 15.0;
+  vec3 wn = vec3(0.0);
+  wn[gWaterAxis] = d[gWaterAxis] > 0.0 ? -1.0 : 1.0;
+  float wshade = gWaterExit ? 0.85 : dot(wn * wn, vec3(0.6, wn.y > 0.0 ? 1.0 : 0.5, 0.8));
+  vec3 waterLit = uDebug == 4 ? vec3(1.0) : min(lightRgb(wl) * wshade, vec3(1.0));
+  vec3 waterRgb = underFog(waterAlbedo * waterLit, gWaterT);
+
+  if (hit) {
+    fragColor = vec4(mix(solidRgb, waterRgb, alpha), 1.0);
+  } else {
+    fragColor = vec4(waterRgb, alpha);
+  }
 }

@@ -92,7 +92,7 @@ final class TestScene implements AutoCloseable {
   static final int TERRACOTTA = 7;
   static final int GRAVEL = 8;
   static final int SNOW = 9;
-  /** The stand-in for water that SeedSource uses. */
+  /** Water: a see-through voxel with the still-water sprite, tinted by the biome. */
   static final int WATER = 10;
   /** Leaves tinted with the foliage color, for predicted trees. */
   static final int LEAVES = 11;
@@ -104,11 +104,12 @@ final class TestScene implements AutoCloseable {
 
   static final int GRASS_COLOR = 0x91BD59;
   static final int FOLIAGE_COLOR = 0x77AB2F;
+  static final int WATER_COLOR = 0x3F76E4;
 
   /** Textures, in the order the atlas is stitched. */
   static final List<String> SPRITES = List.of(
       "stone", "dirt", "grass_block_top", "grass_block_side", "grass_block_side_overlay",
-      "sand", "oak_log", "oak_log_top", "red_sand", "terracotta", "gravel", "snow", "light_blue_concrete", "oak_leaves");
+      "sand", "oak_log", "oak_log_top", "red_sand", "terracotta", "gravel", "snow", "water_still", "oak_leaves");
 
   private static final int OCCLUDER_BIT = 1 << 24;
   private static final int BRICK_VOXELS = 16 * 16 * 16;
@@ -148,6 +149,7 @@ final class TestScene implements AutoCloseable {
     GL33C.glBindBuffer(GL33C.GL_TEXTURE_BUFFER, colorBuf);
     IntBuffer colors = ByteBuffer.allocateDirect((BlockClassifier.MAX_ID + 1) * 4).order(ByteOrder.nativeOrder()).asIntBuffer();
     for (int id = 1; id < MAP_COLORS.length; id++) colors.put(id, MAP_COLORS[id] | OCCLUDER_BIT);
+    colors.put(WATER, WATER_COLOR | BlockClassifier.KIND_WATER << BlockClassifier.KIND_SHIFT | 8 << BlockClassifier.WATER_HEIGHT_SHIFT);
     GL33C.glBufferData(GL33C.GL_TEXTURE_BUFFER, colors, GL33C.GL_STATIC_DRAW);
     colorTex = texBuffer(VoxelWorld.UNIT_COLORS, GL33C.GL_R32UI, colorBuf);
 
@@ -202,7 +204,9 @@ final class TestScene implements AutoCloseable {
         height,
         debug,
         hf ? HF_IDS : null,
-        0f, 1f, 0f);
+        0f, 1f, 0f,
+        WATER,
+        new float[] {0.02f, 0.02f, 0.2f}, -8f, 96f);
   }
 
   /** Binds everything to its unit, like {@link VoxelWorld#bind}. */
@@ -429,7 +433,7 @@ final class TestScene implements AutoCloseable {
       case TERRACOTTA -> Cube.all("terracotta");
       case GRAVEL -> Cube.all("gravel");
       case SNOW -> Cube.all("snow");
-      case WATER -> Cube.all("light_blue_concrete");
+      case WATER -> Cube.all("water_still");
       case LEAVES -> Cube.all("oak_leaves");
       case GRASS -> new Cube(
           new String[] {"dirt", "grass_block_top", "grass_block_side", "grass_block_side", "grass_block_side", "grass_block_side"},
@@ -461,7 +465,7 @@ final class TestScene implements AutoCloseable {
       for (int face = 0; face < 6; face++) {
         int o = id * BlockClassifier.ID_FLOATS + face * BlockClassifier.LAYERS * 8;
         // Grass is tinted on its top face only, plus the overlay on the sides.
-        float baseTint = id == LEAVES ? -2f : c.grassTint && face == 1 ? -1f : 0xFFFFFF;
+        float baseTint = id == WATER ? -3f : id == LEAVES ? -2f : c.grassTint && face == 1 ? -1f : 0xFFFFFF;
         writeLayer(faces, o, atlas.rect(c.faces[face]), FACE_MAP[face], baseTint);
         if (c.sideOverlay != null && face >= 2) {
           writeLayer(faces, o + 8, atlas.rect(c.sideOverlay), FACE_MAP[face], -1f);
@@ -529,8 +533,8 @@ final class TestScene implements AutoCloseable {
     int layers = TintMap.LAYERS;
     ByteBuffer data = ByteBuffer.allocateDirect(size * size * layers * 4);
     for (int layer = 0; layer < layers; layer++) {
-      int rgb = layer == 1 || layer == 3 ? FOLIAGE_COLOR : GRASS_COLOR;
-      boolean color = layer < 4;
+      int rgb = layer == 1 || layer == 3 ? FOLIAGE_COLOR : (layer == TintMap.WATER_LAYER ? WATER_COLOR : GRASS_COLOR);
+      boolean color = layer < 4 || layer == TintMap.WATER_LAYER;
       for (int i = 0; i < size * size; i++) {
         data.put((byte) (color ? rgb >> 16 : 0)).put((byte) (color ? rgb >> 8 : 0)).put((byte) (color ? rgb : 0));
         data.put((byte) (color ? 0xFF : 0));

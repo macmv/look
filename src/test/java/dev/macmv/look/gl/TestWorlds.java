@@ -1,5 +1,7 @@
 package dev.macmv.look.gl;
 
+import dev.macmv.look.BlockClassifier;
+
 /** Worlds the render tests draw. Pure functions of the block position, so they are reproducible. */
 final class TestWorlds {
   private TestWorlds() {}
@@ -38,4 +40,20 @@ final class TestWorlds {
     if (z == 12 && x == 4 && y >= 78 && y < 82) return TestScene.LOG;
     return 0;
   }
+
+  /**
+   * A round pond in flat grass: the sand floor slopes down to y 53 in the middle, and the water is a
+   * source level (7 eighths) one block under the bank. A log post stands in the water.
+   */
+  static final TestScene.World POND = (x, y, z) -> {
+    double r = Math.sqrt((double) x * x + (double) z * z);
+    int bottom = r < 14 ? 59 - (int) Math.round((14 - r) * 0.45) : 59;
+    if (y > 59) return y < 64 && x == 6 && z == 2 ? TestScene.LOG : 0;
+    if (r >= 14) return y == 59 ? TestScene.GRASS : (y >= 55 ? TestScene.DIRT : TestScene.STONE);
+    if (y > bottom) {
+      if (y > 58) return 0;
+      return y == 58 ? TestScene.WATER | 7 << BlockClassifier.FILL_SHIFT : TestScene.WATER;
+    }
+    return y >= bottom - 2 ? TestScene.SAND : TestScene.STONE;
+  };
 }

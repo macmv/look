@@ -114,7 +114,7 @@ public final class NativeLib {
 
   /**
    * Writes the grass colors of a finished tile as RGBA texels (row major, direct buffer of at least
-   * 512 bytes), then the foliage colors at byte 256, and returns the texels per side, or -1 if the
+   * 768 bytes), then the foliage colors at byte 256 and the water colors at byte 512, and returns the texels per side, or -1 if the
    * tile is not finished.
    */
   public static native int terrainFarTint(long handle, int level, int sx, int sz, ByteBuffer out);

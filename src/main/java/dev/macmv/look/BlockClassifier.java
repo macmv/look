@@ -11,10 +11,14 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.renderer.BiomeColors;
 import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.client.resources.model.WeightedBakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.util.RandomSource;
 import net.minecraft.util.random.WeightedEntry;
 import net.minecraft.world.level.BlockAndTintGetter;
@@ -27,12 +31,18 @@ import net.minecraft.world.level.block.BushBlock;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FlowingFluid;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.Vec3;
 
 /**
  * Maps block states to voxel ids (0 is air) and keeps the per-id data the shader needs: a map color
  * (fallback) and, for each of the six faces, up to {@link #LAYERS} textured layers taken from the
  * baked model.
+ *
+ * <p>Water is a voxel of its own kind ({@link #KIND_WATER}): the ray goes through it and the shader
+ * blends the surface over what is behind. Its height comes in eighths, see {@link #waterId}.
+ * Blocks that hold water next to their model (kelp, waterlogged slabs) carry {@link #WATERLOGGED_BIT}.
  *
  * <p>Full cubes use the face table. Every other block with a model (slabs, stairs, plants, fences...)
  * gets a list of its real model quads in a pool, see {@link #KIND_QUADS}. Fluids and blocks drawn by
@@ -83,6 +93,12 @@ public final class BlockClassifier {
   public static final int KIND_QUADS = 1;
   /** Like {@link #KIND_QUADS}, but it is a plant: it gets a position offset and sways. */
   public static final int KIND_PLANT = 2;
+  /** Water: never hit, the ray marches through and the shader tracks where it enters and leaves it. */
+  public static final int KIND_WATER = 3;
+  /** Color table bits 27..30 of a water voxel: its height in eighths of a voxel, 1..8. */
+  public static final int WATER_HEIGHT_SHIFT = 27;
+  /** Color table bit of a model block that also holds water (kelp, waterlogged slabs), 7 eighths high like a source. */
+  public static final int WATERLOGGED_BIT = 1 << 31;
 
   /** Floats per quad in the pool, five RGBA texels, see {@link #addQuads}. */
   public static final int QUAD_FLOATS = 20;
@@ -102,6 +118,8 @@ public final class BlockClassifier {
   /** Face table tint values below zero: follow the biome grass / foliage color, see {@link TintMap}. */
   private static final float TINT_GRASS = -1f;
   private static final float TINT_FOLIAGE = -2f;
+  /** The biome's water color, see {@link TintMap}. */
+  private static final float TINT_WATER = -3f;
 
   private static final int GRASS_PROBE = 0x0A1B2C;
   private static final int FOLIAGE_PROBE = 0x0D2E3F;
@@ -143,6 +161,8 @@ public final class BlockClassifier {
   private static final int FALLBACK_COLOR = 0xA0B8C8;
 
   private static int[] voxelIds;
+  /** Voxel id of water by height in eighths (index 1..8), 0 until first asked for. */
+  private static final int[] waterIds = new int[9];
   private static int nextId = 1;
   private static boolean warnedFull;
   private static boolean warnedExtra;
@@ -193,6 +213,7 @@ public final class BlockClassifier {
   /** Forgets every assigned id. Voxel data built with the old ids must be rebuilt afterwards. */
   public static void reset() {
     voxelIds = null;
+    Arrays.fill(waterIds, 0);
     nextId = 1;
     warnedFull = false;
     warnedExtra = false;
@@ -247,11 +268,15 @@ public final class BlockClassifier {
 
   private static int classify(BlockState state) {
     if (state.isAir()) return 0;
+    FluidState fluid = state.getFluidState();
+    boolean water = fluid.is(FluidTags.WATER);
+    // Water itself (and bubble columns): a block without a model of its own.
+    if (water && state.getRenderShape() != RenderShape.MODEL) return waterId(waterEighths(fluid));
     // Block entities (chests, signs, banners) and invisible blocks are drawn by vanilla.
     if (state.getRenderShape() != RenderShape.MODEL) return 0;
 
     boolean cube = state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
-    if (cube && !state.getFluidState().isEmpty()) return 0;
+    if (cube && !fluid.isEmpty()) return 0;
 
     QuadModel quads = null;
     if (!cube) {
@@ -293,9 +318,60 @@ public final class BlockClassifier {
       }
     } else {
       bakeQuads(state, id, quads);
+      if (water) colors[id] |= WATERLOGGED_BIT | 7 << WATER_HEIGHT_SHIFT;
     }
 
     return id;
+  }
+
+  // --- Water -----------------------------------------------------------------------------------
+
+  /** Height of a water fluid in eighths of a block: whole when falling, else vanilla's amount / 9. */
+  private static int waterEighths(FluidState fluid) {
+    if (fluid.hasProperty(FlowingFluid.FALLING) && fluid.getValue(FlowingFluid.FALLING)) return 8;
+    return Math.max(1, Math.min(8, Math.round(fluid.getAmount() * 8f / 9f)));
+  }
+
+  /**
+   * The voxel id of water that is {@code eighths} (1..8) of a voxel tall. Every water state shares
+   * these, so a source (7) and a flowing block (less) differ only in height. The shader lifts a
+   * water voxel to a whole one when water sits above it.
+   */
+  public static int waterId(int eighths) {
+    eighths = Math.max(1, Math.min(8, eighths));
+    if (waterIds[eighths] != 0) return waterIds[eighths];
+    if (nextId > MAX_ID) return 0;
+
+    int id = nextId++;
+    waterIds[eighths] = id;
+    colors[id] = 0x3F76E4 | KIND_WATER << KIND_SHIFT | eighths << WATER_HEIGHT_SHIFT;
+    colorsDirty = true;
+    priorities[id] = 3;
+
+    // Every face is the still-water sprite, tinted by the biome. Vanilla uses the flowing sprite on
+    // the sides, which only matters for the faces of a waterfall.
+    TextureAtlasSprite sprite = Minecraft.getInstance()
+        .getModelManager()
+        .getAtlas(TextureAtlas.LOCATION_BLOCKS)
+        .getSprite(ResourceLocation.withDefaultNamespace("block/water_still"));
+    for (int face = 0; face < 6; face++) {
+      int o = id * ID_FLOATS + (face * LAYERS) * LAYER_FLOATS;
+      faces[o] = sprite.getU0();
+      faces[o + 1] = sprite.getV0();
+      faces[o + 2] = sprite.getU1() - sprite.getU0();
+      faces[o + 3] = 0f;
+      faces[o + 4] = 0f;
+      faces[o + 5] = sprite.getV1() - sprite.getV0();
+      faces[o + 6] = TINT_WATER;
+      faces[o + 7] = 1f;
+    }
+    dirtyIds.mark(id * ID_FLOATS, (id + 1) * ID_FLOATS - 1);
+    return id;
+  }
+
+  /** Whether {@code id} is a water voxel (not a block that merely holds water). */
+  public static boolean isWater(int id) {
+    return id != 0 && kind(id) == KIND_WATER;
   }
 
   // --- Non-cube blocks -------------------------------------------------------------------------
