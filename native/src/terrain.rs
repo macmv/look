@@ -313,7 +313,7 @@ impl Tile {
       if out[at] == 0 {
         solid += 1;
       }
-      out[at] = id;
+      out[at] = with_fill(id, t.fill as i64, size);
     }
     solid
   }

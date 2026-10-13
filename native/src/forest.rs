@@ -40,10 +40,13 @@ pub struct TreeBlock {
 /// tile, `y` is the voxel row counted from the world's origin.
 #[derive(Clone, Copy, Debug)]
 pub struct TreeVoxel {
-  pub x:  u8,
-  pub z:  u8,
-  pub y:  i16,
-  pub id: BlockId,
+  pub x:    u8,
+  pub z:    u8,
+  pub y:    i16,
+  pub id:   BlockId,
+  /// Blocks of the voxel's height the tree reaches, 1..=size. Only the top
+  /// voxel of a column is partial, so a coarse canopy is not whole voxels tall.
+  pub fill: u8,
 }
 
 /// Per column of a heightfield tile: the height of the top of the tree there
@@ -187,10 +190,10 @@ impl Forest {
     let width = 16 * size;
 
     // (voxel row, z, x) so a sort groups voxels and orders them by row.
-    let mut hits: Vec<(i16, u8, u8, BlockId)> = Vec::new();
+    let mut hits: Vec<(i16, u8, u8, BlockId, i64)> = Vec::new();
     self.for_each_block(terrain, s, cache, x0, z0, width, |x, y, z, id| {
       let (vx, vz) = ((x as i64 - x0) >> level, (z as i64 - z0) >> level);
-      hits.push(((y >> level) as i16, vz as u8, vx as u8, id));
+      hits.push(((y >> level) as i16, vz as u8, vx as u8, id, y as i64));
     });
     hits.sort_unstable();
 
@@ -221,9 +224,23 @@ impl Forest {
         _ => most_common(group.iter().map(|h| h.3).filter(|&id| blocks.is_log(Block::new(id)))),
       };
       if let Some(id) = pick {
-        out.push(TreeVoxel { x: group[0].2, z: group[0].1, y: group[0].0, id });
+        let top = group.iter().map(|h| h.4).max().unwrap_or(0);
+        let fill = (top + 1 - ((group[0].0 as i64) << level)).clamp(1, size) as u8;
+        out.push(TreeVoxel { x: group[0].2, z: group[0].1, y: group[0].0, id, fill });
       }
       i = j;
+    }
+
+    // Only the highest voxel of a column is partial; under it there is no gap.
+    let mut highest = [i16::MIN; 256];
+    for v in &out {
+      let col = v.z as usize * 16 + v.x as usize;
+      highest[col] = highest[col].max(v.y);
+    }
+    for v in &mut out {
+      if v.y != highest[v.z as usize * 16 + v.x as usize] {
+        v.fill = size as u8;
+      }
     }
     out
   }
