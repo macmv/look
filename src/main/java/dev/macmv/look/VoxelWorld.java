@@ -554,6 +554,7 @@ public final class VoxelWorld {
     if (!trackLevel()) return;
 
     int prevUnit = GlStateManager._getActiveTexture();
+    PixelStore.reset();
     try {
       if (!glReady) initGl();
       checkAtlas();
@@ -788,6 +789,7 @@ public final class VoxelWorld {
   public static String verify() {
     if (!glReady || level == null) return "not ready";
     List<String> bad = new ArrayList<>();
+    PixelStore.reset();
 
     // 1. The bookkeeping alone.
     bad.addAll(table.checkInvariants());
