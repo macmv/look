@@ -80,6 +80,19 @@ public final class EnhancedSettings {
   public static boolean fluidDistortion = true;
   public static float fluidDistortionStrength = 1.0f;
 
+  // --- Water (world pass, docs/enhanced.md 4.4 - 4.7) --------------------------------------------
+
+  public static final int REFLECT_OFF = 0;
+  public static final int REFLECT_SKY = 1;
+  public static final int REFLECT_TRACED = 2;
+
+  /** Steepness of the water waves: 0 is a flat surface, 1 the default look. */
+  public static float waterWaves = 1.0f;
+  /** Off, the sky only, or the sky and the world traced from the surface (the expensive one). */
+  public static int waterReflections = REFLECT_TRACED;
+  /** Trace the bent ray under the surface, instead of seeing straight through it. */
+  public static boolean waterRefraction = true;
+
   /** Whether any final post effect is on, so the pass can be skipped entirely. */
   public static boolean anyFinalPost() {
     return vignette || chromaticAberration || filmGrain || sharpen || depthOfField || motionBlur || lensFlare || fluidDistortion;

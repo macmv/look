@@ -28,6 +28,10 @@ final class Golden {
   static void check(String name, BufferedImage actual) {
     Path golden = GOLDEN_DIR.resolve(name + ".png");
     try {
+      // Leftovers from an earlier run would look like a failure of this one.
+      Files.deleteIfExists(OUT_DIR.resolve(name + "-actual.png"));
+      Files.deleteIfExists(OUT_DIR.resolve(name + "-diff.png"));
+
       if (UPDATE) {
         Files.createDirectories(GOLDEN_DIR);
         ImageIO.write(actual, "png", golden.toFile());

@@ -192,6 +192,9 @@ public final class VoxelRenderer {
       GL33C.glUniform1f(p.loc("uRain"), atm.rain());
       GL33C.glUniform1f(p.loc("uThunder"), atm.thunder());
       SkyState.upload(p.id);
+      GL33C.glUniform1f(p.loc("uWaterWaves"), EnhancedSettings.waterWaves);
+      GL33C.glUniform1i(p.loc("uWaterReflect"), EnhancedSettings.waterReflections);
+      GL33C.glUniform1i(p.loc("uWaterRefract"), EnhancedSettings.waterRefraction ? 1 : 0);
       ShadowPass.setUniforms(p);
     }
 

@@ -398,6 +398,27 @@ class RenderTest {
       Golden.check("pond_bank", draw(scene, -17.5, 63.0, -9.5, 300f, 22f, 0));
     }
 
+    /** Enhanced water from the bank: waves, the post and the sky mirrored in the surface, absorption over the floor. */
+    @Test
+    void enhancedWaterBank() {
+      var f = scene.enhanced(scene.frame(SW, SH, -17.5, 63.0, -9.5, 300f, 8f, 70f, 0), new float[] {-0.5f, 0.45f, 0.3f});
+      Golden.check("enhanced_water_bank", gl.render(f, scene, SKY, SW, SH, true));
+    }
+
+    /** Looking across the pond at a low angle: strong Fresnel reflection of the far bank and sky. */
+    @Test
+    void enhancedWaterGrazing() {
+      var f = scene.enhanced(scene.frame(SW, SH, -17.5, 60.3, -9.5, 300f, 2f, 70f, 0), new float[] {0.5f, 0.35f, -0.3f});
+      Golden.check("enhanced_water_grazing", gl.render(f, scene, SKY, SW, SH, true));
+    }
+
+    /** Enhanced from under the surface: Snell's window, total internal reflection outside it. */
+    @Test
+    void enhancedWaterUnder() {
+      var f = scene.enhanced(scene.frame(SW, SH, -3.5, 56.5, -2.5, 300f, -35f, 70f, 0), new float[] {-0.5f, 0.7f, 0.3f});
+      Golden.check("enhanced_water_under", gl.render(f, scene, SKY, SW, SH, true));
+    }
+
     /** The same pond from under the surface: fogged, with the surface seen from below. */
     @Test
     void pondUnderWater() {

@@ -231,6 +231,8 @@ bool gHfTintOn = false;
 int gTapCap = 8;   // most texture taps surface() takes along a grazing hit, the far filter takes one
 bool gKeepSeeThrough = false;  // surface() returns see-through texels too (water is drawn with its alpha)
 float gSurfAlpha = 1.0;        // alpha of the texture surface() last sampled
+float gTraceMax = 1.0e30;      // rays stop at this distance (reflections and refraction look a short way)
+int gIterCap = 400;            // and after this many section steps
 
 // Water along the ray, tracked by trace(). Only the first surface between water and not-water is kept:
 // vanilla draws water as one translucent layer, whatever the depth.
@@ -595,7 +597,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
   float ceilY = max(float(uHfCeiling), uSeaLevel) + 1.0;
 
   for (int it = 0; it < 640; it++) {
-    if (t > uMaxDist) return false;
+    if (t > min(uMaxDist, gTraceMax)) return false;
     steps++;
 
     vec3 rel = o + d * t;
@@ -813,7 +815,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
   int axis = 1;
 
   for (int i = 0; i < 400; i++) {
-    if (t > uMaxDist) return false;
+    if (i >= gIterCap || t > min(uMaxDist, gTraceMax)) return false;
     steps++;
 
     vec3 rel = o + d * t;
@@ -1276,6 +1278,241 @@ void main() {
 #include "sky.glsl"
 #endif
 
+// Color of the solid surface hit at distance `tHit` along `d` from `o` (camera relative), lit and fogged.
+// `tPrior` is how far the ray had already travelled from the camera before `o`, for the fade between
+// levels and the water fog; reflections and refraction start their rays at the water.
+vec3 shadeHit(vec3 o, vec3 d, float tHit, float tPrior, uint id, ivec3 voxel, int level, vec3 albedo, vec3 hitNormal, int hitKind) {
+  float tFade = tPrior + tHit;
+
+  // Flat per-face shading, same factors vanilla uses for its directional light.
+  float shade = (hitKind & 4) != 0 ? 1.0 : dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
+
+  // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
+  vec2 light = vec2(1.0, 0.0);
+  float ao = 1.0;
+  if (level == 0) {
+    // Fade out over the second half of level 0, where the LOD switch happens.
+    float fade = clamp((uBase - tFade) / (0.5 * uBase), 0.0, 1.0);
+    vec2 l;
+    if ((hitKind & 4) != 0) {
+      // Plants (unshaded models) get no AO and the light of their own cell, like in vanilla.
+      l = lightAt(voxel);
+    } else {
+      vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
+      vec3 an = abs(hitNormal);
+      int a = an.x >= an.y && an.x >= an.z ? 0 : (an.y >= an.z ? 1 : 2);
+      ivec3 cell = voxel;
+      // A face inside the cell (the top of a candle or a slab) is lit from the cell itself; a face on
+      // the cell boundary from the cell in front, which is what the AO looks at.
+      if ((hitKind & 3) != 0 && (hitNormal[a] > 0.0 ? p[a] < 0.999 : p[a] > 0.001)) cell[a] -= hitNormal[a] > 0.0 ? 1 : -1;
+      float occ = ambientOcclusion(cell, a, -hitNormal, p, l);
+      ao = mix(1.0, occ, fade);
+    }
+    light = mix(vec2(1.0, 0.0), l / 15.0, fade);
+  }
+
+#ifdef ENHANCED
+  vec3 lit;
+  if (uSunLighting != 0) {
+    // HDR, so no clamp. Unshaded models (plants) are lit as if facing up.
+    vec3 ln = (hitKind & 4) != 0 ? vec3(0.0, 1.0, 0.0) : hitNormal;
+    lit = enhancedLight(o + d * tHit, ln, light, ao);
+  } else {
+    lit = min(lightRgb(light) * shade * ao, vec3(1.0));
+  }
+#else
+  vec3 lit = lightRgb(light) * shade * ao;
+  lit = min(lit, vec3(1.0));
+#endif
+  if (uDebug == 4) lit = vec3(1.0);
+
+  if (uDebug == 2) {
+    vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
+    albedo = mix(albedo, tint, 0.6);
+  }
+
+  vec3 rgb = underFog(albedo * lit + EMISSION(id, albedo), tFade);
+#ifdef ENHANCED
+  rgb = atmosphereHit(rgb, vec3(uCamBlock) + o, d, tHit);
+#endif
+  return rgb;
+}
+
+#ifdef ENHANCED
+// --- Water (docs/enhanced.md 4.4 - 4.7) ---------------------------------------------------------------
+uniform float uWaterWaves;   // wave slope scale, 0 for a flat surface
+uniform int uWaterReflect;   // 0 off, 1 the sky only, 2 the sky and traced reflections of the world
+uniform int uWaterRefract;   // 1: trace the bent ray below the surface
+
+const float WATER_IOR = 1.33;
+const float WATER_F0 = 0.03;         // reflectance looking straight down (physically 0.02)
+const float WATER_ABSORB = 0.3;      // per block, scaled by how far each channel is from the water's color
+const float WATER_DEEP = 64.0;       // blocks of water assumed where the refracted ray finds nothing
+const float REFRACT_DIST = 96.0;     // beyond this the ray goes straight through, and is only dimmed
+const float REFRACT_MAX = 96.0;      // longest refracted ray
+const int REFRACT_ITERS = 160;
+const float REFLECT_MAX = 200.0;     // longest reflected ray
+const int REFLECT_ITERS = 120;
+const float REFLECT_FADE_FROM = 128.0;  // traced reflections give way to the sky between these distances
+const float REFLECT_FADE_TO = 192.0;
+const float REFLECT_MIN_F = 0.035;      // below this much Fresnel the reflection is only the sky
+
+// Sine waves that tile every 64 blocks and every 128 ticks (the wrap of uTime). Wave vectors are in
+// cycles per 64 blocks, slopes are the steepness of each, speeds are cycles per 128 ticks.
+const int WAVES = 5;
+const vec2 WAVE_K[WAVES] = vec2[WAVES](vec2(3.0, 1.0), vec2(-2.0, 4.0), vec2(7.0, -3.0), vec2(-9.0, -8.0), vec2(14.0, 11.0));
+const float WAVE_S[WAVES] = float[WAVES](0.050, 0.045, 0.040, 0.030, 0.025);
+const float WAVE_SPEED[WAVES] = float[WAVES](1.0, 2.0, 3.0, 5.0, 6.0);
+const float WAVE_PHASE[WAVES] = float[WAVES](0.0, 1.7, 4.1, 2.3, 5.2);
+
+// Gradient of the water height at `p` (x, z, wrapped), fading out the waves a pixel can no longer resolve
+// (`foot` is the size of a pixel on the surface, in blocks).
+vec2 waveSlope(vec2 p, float time, float foot) {
+  vec2 g = vec2(0.0);
+  for (int i = 0; i < WAVES; i++) {
+    vec2 k = WAVE_K[i] * (6.2831853 / 64.0);
+    float kl = length(k);
+    float fade = 1.0 - smoothstep(0.4, 1.5, foot * kl);
+    float ph = dot(k, p) - WAVE_SPEED[i] * (6.2831853 / 128.0) * time + WAVE_PHASE[i];
+    g += (k / kl) * (WAVE_S[i] * fade * cos(ph));
+  }
+  return g * uWaterWaves;
+}
+
+vec3 safeDir(vec3 d) {
+  return vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
+}
+
+vec3 skyOrFog(vec3 o, vec3 d) {
+  return (uSkyFeatures & 1) != 0 ? skyPixel(vec3(uCamBlock) + o, d) : uFogColor;
+}
+
+// A short ray for the water, from `o` along `d`: the color of what it hits, shaded. The water globals
+// the primary ray left behind are overwritten, so read them first. `fogged` for rays under water.
+bool traceShade(vec3 o, vec3 d, float maxT, int iters, float tPrior, bool fogged, out float tHit, out vec3 col) {
+  d = safeDir(d);
+  gWaterT = -1.0;
+  gWet = false;
+  gWaterHf = false;
+  gKeepSeeThrough = false;
+  gHfTintOn = false;
+  gUnder = false;
+  gTraceMax = maxT;
+  gIterCap = iters;
+  gTapCap = 2;
+
+  uint id;
+  int axis, level, steps, kind;
+  ivec3 voxel;
+  vec3 albedo, n;
+  bool hit = trace(o, d, tHit, id, axis, voxel, level, albedo, steps, n, kind);
+
+  gTraceMax = 1.0e30;
+  gIterCap = 400;
+  gTapCap = 8;
+  gUnder = fogged;
+  col = hit ? shadeHit(o, d, tHit, tPrior, id, voxel, level, albedo, n, kind) : vec3(0.0);
+  return hit;
+}
+
+// What is seen through `depth` blocks of water of color `albedo` lit by `light`: the color behind it,
+// absorbed channel by channel (red first), plus the water's own scattered light.
+vec3 waterAbsorb(vec3 behind, float depth, vec3 albedo, vec3 light) {
+  vec3 sigma = (vec3(1.0) - clamp(albedo, 0.0, 0.95)) * WATER_ABSORB;
+  vec3 tr = exp(-sigma * depth);
+  return behind * tr + albedo * light * (1.0 - tr);
+}
+
+// The shaded water surface the primary ray found (the water globals): wave normal, Fresnel mix of the
+// reflection and the refracted view, absorption. `solidRgb` is the straight-through hit, used when
+// the ray is not refracted.
+vec4 enhancedWater(vec3 o, vec3 d, bool hit, float tHit, vec3 solidRgb, vec3 waterAlbedo, vec3 waterLit, vec3 wn) {
+  float tW = gWaterT;
+  bool exitW = gWaterExit;   // the camera is under the surface
+  bool under = gUnder;
+  vec3 P = o + d * tW;
+
+  vec3 N = wn;
+  if (gWaterAxis == 1 && uWaterWaves > 0.0) {
+    vec2 p = vec2(uCamBlock.xz & 4095) + P.xz;
+    vec2 g = waveSlope(p, uTime, tW * uPixelAngle / max(abs(d.y), 0.05));
+    vec3 up = normalize(vec3(-g.x, 1.0, -g.y));
+    N = wn.y > 0.0 ? up : -up;
+  }
+  float c = dot(N, -d);
+  if (c < 0.05) {
+    N = normalize(N + (0.05 - c) * -d);
+    c = max(dot(N, -d), 1e-3);
+  }
+
+  float eta = exitW ? WATER_IOR : 1.0 / WATER_IOR;
+  vec3 T = refract(d, N, eta);
+  bool tir = dot(T, T) < 0.5;   // total internal reflection: refract() gives zero
+  float cosS = (exitW && !tir) ? -dot(N, T) : c;
+  float F = tir ? 1.0 : WATER_F0 + (1.0 - WATER_F0) * pow(1.0 - cosS, 5.0);
+
+  vec3 refl = vec3(0.0);
+  if ((uWaterReflect != 0 && F > 0.002) || tir) {
+    vec3 R = reflect(d, N);
+    float up = dot(R, wn);
+    if (up < 0.02) R = normalize(R + (0.02 - up) * wn);   // a bumpy normal can aim below the flat surface
+    vec3 Ro = P + wn * 0.02;
+    vec3 sky = exitW ? uFogColor : skyOrFog(Ro, R);
+    refl = sky;
+    float w = (1.0 - smoothstep(REFLECT_FADE_FROM, REFLECT_FADE_TO, tW)) * smoothstep(REFLECT_MIN_F * 0.8, REFLECT_MIN_F * 1.6, F);
+    if (uWaterReflect >= 2 && w > 0.0) {
+      float th;
+      vec3 col;
+      if (traceShade(Ro, R, REFLECT_MAX, REFLECT_ITERS, tW, exitW, th, col)) refl = mix(sky, col, w);
+      else if (!exitW) refl = sky;
+    }
+  }
+
+  vec3 trans = vec3(0.0);
+  if (!tir) {
+    bool bent = uWaterRefract != 0 && tW < REFRACT_DIST;
+    vec3 To = P - wn * 0.01;
+    if (!exitW) {
+      float depth = WATER_DEEP;
+      vec3 behind = vec3(0.0);
+      if (bent) {
+        float th;
+        vec3 col;
+        if (traceShade(To, T, REFRACT_MAX, REFRACT_ITERS, tW, false, th, col)) {
+          depth = th;
+          behind = col;
+        }
+      } else if (hit) {
+        depth = max(tHit - tW, 0.0);
+        behind = solidRgb;
+      }
+      trans = waterAbsorb(behind, depth, waterAlbedo, waterLit);
+    } else {
+      if (bent) {
+        float th;
+        vec3 col;
+        if (traceShade(To, T, REFLECT_MAX, REFLECT_ITERS, tW, true, th, col)) {
+          trans = col;
+        } else {
+          gUnder = true;
+          trans = underFog(skyOrFog(To, T), tW);
+        }
+      } else if (hit) {
+        trans = solidRgb;
+      } else {
+        gUnder = true;
+        trans = underFog(skyOrFog(To, d), tW);
+      }
+    }
+  }
+
+  gUnder = under;
+  vec3 col = trans * (1.0 - F) + refl * F;
+  col = atmosphereHit(col, vec3(uCamBlock) + o, d, tW);
+  return vec4(col, 1.0);
+}
+#endif
+
 void main() {
   vec4 n = uInvViewProj * vec4(vNdc, -1.0, 1.0);
   vec4 f = uInvViewProj * vec4(vNdc, 1.0, 1.0);
@@ -1328,60 +1565,17 @@ void main() {
     return;
   }
 
-  vec3 solidRgb = vec3(0.0);
-  if (hit) {
-    // Flat per-face shading, same factors vanilla uses for its directional light.
-    float shade = (hitKind & 4) != 0 ? 1.0 : dot(hitNormal * hitNormal, vec3(0.6, hitNormal.y > 0.0 ? 1.0 : 0.5, 0.8));
-
-    // Sky and block light (0..1) and ambient occlusion. Only level 0 has light data; the rest is open sky.
-    vec2 light = vec2(1.0, 0.0);
-    float ao = 1.0;
-    if (level == 0) {
-      // Fade out over the second half of level 0, where the LOD switch happens.
-      float fade = clamp((uBase - tHit) / (0.5 * uBase), 0.0, 1.0);
-      vec2 l;
-      if ((hitKind & 4) != 0) {
-        // Plants (unshaded models) get no AO and the light of their own cell, like in vanilla.
-        l = lightAt(voxel);
-      } else {
-        vec3 p = o + d * tHit - vec3(voxel - uCamBlock);
-        vec3 an = abs(hitNormal);
-        int a = an.x >= an.y && an.x >= an.z ? 0 : (an.y >= an.z ? 1 : 2);
-        ivec3 cell = voxel;
-        // A face inside the cell (the top of a candle or a slab) is lit from the cell itself; a face on
-        // the cell boundary from the cell in front, which is what the AO looks at.
-        if ((hitKind & 3) != 0 && (hitNormal[a] > 0.0 ? p[a] < 0.999 : p[a] > 0.001)) cell[a] -= hitNormal[a] > 0.0 ? 1 : -1;
-        float occ = ambientOcclusion(cell, a, -hitNormal, p, l);
-        ao = mix(1.0, occ, fade);
-      }
-      light = mix(vec2(1.0, 0.0), l / 15.0, fade);
-    }
-
+  // Enhanced water traces its own refracted ray, so the straight one behind it is not shaded.
+  bool enhancedWaterOn = false;
 #ifdef ENHANCED
-    vec3 lit;
-    if (uSunLighting != 0) {
-      // HDR, so no clamp. Unshaded models (plants) are lit as if facing up.
-      vec3 ln = (hitKind & 4) != 0 ? vec3(0.0, 1.0, 0.0) : hitNormal;
-      lit = enhancedLight(o + d * tHit, ln, light, ao);
-    } else {
-      lit = min(lightRgb(light) * shade * ao, vec3(1.0));
-    }
+  enhancedWaterOn = water && uSunLighting != 0 && uDebug != 4 && (hit || (uSkyFeatures & 1) != 0);
+  bool bentWater = enhancedWaterOn && uWaterRefract != 0 && gWaterT < REFRACT_DIST;
 #else
-    vec3 lit = lightRgb(light) * shade * ao;
-    lit = min(lit, vec3(1.0));
+  bool bentWater = false;
 #endif
-    if (uDebug == 4) lit = vec3(1.0);
 
-    if (uDebug == 2) {
-      vec3 tint = 0.5 + 0.5 * cos(6.28318 * (float(level) * 0.17 + vec3(0.0, 0.33, 0.67)));
-      albedo = mix(albedo, tint, 0.6);
-    }
-
-    solidRgb = underFog(albedo * lit + EMISSION(id, albedo), tHit);
-#ifdef ENHANCED
-    solidRgb = atmosphereHit(solidRgb, vec3(uCamBlock) + o, d, tHit);
-#endif
-  }
+  vec3 solidRgb = vec3(0.0);
+  if (hit && !bentWater) solidRgb = shadeHit(o, d, tHit, 0.0, id, voxel, level, albedo, hitNormal, hitKind);
 
   if (!water) {
     fragColor = vec4(solidRgb, 1.0);
@@ -1420,6 +1614,10 @@ void main() {
   vec3 waterLit = uDebug == 4 ? vec3(1.0) : min(lightRgb(wl) * wshade, vec3(1.0));
 #ifdef ENHANCED
   if (uSunLighting != 0 && uDebug != 4) waterLit = enhancedLight(o + d * gWaterT, gWaterExit ? -d : wn, wl, 1.0);
+  if (enhancedWaterOn) {
+    fragColor = enhancedWater(o, d, hit, tHit, solidRgb, waterAlbedo, waterLit, wn);
+    return;
+  }
 #endif
   vec3 waterRgb = underFog(waterAlbedo * waterLit, gWaterT);
 #ifdef ENHANCED
