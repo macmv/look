@@ -209,18 +209,17 @@ impl Forest {
       }
       let group = &hits[i..j];
 
-      // A trunk shows at any coarseness; a leaf voxel needs a good share of
-      // its volume, or a coarse tree would be a ball of fat leaves.
-      let pick = most_common(group.iter().map(|h| h.3).filter(|&id| blocks.is_log(Block::new(id))))
-        .or_else(
-          || {
-            if group.len() >= need {
-              most_common(group.iter().map(|h| h.3))
-            } else {
-              None
-            }
-          },
-        );
+      // A trunk shows at any coarseness, but only where no leaves share its
+      // voxel: the canopy hides the trunk's top from a distance, and a log
+      // winning there pokes through the leaves. Other leaf voxels need a good
+      // share of their volume, or a coarse tree would be a ball of fat leaves.
+      let has_log = group.iter().any(|h| blocks.is_log(Block::new(h.3)));
+      let leaves =
+        most_common(group.iter().map(|h| h.3).filter(|&id| blocks.is_leaves(Block::new(id))));
+      let pick = match leaves {
+        Some(id) if has_log || group.len() >= need => Some(id),
+        _ => most_common(group.iter().map(|h| h.3).filter(|&id| blocks.is_log(Block::new(id)))),
+      };
       if let Some(id) = pick {
         out.push(TreeVoxel { x: group[0].2, z: group[0].1, y: group[0].0, id });
       }
