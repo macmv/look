@@ -334,10 +334,12 @@ pub const NO_HEIGHT: i16 = i16::MIN;
 /// Kind code of a water heightfield texel. Land is `1 + Surface`, 0 is no
 /// terrain.
 pub const HF_WATER: u8 = 7;
+/// Like `HF_WATER`, over a sand seabed (the warm oceans) instead of gravel.
+pub const HF_WATER_SAND: u8 = 8;
 /// Kind code of a texel whose column is a tree's canopy or trunk: its color is
 /// the whole story. The code is this plus the tree's height above the ground
 /// (up to 200), which lets the shader color the bare trunk below the canopy.
-pub const HF_TREE: u8 = 8;
+pub const HF_TREE: u8 = 9;
 /// Bytes of one heightfield tile: 256 native-endian i16 heights, then 256 RGBA
 /// texels.
 pub const HF_BYTES: usize = 256 * 2 + 256 * 4;
@@ -348,18 +350,19 @@ impl Tile {
   /// under water, whose surface the shader puts at the sea level;
   /// `NO_HEIGHT` without terrain), then per column RGBA where rgb
   /// is the biome's grass color (water color over water) and alpha the kind (0
-  /// none, `1 + Surface`, `HF_WATER`).
+  /// none, `1 + Surface`, `HF_WATER`, `HF_WATER_SAND`).
   pub fn write_heightfield(&self, sea_level: i32, out: &mut [u8; HF_BYTES]) {
     for col in 0..256 {
       let top = self.top[col];
       let (mut height, mut kind) = if top == NO_TERRAIN {
         (NO_HEIGHT, 0)
       } else if (top as i32) < sea_level {
-        (top, HF_WATER)
+        (top, if self.surface[col] == Surface::Sand as u8 { HF_WATER_SAND } else { HF_WATER })
       } else {
         (top, 1 + self.surface[col])
       };
-      let mut rgb = if kind == HF_WATER { self.water[col] } else { self.grass[col] };
+      let mut rgb =
+        if kind == HF_WATER || kind == HF_WATER_SAND { self.water[col] } else { self.grass[col] };
       if let Some(c) = self.canopy.as_deref() {
         if kind != 0 && c.top[col] != NO_TERRAIN && c.top[col] > height {
           // A plant is as tall as the cap, so the shader finds no trunk under

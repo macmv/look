@@ -18,7 +18,7 @@ uniform float uMaxDist;
 uniform int uHfEnabled;    // 1: levels past uLevels are drawn from the heightfield
 uniform int uHfIds[14];    // SeedSource.voxelIds: per surface kind a top and filler id, then stone and water
 uniform isampler2DArray uHfHeight;  // HeightField: surface height per texel, a layer per far level
-uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water, tree color for trees), a: kind (0 none, 1 + surface, 7 water, 8 + height above ground for trees)
+uniform sampler2DArray uHfAttr;     // rgb: biome grass color (water color for water, tree color for trees), a: kind (0 none, 1 + surface, 7 water over gravel, 8 water over sand, 9 + height above ground for trees)
 uniform isampler2DArray uHfTiles;   // highest texel of each 16 x 16 tile, to skip tiles a ray passes over
 uniform isampler2DArray uHfSuper;   // highest tile of each 8 x 8 tiles, to skip those at once
 uniform int uHfCeiling;             // HeightField.ceiling(): no visible column stands higher
@@ -70,7 +70,9 @@ const int TINT_WATER_LAYER = 5;  // TintMap.WATER_LAYER
 const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one row of the face table
 const int META_START = (8192 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level - 2) blocks wide
-const int HF_TREE = 8;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
+const int HF_WATER = 7;          // terrain.rs HF_WATER: water over a gravel seabed
+const int HF_WATER_SAND = 8;     // terrain.rs HF_WATER_SAND: water over a sand seabed (warm oceans)
+const int HF_TREE = 9;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
 const int HF_NONE = -32768;      // HeightField.NONE: tile max of a tile that has not arrived
 const int HF_BLANK = -32767;     // HeightField.BLANK: tile max of a tile that arrived with no terrain
 const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
@@ -552,8 +554,9 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
   uint id;
   if (kind == HF_TREE) {
     id = uint(uHfIds[12]);
-  } else if (kind == 7) {
-    id = uint(uHfIds[hax == 1 || depth < 1.0 ? 2 : 3]);   // the seabed is sand
+  } else if (kind == HF_WATER || kind == HF_WATER_SAND) {
+    int base = kind == HF_WATER ? 6 : 2;   // gravel or sand
+    id = uint(uHfIds[hax == 1 || depth < 1.0 ? base : base + 1]);
   } else if (hax == 1 || depth < 1.0) {
     id = uint(uHfIds[(kind - 1) * 2]);
   } else if (depth < 4.0) {
@@ -711,7 +714,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, float tEnd, int axis0, out float 
           // level inside the texel enters the water (coming down) or leaves it (going up).
           float tSea = (uSeaLevel - y0) / d.y;
           vec4 wattr = texelFetch(uHfAttr, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0);
-          if (int(wattr.a * 255.0 + 0.5) == 7 && tSea >= tc && tSea <= min(tNext.x, tNext.y)) {
+          if ((int(wattr.a * 255.0 + 0.5) == HF_WATER || int(wattr.a * 255.0 + 0.5) == HF_WATER_SAND) && tSea >= tc && tSea <= min(tNext.x, tNext.y)) {
             markHfWater(tSea, d.y > 0.0, ac, sh, wattr.rgb);
           }
         }
@@ -746,8 +749,9 @@ bool traceHeightfield(vec3 o, vec3 d, float t, float tEnd, int axis0, out float 
             uint id;
             if (kind == HF_TREE) {
               id = uint(uHfIds[12]);   // any opaque block: the color comes from the texel
-            } else if (kind == 7) {
-              id = uint(uHfIds[hax == 1 || depth < 1.0 ? 2 : 3]);   // the seabed is sand
+            } else if (kind == HF_WATER || kind == HF_WATER_SAND) {
+              int base = kind == HF_WATER ? 6 : 2;   // gravel or sand
+              id = uint(uHfIds[hax == 1 || depth < 1.0 ? base : base + 1]);
             } else if (hax == 1 || depth < 1.0) {
               id = uint(uHfIds[(kind - 1) * 2]);
             } else if (depth < 4.0) {
