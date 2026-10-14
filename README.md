@@ -31,7 +31,6 @@
   <img src="docs/far.png" alt="Far terrain with shaders" width="49%">
   <img src="docs/far-no-shaders.png" alt="Far terrain without shaders" width="49%">
 </p>
-<p align="center"><i>The same view with a shader pack (left) and vanilla lighting (right).</i></p>
 
 ## Building
 
