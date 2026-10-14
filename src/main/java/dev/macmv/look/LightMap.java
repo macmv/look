@@ -11,6 +11,7 @@ import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.DataLayer;
@@ -199,6 +200,12 @@ public final class LightMap {
       skyFill = engine.getLayerListener(LightLayer.SKY).getLightValue(new BlockPos(sx << 4, sy << 4, sz << 4));
     }
 
+    // Blocks buried in other blocks are pitch black, like the inside of a vanilla canopy.
+    var chunk = level.getChunk(sx, sz);
+    int idx = sy - minSection;
+    boolean hasBlocks = idx >= 0 && idx < chunk.getSectionsCount() && !chunk.getSection(idx).hasOnlyAir();
+    var mp = new BlockPos.MutableBlockPos();
+
     int first = -1;
     boolean uniform = true;
     for (int y = 0; y < 16; y++) {
@@ -207,6 +214,7 @@ public final class LightMap {
           int s = sky == null ? skyFill : sky.get(x, y, z);
           int b = block == null ? 0 : block.get(x, y, z);
           int v = s << 4 | b;
+          if (hasBlocks && buried(sx << 4 | x, sy << 4 | y, sz << 4 | z, mp)) v = 0;
           scratch.put(((y * 16 + z) << 4) + x, (byte) v);
           if (first < 0) first = v;
           else if (v != first) uniform = false;
@@ -253,6 +261,17 @@ public final class LightMap {
       scratch.clear();
       GL33C.glBufferSubData(GL33C.GL_TEXTURE_BUFFER, (long) slot * BRICK_BYTES, scratch);
     }
+  }
+
+  /** A non-air block with a solid, non-fluid block on every side (leaves, glass and slabs count; plants and water do not). */
+  private static boolean buried(int x, int y, int z, BlockPos.MutableBlockPos mp) {
+    var self = level.getBlockState(mp.set(x, y, z));
+    if (self.isAir() || !self.getFluidState().isEmpty()) return false;
+    for (Direction d : Direction.values()) {
+      var st = level.getBlockState(mp.set(x + d.getStepX(), y + d.getStepY(), z + d.getStepZ()));
+      if (st.getCollisionShape(level, mp).isEmpty() || !st.getFluidState().isEmpty()) return false;
+    }
+    return true;
   }
 
   private static void release(long key) {
