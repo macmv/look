@@ -26,8 +26,9 @@ import org.lwjgl.system.MemoryUtil;
  *
  * <p>Layout:
  * <ul>
- *   <li>An indirection 3D texture (R32UI), one texel per 16^3 section. Value 0 is empty, otherwise
- *       {@code brickSlot + 1}. X and Z wrap (toroidal). The levels of the LOD pyramid ({@link Lod})
+ *   <li>An indirection 3D texture (R32UI), one texel per 16^3 section. Value 0 is a section that is
+ *       not resolved yet (the shader draws the far heightfield there until it is), {@link BrickTable#EMPTY_CELL}
+ *       is one that is resolved and all air, otherwise {@code brickSlot + 1}. X and Z wrap (toroidal). The levels of the LOD pyramid ({@link Lod})
  *       are stacked along Y: each has its own rows, and a section of level k is 16 voxels of
  *       2^k blocks, so it covers {@code 16 << k} blocks. All levels share one pool of brick slots.
  *   <li>A texture buffer (R16UI) holding all bricks: 4096 voxel ids per slot. A section that is
@@ -50,6 +51,12 @@ import org.lwjgl.system.MemoryUtil;
  *   any --chunk dropped--> (untracked)
  * </pre>
  *
+ * <p>What the shader reads in a section's cell follows from the state: LOADED is the brick slot,
+ * EMPTY is {@link BrickTable#EMPTY_CELL} (rays skip it), and every other section with no slot
+ * (untracked, STARVED, OUT_OF_RANGE, or WAITING/LOADING that had nothing before) is 0, "not resolved
+ * yet", where the shader draws the far heightfield instead. A WAITING or LOADING section keeps the
+ * value it had until it is rebuilt.
+ *
  * <p>Sections are keyed by {@link SectionKey} (level + section coordinates). Where their blocks come
  * from is up to the {@link VoxelSource} assigned to their level; the world source is the default.
  *
@@ -58,7 +65,7 @@ import org.lwjgl.system.MemoryUtil;
  * {@link VoxelSource#PENDING} and report back with {@link #invalidate}.
  */
 public final class VoxelWorld {
-  /** Where a section is in its life. A slot is owned exactly by LOADED sections (and WAITING ones that were LOADED). */
+  /** Where a section is in its life. A slot is owned exactly by LOADED sections (and WAITING ones that were LOADED). A cell holds EMPTY_CELL for EMPTY ones (and WAITING ones that were EMPTY). */
   private enum SectionState {
     /** Needs a (re)build and is queued. May still own a slot, which keeps showing the old data. */
     WAITING,
@@ -68,7 +75,7 @@ public final class VoxelWorld {
     STARVED,
     /** Resident and up to date. */
     LOADED,
-    /** Up to date and all air. Owns no slot. */
+    /** Up to date and all air. Owns no slot, but marks its cell {@link BrickTable#EMPTY_CELL} so rays skip it. */
     EMPTY,
     /** The chunk exists but is outside the view radius. Owns no slot; promoted when the view moves. */
     OUT_OF_RANGE
@@ -734,7 +741,10 @@ public final class VoxelWorld {
       return;
     }
     if (solid == 0) {
-      release(key);
+      int cell = cellIndex(key);
+      long evicted = table.markEmpty(key, cell);
+      dirtyCells.add(cell);
+      if (evicted != BrickTable.NO_OWNER && states.containsKey(evicted)) setState(evicted, SectionState.OUT_OF_RANGE);
       setState(key, SectionState.EMPTY);
       return;
     }
@@ -807,6 +817,10 @@ public final class VoxelWorld {
       if (e.getValue() == SectionState.LOADED) {
         loaded++;
         if (!owns) ownerless++;
+      } else if (e.getValue() == SectionState.EMPTY) {
+        if (!owns || table.indirection(cellIndex(key)) != BrickTable.EMPTY_CELL) {
+          bad.add("section " + describe(key) + " is EMPTY but its cell is not marked empty");
+        }
       } else if (owns && e.getValue() != SectionState.WAITING && e.getValue() != SectionState.LOADING) {
         bad.add("section " + describe(key) + " is " + e.getValue() + " but owns a slot");
       }

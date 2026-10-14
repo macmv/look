@@ -312,4 +312,47 @@ class BrickTableTest {
     assertEquals(pointing.size(), t.used(), "used slots, " + where);
     assertEquals(slots, t.used() + t.freeCount(), where);
   }
+
+  @Test
+  void emptySectionsMarkTheirCellWithoutASlot() {
+    BrickTable t = table(4);
+    assertEquals(0, t.indirection(0));
+    assertEquals(BrickTable.NO_OWNER, t.markEmpty(1, 0));
+    assertEquals(BrickTable.EMPTY_CELL, t.indirection(0));
+    assertTrue(t.owns(0, 1));
+    assertEquals(0, t.used());
+    assertTrue(t.checkInvariants().isEmpty());
+
+    // Releasing goes back to "not resolved".
+    assertTrue(t.release(1, 0));
+    assertEquals(0, t.indirection(0));
+    assertTrue(t.checkInvariants().isEmpty());
+  }
+
+  @Test
+  void emptyingASectionFreesItsSlotAndPlacingOverAnEmptyMarkWorks() {
+    BrickTable t = table(4);
+    t.place(1, 0, -1);
+    assertEquals(1, t.used());
+    t.markEmpty(1, 0);
+    assertEquals(0, t.used());
+    assertEquals(BrickTable.EMPTY_CELL, t.indirection(0));
+
+    Placement p = t.place(1, 0, -1);
+    assertTrue(p.slot() >= 0);
+    assertEquals(p.slot(), slotOf(t, 0));
+    assertEquals(1, t.used());
+    assertTrue(t.checkInvariants().isEmpty());
+  }
+
+  @Test
+  void markingEmptyEvictsAnotherOwner() {
+    BrickTable t = table(4);
+    t.place(1, 0, -1);
+    assertEquals(1, t.markEmpty(2, 0));
+    assertEquals(0, t.used());
+    assertEquals(BrickTable.EMPTY_CELL, t.indirection(0));
+    assertTrue(t.owns(0, 2));
+    assertTrue(t.checkInvariants().isEmpty());
+  }
 }

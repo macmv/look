@@ -46,6 +46,13 @@ tiles (feed the far field).
   OUT_OF_RANGE.
 - EMPTY and OUT_OF_RANGE own no slot. WAITING and LOADING may still own one, which keeps the old
   data on screen until the rebuild lands.
+- What the shader reads in the section's indirection cell: LOADED is the slot, EMPTY is
+  `BrickTable.EMPTY_CELL` (the section is resolved and all air: rays skip it), and every section with
+  no slot otherwise (untracked, STARVED, OUT_OF_RANGE, WAITING or LOADING without an old value) is 0,
+  "not resolved yet". In a 0 cell the shader draws the far heightfield (first level, which also
+  covers the area under the voxel levels) up to where the ray leaves the section, so terrain shows
+  while the bricks load and the section switches to voxels the frame its cell is written. EMPTY
+  owns its cell (so `markEmpty` can evict a stale owner) but no slot.
 
 ## 3. Slot (Java, `BrickTable`) -- one 8 KiB brick in the GPU buffer
 

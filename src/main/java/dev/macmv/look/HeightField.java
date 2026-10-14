@@ -328,7 +328,9 @@ public final class HeightField {
       l.camTileX = cx;
       l.camTileZ = cz;
 
-      int inner = (int) (Lod.BASE_BLOCKS * (1 << (pyramidLevel(i) - 1)) / tileBlocks) - 2;
+      // The first level also covers the area under the voxel levels, which the shader draws from it
+      // while their sections are not resolved yet. The others start where the level before ends.
+      int inner = i == 0 ? 0 : (int) (Lod.BASE_BLOCKS * (1 << (pyramidLevel(i) - 1)) / tileBlocks) - 2;
       int baseX = cx - WINDOW_TILES / 2;
       int baseZ = cz - WINDOW_TILES / 2;
 

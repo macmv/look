@@ -24,7 +24,7 @@ uniform isampler2DArray uHfSuper;   // highest tile of each 8 x 8 tiles, to skip
 uniform int uHfCeiling;             // HeightField.ceiling(): no visible column stands higher
 uniform int uDebug;        // 5: no biome tint, 6: mip level fixed at 2, 7: alpha test off, 1: step-count heatmap instead of colors, 2: tint by pyramid level, 3: no mipmaps, 4: unlit
 
-uniform usampler3D uIndirection;  // section -> brick slot + 1, 0 when empty
+uniform usampler3D uIndirection;  // section -> brick slot + 1, EMPTY_CELL when all air, 0 when not resolved yet
 uniform usamplerBuffer uBricks;   // 4096 u16 voxel ids per slot
 uniform usamplerBuffer uColors;   // voxel id -> 0xRRGGBB, used when a block has no texture
 uniform samplerBuffer uFaces;     // per (id, face, layer): atlas uv mapping, see BlockClassifier
@@ -85,9 +85,18 @@ const float SWAY_OMEGA = 0.0490874;  // 2 pi / 128 ticks, so wrapping uTime at a
 const uint ID_MASK = 0x1FFFu;    // BlockClassifier.MAX_ID: a brick texel is the voxel id, then the fill height
 const uint FILL_SHIFT = 13u;     // BlockClassifier.FILL_SHIFT, in eighths of a voxel, 0 for a whole one
 
-uint readSlot(int lvl, ivec3 sec) {
+const uint EMPTY_CELL = 0xFFFFFFFFu;   // BrickTable.EMPTY_CELL: a resolved, all-air section. A cell of 0 is not resolved yet.
+
+// The raw indirection value: brick slot + 1, EMPTY_CELL, or 0 while the section is not resolved.
+uint readCell(int lvl, ivec3 sec) {
   ivec3 c = ivec3(sec.x & (uGrid.x - 1), uLevel[lvl].z + sec.y - uLevel[lvl].x, sec.z & (uGrid.z - 1));
   return texelFetch(uIndirection, c, 0).r;
+}
+
+// Brick slot + 1, 0 when the section has no bricks (all air, or not resolved).
+uint readSlot(int lvl, ivec3 sec) {
+  uint cell = readCell(lvl, sec);
+  return cell == EMPTY_CELL ? 0u : cell;
 }
 
 // Pyramid level to read at a position relative to the camera. Level k holds voxels of 2^k blocks and
@@ -571,7 +580,11 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
 // height, walked in 2D one tile at a time (tiles the ray passes over are skipped by their highest
 // texel), then texel by texel inside a tile. `t` is where the ray enters the first far level; the
 // level only grows from there. A hit comes out like one from the voxel trace.
-bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, inout int steps, out vec3 hitNormal, out int hitKind) {
+//
+// With a `tEnd` this stands in for voxel sections that are not resolved yet: the ray starts at `t`
+// inside one (entering through the `axis0` face), only hits up to `tEnd` count, and it reads the first
+// heightfield level, which also covers the area under the voxel levels.
+bool traceHeightfield(vec3 o, vec3 d, float t, float tEnd, int axis0, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, inout int steps, out vec3 hitNormal, out int hitKind) {
   vec3 invD = 1.0 / d;
   float y0 = float(uCamBlock.y) + o.y;   // ray height at t = 0, in blocks
   int last = uLevels + HF_LEVELS - 1;
@@ -580,12 +593,12 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
   // well inside its ring), and the last one just ends.
   float reach = uBase * float(1 << last) - 16.0 * float(1 << (last - HF_FINER));
   ivec2 s = ivec2(d.x > 0.0 ? 1 : -1, d.z > 0.0 ? 1 : -1);
-  int axis = 1;
+  int axis = axis0;
   // Nothing in the window stands higher than this (the sea fills up to its level, so that counts too).
   float ceilY = max(float(uHfCeiling), uSeaLevel) + 1.0;
 
   for (int it = 0; it < 640; it++) {
-    if (t > min(uMaxDist, gTraceMax)) return false;
+    if (t > min(min(uMaxDist, gTraceMax), tEnd)) return false;
     steps++;
 
     vec3 rel = o + d * t;
@@ -601,7 +614,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
       continue;
     }
 
-    int lvl = levelAt(rel);
+    int lvl = max(levelAt(rel), uLevels);
     if (lvl < last && h >= uBase * float(1 << lvl) - 16.0 * float(1 << (lvl - HF_FINER))) lvl++;
     int layer = lvl - uLevels;
     int sh = lvl - HF_FINER;                 // a texel is 1 << sh blocks wide
@@ -671,6 +684,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
     float tc = t;
 
     for (int j = 0; j < 34; j++) {
+      if (tc > tEnd) return false;
       steps++;
       ivec2 ac = camCell + c;
       float fH = hfHeight(ac, layer);
@@ -696,6 +710,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, out float tHit, out uint hitId, o
           }
         }
 
+        if (th > tEnd) return false;
         if (th >= 0.0) {
           vec4 attr = texelFetch(uHfAttr, ivec3(ac & (HF_WINDOW * 16 - 1), layer), 0);
           int kind = int(attr.a * 255.0 + 0.5);
@@ -812,7 +827,7 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
       // Past the voxel levels the ray never comes back to them: the rest is the heightfield.
       if (uHfEnabled == 0) return false;
       gWet = false;
-      return traceHeightfield(o, d, t, tHit, hitId, hitAxis, hitVoxel, hitLevel, albedo, steps, hitNormal, hitKind);
+      return traceHeightfield(o, d, t, 1.0e30, 1, tHit, hitId, hitAxis, hitVoxel, hitLevel, albedo, steps, hitNormal, hitKind);
     }
     float vs = float(1 << lvl);       // blocks per voxel
     int secShift = lvl + 4;           // block -> section
@@ -841,10 +856,10 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
     }
 
     ivec3 secMin = sec << secShift;   // block
-    uint slot = 0u;
-    if (sec.y >= rows.x && sec.y < rows.x + rows.y) slot = readSlot(lvl, sec);
+    uint slot = EMPTY_CELL;
+    if (sec.y >= rows.x && sec.y < rows.x + rows.y) slot = readCell(lvl, sec);
 
-    if (slot == 0u) {
+    if (slot == 0u || slot == EMPTY_CELL) {
       if (gWet) {
         markWater(t, axis, true);
         gWet = false;
@@ -853,6 +868,10 @@ bool trace(vec3 o, vec3 d, out float tHit, out uint hitId, out int hitAxis, out 
       vec3 bound = vec3(secMin - uCamBlock) + up * (vs * 16.0);
       vec3 tb = (bound - o) * invD;
       float te = min(tb.x, min(tb.y, tb.z));
+      if (slot == 0u && uHfEnabled != 0) {
+        // Not resolved yet (still loading): the far heightfield stands in for it until its brick lands.
+        if (traceHeightfield(o, d, t, te, axis, tHit, hitId, hitAxis, hitVoxel, hitLevel, albedo, steps, hitNormal, hitKind)) return true;
+      }
       axis = (tb.x <= tb.y && tb.x <= tb.z) ? 0 : (tb.y <= tb.z ? 1 : 2);
       t = te + eps;
       continue;

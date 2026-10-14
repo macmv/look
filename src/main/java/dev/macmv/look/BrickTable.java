@@ -15,6 +15,11 @@ import java.util.Map;
  */
 final class BrickTable {
   static final long NO_OWNER = Long.MIN_VALUE;
+  /**
+   * The cell value of a section that is resolved and all air. Unlike 0 (not resolved yet: the
+   * shader falls back to the far heightfield there) the shader skips it. 0xFFFFFFFF in the texture.
+   */
+  static final int EMPTY_CELL = -1;
 
   /** The result of {@link #place}. A negative {@code slot} means the pool was full. */
   record Placement(int slot, boolean upload, long evicted) {}
@@ -69,7 +74,7 @@ final class BrickTable {
     return capacity - freeCount;
   }
 
-  /** The cell value for the texture: slot + 1, or 0 when empty. */
+  /** The cell value for the texture: slot + 1, {@link #EMPTY_CELL} for all air, or 0 when not resolved. */
   int indirection(int cell) {
     return indirection[cell];
   }
@@ -108,7 +113,7 @@ final class BrickTable {
       release(evicted, cell);
     }
 
-    int own = owner[cell] == key && indirection[cell] != 0 ? indirection[cell] - 1 : -1;
+    int own = owner[cell] == key && indirection[cell] > 0 ? indirection[cell] - 1 : -1;
 
     int slot;
     boolean upload = true;
@@ -147,10 +152,26 @@ final class BrickTable {
    */
   boolean release(long key, int cell) {
     if (owner[cell] != key) return false;
-    if (indirection[cell] != 0) freeSlot(indirection[cell] - 1);
+    if (indirection[cell] > 0) freeSlot(indirection[cell] - 1);
     indirection[cell] = 0;
     owner[cell] = NO_OWNER;
     return true;
+  }
+
+  /**
+   * Marks {@code cell} as all air for {@code key}, giving up the slot it owned. Returns the section
+   * that owned the cell before and lost it (or {@link #NO_OWNER}); the cell always needs uploading.
+   */
+  long markEmpty(long key, int cell) {
+    long evicted = NO_OWNER;
+    if (owner[cell] != NO_OWNER && owner[cell] != key) {
+      evicted = owner[cell];
+      release(evicted, cell);
+    }
+    if (indirection[cell] > 0) freeSlot(indirection[cell] - 1);
+    indirection[cell] = EMPTY_CELL;
+    owner[cell] = key;
+    return evicted;
   }
 
   private int allocSlot() {
@@ -183,7 +204,7 @@ final class BrickTable {
       if ((indirection[cell] != 0) != hasOwner) {
         bad.add("cell " + cell + ": indirection " + indirection[cell] + " but owner " + owner[cell]);
       }
-      int slot = indirection[cell] - 1;
+      int slot = indirection[cell] > 0 ? indirection[cell] - 1 : -1;
       if (slot >= capacity) bad.add("cell " + cell + " points past the pool: slot " + slot);
       else if (slot >= 0) refs[slot]++;
     }
