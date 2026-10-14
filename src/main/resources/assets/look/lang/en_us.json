@@ -4,6 +4,7 @@
   "look.video.tab.shaders": "Shaders",
   "look.option.voxel": "Voxel Renderer",
   "look.option.enhanced": "Shaders",
+  "look.option.stats_hud": "Debug Overlay",
   "look.option.debug": "Debug View",
   "look.option.bloom": "Bloom",
   "look.option.bloom_strength": "Bloom Strength",

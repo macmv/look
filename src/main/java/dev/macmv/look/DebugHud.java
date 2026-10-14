@@ -4,7 +4,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 
-/** Draws {@link RenderStats} on screen, always, in both renderer modes. */
+/** Draws {@link RenderStats} on screen, in both renderer modes unless {@link LookState#statsHud} is off. */
 public final class DebugHud {
   private static final int PAD = 3;
 
@@ -14,7 +14,7 @@ public final class DebugHud {
     RenderStats.tickFrame();
 
     Minecraft mc = Minecraft.getInstance();
-    if (mc.options.hideGui) return;
+    if (mc.options.hideGui || !LookState.statsHud) return;
 
     var lines = RenderStats.lines();
     if (lines.isEmpty()) return;

@@ -40,6 +40,7 @@ public final class LookSettings {
   /** Renderer and level-of-detail settings. */
   public static final List<Entry> LOOK = List.of(
       bool("voxel", () -> LookState.voxelEnabled, LookState::setVoxelEnabled),
+      bool("stats_hud", () -> LookState.statsHud, v -> LookState.statsHud = v),
       choice("debug", LookState.DEBUG_COUNT, LookState::debugName, () -> LookState.debug, v -> LookState.debug = v));
 
   /** The master switch for the shaders tab (Enhanced render mode). Saved with the rest, shown as a wide button. */

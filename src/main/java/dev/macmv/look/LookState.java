@@ -9,7 +9,7 @@ import net.minecraft.client.Minecraft;
  *   <li>Voxel renderer: the voxel renderer or vanilla's chunk renderer.
  *   <li>Render mode: Vanilla (true-to-vanilla look) or Enhanced (god rays, waves, reflections).
  *   <li>Debug view: off, step-count heatmap of the voxel pass, then pyramid levels tinted, then no mipmaps, then unlit.
- *       Timing stats are always on screen.
+ *       Timing stats are on screen unless switched off.
  * </ul>
  *
  * Vanilla keeps compiling section meshes while the voxel renderer is on, and the voxel world keeps
@@ -22,6 +22,8 @@ public final class LookState {
   public static boolean enhanced = false;
   /** 0 off, 1 step-count heatmap, 2 pyramid level tint, 3 no mipmaps, 4 unlit (albedo only), 5 no biome tint, 6 mip level fixed at 2, 7 alpha test off. */
   public static int debug = 0;
+  /** Whether the timing stats overlay in the top left is drawn. */
+  public static boolean statsHud = false;
 
   private static final String[] DEBUG_NAMES = {"off", "step heatmap", "LOD levels", "no mipmaps", "unlit", "no biome tint", "mip level fixed at 2", "alpha test off"};
   public static final int DEBUG_COUNT = DEBUG_NAMES.length;
