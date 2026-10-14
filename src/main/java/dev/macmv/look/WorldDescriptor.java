@@ -4,6 +4,7 @@ import dev.macmv.look.mixin.MultiNoiseBiomeSourceAccessor;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
@@ -29,13 +30,13 @@ public record WorldDescriptor(long seed, byte[] config) {
     }
 
     ChunkGenerator generator = level.getChunkSource().getGenerator();
-    if (!(generator instanceof NoiseBasedChunkGenerator noise)
-        || !(generator.getBiomeSource() instanceof MultiNoiseBiomeSource biomes)) {
+    BiomeSource source = unwrap(generator.getBiomeSource());
+    if (!(generator instanceof NoiseBasedChunkGenerator noise) || !(source instanceof MultiNoiseBiomeSource biomes)) {
       // A mod (a biome mod's custom source, for example) replaced vanilla's generator, so the native port cannot reproduce it.
       LookCommon.LOGGER.warn(
           "Predicted terrain is unavailable: the overworld uses generator {} with biome source {}, but only vanilla's noise generator and multi noise biome source can be reproduced",
           generator.getClass().getName(),
-          generator.getBiomeSource().getClass().getName());
+          source.getClass().getName());
       return null;
     }
 
@@ -50,5 +51,27 @@ public record WorldDescriptor(long seed, byte[] config) {
       LookCommon.LOGGER.warn("Predicted terrain is unavailable for this world: {}", e.toString());
       return null;
     }
+  }
+
+  /**
+   * Lithostitched wraps the overworld's biome source to inject biomes. Its class cannot be linked
+   * against, so ask the wrapper for the source underneath by reflection. The injected biomes are
+   * then missing from the prediction (the terrain shape does not depend on them).
+   */
+  private static BiomeSource unwrap(BiomeSource source) {
+    for (int depth = 0; depth < 4 && !(source instanceof MultiNoiseBiomeSource); depth++) {
+      try {
+        Object inner = source.getClass().getMethod("rootDelegate").invoke(source);
+        if (!(inner instanceof BiomeSource next) || next == source) break;
+        LookCommon.LOGGER.warn(
+            "Predicting terrain from {} underneath {}; biomes injected by mods will not be predicted",
+            next.getClass().getName(),
+            source.getClass().getName());
+        source = next;
+      } catch (ReflectiveOperationException | RuntimeException e) {
+        break;
+      }
+    }
+    return source;
   }
 }
