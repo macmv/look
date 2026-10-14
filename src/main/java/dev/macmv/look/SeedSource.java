@@ -221,7 +221,10 @@ public final class SeedSource implements VoxelSource {
     resolved = true;
     // The sections of an enumerated source are only asked for during a sweep.
     VoxelWorld.requestSweep();
-    if (world == null) return;
+    if (world == null) {
+      LookMod.LOGGER.warn("No predicted terrain for this world; the far terrain will be missing (see the earlier warning for why)");
+      return;
+    }
 
     try {
       NativeLib.load();

@@ -23,11 +23,19 @@ public record WorldDescriptor(long seed, byte[] config) {
    */
   public static WorldDescriptor of(MinecraftServer server) {
     ServerLevel level = server.getLevel(Level.OVERWORLD);
-    if (level == null) return null;
+    if (level == null) {
+      LookCommon.LOGGER.warn("Predicted terrain is unavailable: the server has no overworld");
+      return null;
+    }
 
     ChunkGenerator generator = level.getChunkSource().getGenerator();
     if (!(generator instanceof NoiseBasedChunkGenerator noise)
         || !(generator.getBiomeSource() instanceof MultiNoiseBiomeSource biomes)) {
+      // A mod (a biome mod's custom source, for example) replaced vanilla's generator, so the native port cannot reproduce it.
+      LookCommon.LOGGER.warn(
+          "Predicted terrain is unavailable: the overworld uses generator {} with biome source {}, but only vanilla's noise generator and multi noise biome source can be reproduced",
+          generator.getClass().getName(),
+          generator.getBiomeSource().getClass().getName());
       return null;
     }
 

@@ -30,7 +30,6 @@ public final class ClientWorldDescriptor {
         (payload, context) -> {
           try {
             received = payload.descriptor();
-            LookCommon.LOGGER.info("Server described its world: seed {}, {} bytes of config", received.seed(), received.config().length);
           } catch (UncheckedIOException e) {
             LookCommon.LOGGER.warn("Ignoring a bad world description from the server: {}", e.toString());
           }

@@ -404,7 +404,7 @@ public final class BlockClassifier {
 
     int count = Math.min(recs.size(), MAX_QUADS);
     if (recs.size() > MAX_QUADS) {
-      LookMod.LOGGER.warn("{} has {} quads; only using the first {}", state, recs.size(), MAX_QUADS);
+      LookMod.LOGGER.debug("{} has {} quads; only using the first {}", state, recs.size(), MAX_QUADS);
     }
 
     float[] data = new float[count * QUAD_FLOATS];
@@ -600,7 +600,7 @@ public final class BlockClassifier {
     List<WeightedEntry.Wrapper<BakedModel>> variants = ((WeightedBakedModelAccessor) weighted).look$variants();
     int count = Math.min(variants.size(), MAX_VARIANTS);
     if (variants.size() > MAX_VARIANTS) {
-      LookMod.LOGGER.warn("{} has {} variants; only using the first {}", state, variants.size(), MAX_VARIANTS);
+      LookMod.LOGGER.debug("{} has {} variants; only using the first {}", state, variants.size(), MAX_VARIANTS);
     }
 
     List<Integer> rows = new ArrayList<>();

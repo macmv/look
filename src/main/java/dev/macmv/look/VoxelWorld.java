@@ -692,7 +692,6 @@ public final class VoxelWorld {
 
     BlockClassifier.reset();
     if (!first) {
-      LookMod.LOGGER.info("Resources reloaded; rebuilding voxel data");
       refreshAll();
     }
   }
@@ -945,8 +944,6 @@ public final class VoxelWorld {
     indirectionTex = GL33C.glGenTextures();
 
     glReady = true;
-    LookMod.LOGGER.info(
-        "Voxel world ready: {} brick slots ({} MiB)", capacity, (long) capacity * BRICK_BYTES / (1024 * 1024));
   }
 
   private static void createIndirectionTexture() {
