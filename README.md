@@ -10,15 +10,16 @@
 
 ## Why
 
-- **No meshes.** Terrain is raycast on the GPU straight from voxel data, so there are no chunk
-  meshes to build, upload, or rebuild. Moving fast and flying don't hitch.
-- **Real terrain, not a fake horizon.** Distant Horizons-style mods bake low-detail meshes of
-  chunks the game already generated. Look instead regenerates terrain locally from the world seed,
-  so far terrain is accurate to the real world and nothing is saved to disk or pre-generated.
-- **Cheap distance.** Detail drops off in power-of-two steps with distance, so every ring of
-  terrain costs about the same. Reach doubles per level without costing more memory.
-- **Still Minecraft.** Entities, particles, clouds and weather draw normally on top, and a toggle
-  switches back to the vanilla renderer instantly.
+- **No meshes.** Terrain is raycast on the GPU straight from voxel data, so
+  there are no chunk meshes to build, upload, or rebuild. Moving fast and
+  flying don't hitch.
+- **Real terrain, not a fake horizon.** Distant Horizons-style mods bake
+  low-detail meshes of chunks the game already generated. Look instead
+  regenerates terrain locally from the world seed, so far terrain is accurate
+  to the real world and nothing is saved to disk or pre-generated.
+- **LODs.** Detail drops off in power-of-two steps with distance, so every ring
+  of terrain costs about the same. Reach doubles per level without costing more
+  memory.
 
 ## Screenshots
 
