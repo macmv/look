@@ -38,7 +38,10 @@ def nativeFile = nativeOs == 'windows' ? 'look_native.dll'
 def nativeDir = layout.projectDirectory.dir('native')
 def nativeOut = layout.buildDirectory.dir('generated/natives')
 
-// Builds the host platform only. Cross-compiling the other targets is a CI job.
+// Builds the host platform only. The release workflow builds every target on its own runner,
+// drops the libraries into build/generated/natives, and passes -PprebuiltNatives to skip this.
+def prebuiltNatives = project.hasProperty('prebuiltNatives')
+
 def cargoBuild = tasks.register('cargoBuild', Exec) {
   workingDir = nativeDir.asFile
   commandLine 'cargo', 'build', '--release'
@@ -56,7 +59,7 @@ def stageNatives = tasks.register('stageNatives', Copy) {
 
 processResources {
   // Only the built jar carries the binaries; the sources jar must not.
-  dependsOn stageNatives
+  if (!prebuiltNatives) dependsOn stageNatives
   from(nativeOut)
 
   inputs.property 'version', project.version

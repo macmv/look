@@ -1,0 +1,96 @@
+name: release
+
+# Publishing a GitHub release builds the native library on every platform, bundles them all into
+# one jar, and attaches the jar to the release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  natives:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { id: linux-x86_64,    os: ubuntu-24.04,     target: x86_64-unknown-linux-gnu,   file: liblook_native.so }
+          - { id: linux-aarch64,   os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu,  file: liblook_native.so }
+          - { id: windows-x86_64,  os: windows-latest,   target: x86_64-pc-windows-msvc,     file: look_native.dll }
+          - { id: windows-aarch64, os: windows-11-arm,   target: aarch64-pc-windows-msvc,    file: look_native.dll }
+          - { id: macos-x86_64,    os: macos-15-intel,   target: x86_64-apple-darwin,        file: liblook_native.dylib }
+          - { id: macos-aarch64,   os: macos-latest,     target: aarch64-apple-darwin,       file: liblook_native.dylib }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        working-directory: native
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}
+          path: native/target/${{ matrix.target }}/release/${{ matrix.file }}
+          if-no-files-found: error
+
+  jar:
+    needs: natives
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # One directory per artifact: natives-in/<id>/<file>.
+      - uses: actions/download-artifact@v4
+        with:
+          path: natives-in
+
+      - name: Stage natives
+        run: |
+          for dir in natives-in/*/; do
+            id=$(basename "$dir")
+            mkdir -p "build/generated/natives/natives/$id"
+            cp "$dir"* "build/generated/natives/natives/$id/"
+          done
+          find build/generated/natives -type f
+
+      # The test workflow already runs the render tests on every push.
+      - name: Build jar
+        run: ./gradlew build -x test -PprebuiltNatives
+
+      - name: Check the jar bundles every platform
+        run: |
+          jar=$(ls build/libs/*.jar | grep -v -- '-sources' | head -n 1)
+          unzip -l "$jar" | grep natives/
+          test "$(unzip -l "$jar" | grep -c -E 'natives/.+/(liblook_native\.(so|dylib)|look_native\.dll)')" -eq 6
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jar
+          path: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        run: gh release upload "$TAG" $(ls build/libs/*.jar | grep -v -- '-sources') --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
