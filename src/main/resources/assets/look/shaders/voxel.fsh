@@ -1357,27 +1357,7 @@ const float REFLECT_FADE_FROM = 128.0;  // traced reflections give way to the sk
 const float REFLECT_FADE_TO = 192.0;
 const float REFLECT_MIN_F = 0.035;      // below this much Fresnel the reflection is only the sky
 
-// Sine waves that tile every 64 blocks and every 128 ticks (the wrap of uTime). Wave vectors are in
-// cycles per 64 blocks, slopes are the steepness of each, speeds are cycles per 128 ticks.
-const int WAVES = 5;
-const vec2 WAVE_K[WAVES] = vec2[WAVES](vec2(3.0, 1.0), vec2(-2.0, 4.0), vec2(7.0, -3.0), vec2(-9.0, -8.0), vec2(14.0, 11.0));
-const float WAVE_S[WAVES] = float[WAVES](0.050, 0.045, 0.040, 0.030, 0.025);
-const float WAVE_SPEED[WAVES] = float[WAVES](1.0, 2.0, 3.0, 5.0, 6.0);
-const float WAVE_PHASE[WAVES] = float[WAVES](0.0, 1.7, 4.1, 2.3, 5.2);
-
-// Gradient of the water height at `p` (x, z, wrapped), fading out the waves a pixel can no longer resolve
-// (`foot` is the size of a pixel on the surface, in blocks).
-vec2 waveSlope(vec2 p, float time, float foot) {
-  vec2 g = vec2(0.0);
-  for (int i = 0; i < WAVES; i++) {
-    vec2 k = WAVE_K[i] * (6.2831853 / 64.0);
-    float kl = length(k);
-    float fade = 1.0 - smoothstep(0.4, 1.5, foot * kl);
-    float ph = dot(k, p) - WAVE_SPEED[i] * (6.2831853 / 128.0) * time + WAVE_PHASE[i];
-    g += (k / kl) * (WAVE_S[i] * fade * cos(ph));
-  }
-  return g * uWaterWaves;
-}
+#include "water_waves.glsl"
 
 vec3 safeDir(vec3 d) {
   return vec3(abs(d.x) < 1e-6 ? 1e-6 : d.x, abs(d.y) < 1e-6 ? 1e-6 : d.y, abs(d.z) < 1e-6 ? 1e-6 : d.z);
@@ -1422,6 +1402,12 @@ vec3 waterAbsorb(vec3 behind, float depth, vec3 albedo, vec3 light) {
   vec3 tr = exp(-sigma * depth);
   return behind * tr + albedo * light * (1.0 - tr);
 }
+
+// Distance from the near plane along the primary ray to the first thing the refracted ray under the water
+// surface found (the length of the bent path), or past REFRACT_MAX when it found nothing; -1 when the ray
+// was not refracted. It is the depth of the pixel, so entities, which entity_refract.glsl moves to the
+// same bent path, sort against the terrain they are seen through.
+float gRefractT = -1.0;
 
 // The shaded water surface the primary ray found (the water globals): wave normal, Fresnel mix of the
 // reflection and the refracted view, absorption. `solidRgb` is the straight-through hit, used when
@@ -1478,9 +1464,11 @@ vec4 enhancedWater(vec3 o, vec3 d, bool hit, float tHit, vec3 solidRgb, vec3 wat
       if (bent) {
         float th;
         vec3 col;
+        gRefractT = tW + REFRACT_MAX;
         if (traceShade(To, T, REFRACT_MAX, REFRACT_ITERS, tW, false, th, col)) {
           depth = th;
           behind = col;
+          gRefractT = tW + th;
         }
       } else if (hit) {
         depth = max(tHit - tW, 0.0);
@@ -1615,7 +1603,13 @@ void main() {
 #ifdef ENHANCED
   if (uSunLighting != 0 && uDebug != 4) waterLit = enhancedLight(o + d * gWaterT, gWaterExit ? -d : wn, wl, 1.0);
   if (enhancedWaterOn) {
+    gRefractT = -1.0;
     fragColor = enhancedWater(o, d, hit, tHit, solidRgb, waterAlbedo, waterLit, wn);
+    if (gRefractT >= 0.0) {
+      // Depth of what the bent ray found, not of what the straight ray would have.
+      vec4 clip = uProj * (uView * vec4(nearP + d * gRefractT, 1.0));
+      gl_FragDepth = min(clip.z / clip.w * 0.5 + 0.5, 1.0);
+    }
     return;
   }
 #endif

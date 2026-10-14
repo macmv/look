@@ -139,6 +139,9 @@ public final class VoxelRenderer {
     }
     RenderStats.endGpu();
 
+    // Entities, particles and the outline draw after this and are refracted to match the water above.
+    if (frame.atmosphere() != null && ShadowPass.active()) EntityRefraction.begin(frame);
+
     GL33C.glActiveTexture(prevUnit);
     RenderStats.endVoxelFrame();
   }
@@ -338,10 +341,7 @@ public final class VoxelRenderer {
 
   static int compile(int type, String name, String defines) {
     int shader = GL33C.glCreateShader(type);
-    String source = readShader(name);
-    // `#include "file"` lines are pasted in, so Enhanced code can live in its own files.
-    var inc = java.util.regex.Pattern.compile("(?m)^#include \"([^\"]+)\"[ \\t]*$").matcher(source);
-    source = inc.replaceAll(m -> java.util.regex.Matcher.quoteReplacement(readShader(m.group(1))));
+    String source = resolveIncludes(readShader(name));
     if (!defines.isEmpty()) {
       // #version has to stay the first line.
       int eol = source.indexOf('\n') + 1;
@@ -353,6 +353,13 @@ public final class VoxelRenderer {
       throw new IllegalStateException("Failed to compile " + name + ": " + GL33C.glGetShaderInfoLog(shader));
     }
     return shader;
+  }
+
+  private static final java.util.regex.Pattern INCLUDE = java.util.regex.Pattern.compile("(?m)^#include \"([^\"]+)\"[ \\t]*$");
+
+  /** Pastes in the {@code #include "file"} lines, so Enhanced code can live in its own files. */
+  static String resolveIncludes(String source) {
+    return INCLUDE.matcher(source).replaceAll(m -> java.util.regex.Matcher.quoteReplacement(resolveIncludes(readShader(m.group(1)))));
   }
 
   static String readShader(String name) {

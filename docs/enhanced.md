@@ -319,6 +319,19 @@ top as a normal perturbation only.
 - **Refraction.** Bend the transmitted ray at the water surface with Snell's law using the perturbed
   normal, and continue `trace` from the surface into the water to find what is seen below. Real
   refraction, no screen-space approximation, works at screen edges.
+- **Entities, particles and the block outline** are triangles vanilla draws after the raycast pass, so
+  the ray bending above cannot reach them. `EntityRefraction` patches the vertex stage of vanilla's
+  core shaders as they load (`ProgramMixin`), so every vertex goes through `look_eye` in
+  `entity_refract.glsl`: it finds the point on the surface where the camera's ray bends onto the
+  vertex (a bisection on Snell's law for the flat surface, then a few corrections for the wave
+  normal, `water_waves.glsl` being shared with `voxel.fsh`) and puts the vertex on the camera's ray
+  through that point, at the length of the bent path. The raycast pass writes that same length as
+  the depth of refracted pixels (`gRefractT`), so the two sort correctly. The surface height comes
+  from a 128 x 128 window of columns around the camera, rebuilt from the client level
+  (`EntityRefraction.rebuild`); water under a roof is not seen. Only a camera above the surface
+  looking at things below it is handled. It is on only between the raycast pass and the end of level
+  rendering, so the hand and the GUI draw as vanilla does. Large triangles are warped as flat
+  triangles between their warped corners.
 - **Absorption.** Beer-Lambert along the underwater segment length, with per-channel coefficients so
   deep water goes blue-green. Replaces the fixed alpha that vanilla (and Vanilla mode) uses.
 - **Water color.** The biome water color from `TintMap` sets the scattering color so swamps are murky

@@ -13,6 +13,8 @@
     "LiquidBlockRendererMixin",
     "MinecraftMixin",
     "OptionsSubScreenAccessor",
+    "ProgramMixin",
+    "ShaderInstanceMixin",
     "WeightedBakedModelAccessor"
   ],
   "injectors": {
