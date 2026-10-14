@@ -5,11 +5,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/minecraft-1.21.1-62b47a" alt="Minecraft 1.21.1">
-  <img src="https://img.shields.io/badge/loader-Fabric-dbd0b4" alt="Fabric">
-</p>
-
-<p align="center">
   <img src="docs/splash.png" alt="Forested hills at sunset, with terrain stretching to the horizon">
 </p>
 
