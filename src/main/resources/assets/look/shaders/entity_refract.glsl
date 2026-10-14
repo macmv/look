@@ -29,11 +29,13 @@ uniform float LookPixelAngle;     // uPixelAngle of voxel.fsh
 out vec3 look_pos;      // where the vertex really is, relative to the block the camera is in
 out float look_depth;   // blocks of water the bent path runs through, 0 if the vertex is not refracted
 out float look_sky;     // sky light of the vertex, 0..1
+out float look_cos;     // cosine of the angle the camera ray meets the water surface at, 1 when not refracted
 
 void look_init() {
   look_pos = vec3(0.0);
   look_depth = 0.0;
   look_sky = 1.0;
+  look_cos = 1.0;
 }
 
 const int LOOK_SIZE = 128;         // EntityRefraction.SIZE
@@ -108,6 +110,7 @@ vec3 look_refract(vec3 e) {
 
   vec3 Pv = vec3(P.x, hs - cy, P.y);
   look_depth = length(e - Pv);
+  look_cos = a * inversesqrt(x * x + a * a);
   return normalize(Pv) * (length(Pv) + look_depth);
 }
 
