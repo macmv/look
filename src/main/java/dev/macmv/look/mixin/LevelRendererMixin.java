@@ -16,6 +16,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(LevelRenderer.class)
 public abstract class LevelRendererMixin {
@@ -33,6 +34,18 @@ public abstract class LevelRendererMixin {
   private void look$blockChanged(
       BlockGetter level, BlockPos pos, BlockState oldState, BlockState newState, int flags, CallbackInfo ci) {
     WorldSource.INSTANCE.blockChanged(pos.getX() >> 4, pos.getY() >> 4, pos.getZ() >> 4);
+  }
+
+  /** HACK for perf testing: never build vanilla section meshes while the raycaster is on. */
+  @Inject(method = "compileSections", at = @At("HEAD"), cancellable = true)
+  private void look$noMeshing(CallbackInfo ci) {
+    if (LookState.voxelEnabled) ci.cancel();
+  }
+
+  /** The "loading terrain" screen waits on the player's section being compiled, which never happens now. */
+  @Inject(method = "isSectionCompiled", at = @At("HEAD"), cancellable = true)
+  private void look$sectionCompiled(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
+    if (LookState.voxelEnabled) cir.setReturnValue(true);
   }
 
   /** Enhanced final post: after the translucent layer, particles and weather, before the GUI. */
