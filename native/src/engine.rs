@@ -23,7 +23,7 @@ use std::{
 
 use crate::{
   forest::TreeCache,
-  terrain::{Ids, Terrain, Tile, TileKind, BRICK_VOXELS, HF_BYTES},
+  terrain::{CornerCache, Ids, Terrain, Tile, TileKind, BRICK_VOXELS, HF_BYTES},
 };
 
 /// Keys pack a tile like `SectionKey.java` does: level in bits 60..62, x in
@@ -84,6 +84,9 @@ struct Queue {
   /// Keys that are queued or being computed, so a tile is never requested
   /// twice.
   pending: HashSet<u64>,
+  /// Heightfield tiles a worker is computing or has taken for its batch (see
+  /// `take_batch`). Their entries in the heap are stale and skipped.
+  claimed: HashSet<u64>,
 }
 
 struct Shared {
@@ -140,6 +143,12 @@ fn tree_levels(kind: TileKind) -> u32 {
 }
 
 pub const HF_TREE_LEVEL: u32 = 3;
+
+/// Heightfield tiles are computed in aligned groups of this many tiles on a
+/// side: a worker that takes one also takes the group's other queued tiles and
+/// samples them with one corner cache, so the corners along their shared
+/// borders are computed once.
+const HF_BATCH_TILES: i32 = 4;
 
 const SORT_DISTANCE: i64 = 32;
 const EVICT_INTERVAL: Duration = Duration::from_secs(2);
@@ -322,44 +331,81 @@ impl Drop for Engine {
   }
 }
 
+/// Takes the other queued heightfield tiles of `key`'s group (see
+/// `HF_BATCH_TILES`), claiming them so no other worker computes them. Returns
+/// all of the group's tiles to compute, `key` first. Call with `key` popped
+/// and the queue locked.
+fn take_batch(shared: &Shared, q: &mut Queue, key: u64) -> Vec<u64> {
+  let mut batch = vec![key];
+  q.claimed.insert(key);
+  if key & HF_FLAG == 0 {
+    return batch;
+  }
+
+  let (level, sx, sz) = unpack_key(key & !HF_FLAG);
+  let (gx, gz) = (
+    sx.div_euclid(HF_BATCH_TILES) * HF_BATCH_TILES,
+    sz.div_euclid(HF_BATCH_TILES) * HF_BATCH_TILES,
+  );
+  for z in gz..gz + HF_BATCH_TILES {
+    for x in gx..gx + HF_BATCH_TILES {
+      let k = pack_key(level, x, z) | HF_FLAG;
+      if k != key && q.pending.contains(&k) && !q.claimed.contains(&k) && shared.wanted(k, 0) {
+        q.claimed.insert(k);
+        batch.push(k);
+      }
+    }
+  }
+  batch
+}
+
 fn worker(shared: Arc<Shared>) {
   let mut scratch = shared.terrain.scratch();
   loop {
-    let job = {
+    let batch = {
       let mut q = shared.queue.lock().unwrap();
       loop {
         if shared.shutdown.load(Ordering::SeqCst) {
           return;
         }
         if let Some(job) = q.heap.pop() {
-          break job;
+          // Stale: a batch took it, or it was finished or dropped meanwhile.
+          if !q.pending.contains(&job.key) || q.claimed.contains(&job.key) {
+            continue;
+          }
+          // Out of range by now: skip it. If it comes back into range the Java
+          // side asks again.
+          if !shared.wanted(job.key, 0) {
+            q.pending.remove(&job.key);
+            continue;
+          }
+          break take_batch(&shared, &mut q, job.key);
         }
         q = shared.wake.wait(q).unwrap();
       }
     };
 
-    // Out of range by now: skip it. If it comes back into range the Java side
-    // asks again.
-    if !shared.wanted(job.key, 0) {
-      shared.queue.lock().unwrap().pending.remove(&job.key);
-      continue;
+    let mut cache = CornerCache::default();
+    for key in batch {
+      let (level, sx, sz) = unpack_key(key);
+      let tile = catch_unwind(AssertUnwindSafe(|| {
+        let kind = if key & HF_FLAG != 0 { TileKind::Heightfield } else { TileKind::Voxel };
+        let trees = (level <= tree_levels(kind)).then_some(&shared.trees);
+        shared.terrain.sample_tile_in(&mut scratch, &mut cache, level, sx, sz, kind, trees)
+      }))
+      .unwrap_or_else(|_| {
+        // The memos may be half updated; start clean.
+        scratch = shared.terrain.scratch();
+        cache = CornerCache::default();
+        Tile::empty()
+      });
+
+      shared.tiles.lock().unwrap().insert(key, Arc::new(tile));
+      shared.completed.fetch_add(1, Ordering::Relaxed);
+      shared.done.lock().unwrap().push(key);
+      let mut q = shared.queue.lock().unwrap();
+      q.pending.remove(&key);
+      q.claimed.remove(&key);
     }
-
-    let (level, sx, sz) = unpack_key(job.key);
-    let tile = catch_unwind(AssertUnwindSafe(|| {
-      let kind = if job.key & HF_FLAG != 0 { TileKind::Heightfield } else { TileKind::Voxel };
-      let trees = (level <= tree_levels(kind)).then_some(&shared.trees);
-      shared.terrain.sample_tile_with(&mut scratch, level, sx, sz, kind, trees)
-    }))
-    .unwrap_or_else(|_| {
-      // The memo may be half updated; start clean.
-      scratch = shared.terrain.scratch();
-      Tile::empty()
-    });
-
-    shared.tiles.lock().unwrap().insert(job.key, Arc::new(tile));
-    shared.completed.fetch_add(1, Ordering::Relaxed);
-    shared.done.lock().unwrap().push(job.key);
-    shared.queue.lock().unwrap().pending.remove(&job.key);
   }
 }

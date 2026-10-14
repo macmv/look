@@ -804,8 +804,23 @@ impl Terrain {
     kind: TileKind,
     trees: Option<&TreeCache>,
   ) -> Tile {
+    self.sample_tile_in(s, &mut CornerCache::default(), level, sx, sz, kind, trees)
+  }
+
+  /// Like `sample_tile_with`, memoizing corner densities in `cache`. Tiles of
+  /// the same level that touch share the corners along their border, so
+  /// sampling them one after another with one cache computes those once.
+  pub(crate) fn sample_tile_in(
+    &self,
+    s: &mut Scratch,
+    cache: &mut CornerCache,
+    level: u32,
+    sx: i32,
+    sz: i32,
+    kind: TileKind,
+    trees: Option<&TreeCache>,
+  ) -> Tile {
     let mut tile = Tile::empty();
-    let mut cache = CornerCache::default();
     let mut steep_biome = [false; 256];
     let size = 1i64 << level;
     let half = size >> 1;
@@ -818,7 +833,7 @@ impl Terrain {
         let bx = (x0 + x as i64 * size + half) as i32;
         let bz = (z0 + z as i64 * size + half) as i32;
         let min_gap = if kind == TileKind::Voxel { MIN_GAP.max(size as i32) } else { 0 };
-        let Some((top, gap)) = self.surface_profile_cached(s, &mut cache, bx, bz, min_gap) else {
+        let Some((top, gap)) = self.surface_profile_cached(s, cache, bx, bz, min_gap) else {
           continue;
         };
 
