@@ -71,7 +71,8 @@ const int FACE_ROW_TEXELS = 24;  // BlockClassifier.ID_FLOATS / 4: texels in one
 const int META_START = (8192 + 1024) * FACE_ROW_TEXELS;  // BlockClassifier.META_START / 4
 const int HF_FINER = 2;          // HeightField.FINER_SHIFT: texels are 2^(level - 2) blocks wide
 const int HF_TREE = 8;           // terrain.rs HF_TREE: a column that is a tree, colored by its texel
-const int HF_NONE = -32768;      // HeightField.NONE
+const int HF_NONE = -32768;      // HeightField.NONE: tile max of a tile that has not arrived
+const int HF_BLANK = -32767;     // HeightField.BLANK: tile max of a tile that arrived with no terrain
 const int HF_WINDOW = 128;       // HeightField.WINDOW_TILES
 const int HF_SUPER_SHIFT = 3;      // HeightField.SUPER: tiles per super cell, as a shift
 const int HF_SUPER_CELLS = 16;     // HeightField.SUPER_CELLS
@@ -584,6 +585,15 @@ bool hfSample(vec2 pxz, int layer, int sh, float yr, vec3 d, float tt, out vec3 
 // With a `tEnd` this stands in for voxel sections that are not resolved yet: the ray starts at `t`
 // inside one (entering through the `axis0` face), only hits up to `tEnd` count, and it reads the first
 // heightfield level, which also covers the area under the voxel levels.
+// Tile maximum of the tile of `layer` that the position `rel` (relative to the camera block) is in.
+int hfTileMaxAt(vec2 relXz, int lvl) {
+  int sh = lvl - HF_FINER;
+  ivec2 camCell = uCamBlock.xz >> sh;
+  vec2 camRem = vec2(uCamBlock.xz & ((1 << sh) - 1));
+  ivec2 c = ivec2(floor((relXz + camRem) / float(1 << sh)));
+  return texelFetch(uHfTiles, ivec3(((camCell + c) >> 4) & (HF_WINDOW - 1), lvl - uLevels), 0).r;
+}
+
 bool traceHeightfield(vec3 o, vec3 d, float t, float tEnd, int axis0, out float tHit, out uint hitId, out int hitAxis, out ivec3 hitVoxel, out int hitLevel, out vec3 albedo, inout int steps, out vec3 hitNormal, out int hitKind) {
   vec3 invD = 1.0 / d;
   float y0 = float(uCamBlock.y) + o.y;   // ray height at t = 0, in blocks
@@ -616,6 +626,12 @@ bool traceHeightfield(vec3 o, vec3 d, float t, float tEnd, int axis0, out float 
 
     int lvl = max(levelAt(rel), uLevels);
     if (lvl < last && h >= uBase * float(1 << lvl) - 16.0 * float(1 << (lvl - HF_FINER))) lvl++;
+    // A finer level whose tile has not arrived yet (the camera just moved into its range) lets the
+    // coarser level, which still holds the terrain, draw instead of leaving a hole.
+    for (int k = 0; k < HF_LEVELS - 1; k++) {
+      if (lvl >= last || hfTileMaxAt(rel.xz, lvl) != HF_NONE) break;
+      lvl++;
+    }
     int layer = lvl - uLevels;
     int sh = lvl - HF_FINER;                 // a texel is 1 << sh blocks wide
     float T = float(1 << sh);
@@ -656,6 +672,7 @@ bool traceHeightfield(vec3 o, vec3 d, float t, float tEnd, int axis0, out float 
       }
     }
     int tmax = texelFetch(uHfTiles, ivec3(tile & (HF_WINDOW - 1), layer), 0).r;
+    if (tmax <= HF_BLANK) tmax = HF_NONE;
     // Water texels hold their seabed, but the sea fills them up to its level.
     if (tmax != HF_NONE) tmax = max(tmax, int(uSeaLevel));
     if (tmax != HF_NONE && lvl < last) {

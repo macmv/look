@@ -455,7 +455,7 @@ final class TestScene implements AutoCloseable {
             if (h > max) max = h;
           }
         }
-        maxes.putShort(((t[1] & (tiles - 1)) * tiles + (t[0] & (tiles - 1))) * 2, max);
+        maxes.putShort(((t[1] & (tiles - 1)) * tiles + (t[0] & (tiles - 1))) * 2, max == HeightField.NONE ? HeightField.BLANK : max);
       }
 
       GL33C.glPixelStorei(GL33C.GL_UNPACK_ALIGNMENT, 1);

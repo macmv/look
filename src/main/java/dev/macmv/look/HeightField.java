@@ -24,8 +24,9 @@ import org.lwjgl.opengl.GL33C;
  * with a flag that makes the engine forget them once taken.
  *
  * <p>A cell of the window holds whichever tile was uploaded to it last. When the camera moves, the
- * cell's tile changes and the old one is stale, so its maximum is set to {@link #NONE} (the shader
- * skips it) until the new one arrives.
+ * cell's tile changes and the old one is stale, so its maximum is set to {@link #NONE} until the new
+ * one arrives. The shader draws a position from the coarser level while the finer level's tile there
+ * is NONE (not here yet), so terrain stays on screen at lower resolution instead of vanishing.
  */
 public final class HeightField {
   public static final int TILE = 16;
@@ -45,6 +46,11 @@ public final class HeightField {
 
   /** Height of a texel, or the maximum of a tile, that has no terrain (and is skipped). */
   public static final short NONE = Short.MIN_VALUE;
+  /**
+   * Tile maximum of a tile that arrived and has no terrain. Rays skip it like NONE, but the shader can
+   * tell it from a tile that is still missing, where it falls back to the coarser level.
+   */
+  public static final short BLANK = Short.MIN_VALUE + 1;
 
   /** Cells of a level's window looked at per frame. A whole level takes a dozen frames. */
   private static final int SCAN_PER_LEVEL = 1280;
@@ -122,7 +128,7 @@ public final class HeightField {
         if (s == TileCell.REQUESTED && requested[cell] == NO_KEY) bad.add("cell " + cell + " is REQUESTED but asked for nothing");
         if (resident[cell] != NO_KEY) held++;
         boolean visible = gpu[cell] != NONE;
-        if (visible != (s == TileCell.SHOWN)) bad.add("cell " + cell + " is " + s + " but the GPU maximum is " + gpu[cell]);
+        if (visible != (s == TileCell.SHOWN || s == TileCell.BLANK)) bad.add("cell " + cell + " is " + s + " but the GPU maximum is " + gpu[cell]);
       }
       if (held != residentCount[level]) bad.add("holds " + held + " tiles but counted " + residentCount[level]);
       return bad;
@@ -244,7 +250,7 @@ public final class HeightField {
                 if (h != NONE && (h < -64 || h > 400)) junk = true;
               }
             }
-            if (gpuMax != NONE && gpuMax != texMax) {
+            if (gpuMax != NONE && gpuMax != (texMax == NONE ? BLANK : texMax)) {
               if (maxMismatch++ < 3) {
                 bad.add(String.format("far level %d cell (%d,%d) %s key %s: tile max %d but texels max %d",
                     lv, cx, cz, l.state[cell], keyText(l.resident[cell]), gpuMax, texMax));
@@ -350,7 +356,7 @@ public final class HeightField {
         if (l.resident[cell] == key) continue;
 
         // What the cell holds is another tile's: keep rays out of it until the right one arrives.
-        if (l.state[cell] == TileCell.SHOWN) {
+        if (l.state[cell] == TileCell.SHOWN || l.state[cell] == TileCell.BLANK) {
           // An upload of the old tile may still be queued; it would show the cell after the hide.
           final int hidden = cell;
           uploads.removeIf(u -> u.level == level && u.cellZ * WINDOW_TILES + u.cellX == hidden);
@@ -395,13 +401,15 @@ public final class HeightField {
       short h = take.getShort(t * 2);
       if (h > max) max = h;
     }
+    boolean blank = max == NONE;
+    if (blank) max = BLANK;
     byte[] data = new byte[TILE * TILE * 6];
     take.get(0, data);
     uploads.add(new Upload(i, Math.floorMod(sx, WINDOW_TILES), Math.floorMod(sz, WINDOW_TILES), data, max));
 
     if (l.resident[cell] == NO_KEY) residentCount[i]++;
     l.resident[cell] = pack(sx, sz);
-    l.move(cell, max != NONE ? TileCell.SHOWN : TileCell.BLANK);
+    l.move(cell, blank ? TileCell.BLANK : TileCell.SHOWN);
   }
 
   private static long pack(int sx, int sz) {

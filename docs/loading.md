@@ -78,8 +78,10 @@ texels, and the GPU shows them only in SHOWN.
     SHOWN | BLANK | STALE --duplicate or late arrival--> SHOWN | BLANK
     any --reset--> EMPTY
 
-- BLANK is a tile with no terrain (open sky or void); rays skip it, same as a hidden cell.
-- Entering STALE from SHOWN queues a hide, and the hide must reach the GPU before any upload of the
+- BLANK is a tile with no terrain (open sky or void); rays skip it. Its tile maximum is `BLANK`, not
+  `NONE`: a `NONE` tile is one that has not arrived, and there the shader falls back to the coarser
+  level (which keeps its tiles inside the finer level's range) until the finer tile lands.
+- Entering STALE from SHOWN or BLANK queues a hide, and the hide must reach the GPU before any upload of the
   old tile does. This is the one place the code already orders GPU writes by state.
 - `HeightField.Level.move` is the only way a cell changes state. An illegal edge is counted, not fatal.
 - Cells are scanned a few per frame (a whole level takes about a dozen), and each request goes to
