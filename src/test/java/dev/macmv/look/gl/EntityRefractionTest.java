@@ -260,6 +260,56 @@ class EntityRefractionTest {
     assertTrue(patched >= 30, "only " + patched + " vanilla shaders were patched");
   }
 
+  /** Every vanilla core fragment shader that gets patched still compiles, with the vertex stage's outputs. */
+  @Test
+  void patchedVanillaFragmentShadersCompile() throws Exception {
+    var jar = new java.util.zip.ZipFile(new java.io.File(
+        net.minecraft.client.renderer.ShaderInstance.class.getProtectionDomain().getCodeSource().getLocation().toURI()));
+    int patched = 0;
+    for (var entries = jar.entries(); entries.hasMoreElements(); ) {
+      String path = entries.nextElement().getName();
+      if (!path.startsWith("assets/minecraft/shaders/core/") || !path.endsWith(".fsh")) continue;
+      String name = path.substring(path.lastIndexOf('/') + 1, path.length() - 4);
+      String source = new String(jar.getInputStream(jar.getEntry(path)).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+      String vsource = new String(jar.getInputStream(jar.getEntry(path.replace(".fsh", ".vsh"))).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+
+      String vs = EntityRefraction.patch(com.mojang.blaze3d.shaders.Program.Type.VERTEX, name, vsource);
+      String fs = EntityRefraction.patch(com.mojang.blaze3d.shaders.Program.Type.FRAGMENT, name, source);
+      if (fs.equals(source)) continue;
+      patched++;
+      assertTrue(fs.contains("look_shade"), name);
+
+      int v = compileVanilla(jar, GL33C.GL_VERTEX_SHADER, vs, name);
+      int f = compileVanilla(jar, GL33C.GL_FRAGMENT_SHADER, fs, name);
+      int prog = GL33C.glCreateProgram();
+      GL33C.glAttachShader(prog, v);
+      GL33C.glAttachShader(prog, f);
+      GL33C.glLinkProgram(prog);
+      assertTrue(GL33C.glGetProgrami(prog, GL33C.GL_LINK_STATUS) != 0, name + ": " + GL33C.glGetProgramInfoLog(prog));
+      GL33C.glDeleteProgram(prog);
+    }
+    jar.close();
+    assertTrue(patched >= 15, "only " + patched + " vanilla fragment shaders were patched");
+  }
+
+  private static int compileVanilla(java.util.zip.ZipFile jar, int type, String source, String name) {
+    var imports = java.util.regex.Pattern.compile("(?m)^#moj_import <([^>]+)>").matcher(source);
+    source = imports.replaceAll(m -> {
+      try {
+        var e = jar.getEntry("assets/minecraft/shaders/include/" + m.group(1));
+        String text = new String(jar.getInputStream(e).readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        return java.util.regex.Matcher.quoteReplacement(text.replaceAll("(?m)^#version.*$", ""));
+      } catch (java.io.IOException ex) {
+        throw new java.io.UncheckedIOException(ex);
+      }
+    });
+    int sh = GL33C.glCreateShader(type);
+    GL33C.glShaderSource(sh, source);
+    GL33C.glCompileShader(sh);
+    assertTrue(GL33C.glGetShaderi(sh, GL33C.GL_COMPILE_STATUS) != 0, name + ": " + GL33C.glGetShaderInfoLog(sh));
+    return sh;
+  }
+
   /** Above the surface, and with no water in the column, nothing moves. */
   @Test
   void untouchedOutsideTheWater() {

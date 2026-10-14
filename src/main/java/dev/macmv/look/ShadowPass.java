@@ -2,6 +2,7 @@ package dev.macmv.look;
 
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
+import java.util.function.ToIntFunction;
 import org.lwjgl.opengl.GL33C;
 
 /**
@@ -40,6 +41,10 @@ public final class ShadowPass {
   private static final float[] half = {48f, 256f};
   private static final int[] size = {512, 1024};
 
+  /** Share of a vanilla lit color that is direct light, for things vanilla shades (see {@link #setEntityUniforms}). */
+  private static final float SUN_SHARE = 0.5f;
+  private static final float MOON_SHARE = 0.12f;
+
   /** The light is never lower than this (y component), so the rays do not run along the ground. */
   private static final float MIN_ELEVATION = 0.06f;
   /** Rays start this many half widths from the center, toward the light. */
@@ -56,6 +61,8 @@ public final class ShadowPass {
   private static final float[] up = new float[3];
   private static final float[] center = new float[6];
   private static final float[] ray = new float[2];
+  private static float strength;
+  private static float daylight;
 
   // Timing, same scheme as RenderStats.
   private static final int RING = 4;
@@ -99,6 +106,9 @@ public final class ShadowPass {
 
     float[] light = atm.sunDir()[1] >= 0f ? atm.sunDir() : atm.moonDir();
     lightBasis(light);
+    float weather = (1f - 0.85f * atm.rain()) * (1f - 0.5f * atm.thunder());
+    strength = (atm.sunDir()[1] >= 0f ? SUN_SHARE * smoothstep(0f, 0.15f, atm.sunDir()[1]) : MOON_SHARE * smoothstep(0f, 0.15f, atm.moonDir()[1])) * weather;
+    daylight = smoothstep(-0.1f, 0.25f, atm.sunDir()[1]) * (1f - 0.5f * atm.rain());
 
     if (fbo == 0) fbo = GlStateManager.glGenFramebuffers();
     for (int c = 0; c < 2; c++) allocate(c);
@@ -172,14 +182,35 @@ public final class ShadowPass {
     GL33C.glUniform1i(p.loc("uShadowMap1"), UNIT_FAR);
   }
 
+  /**
+   * Sets the shadow uniforms of a patched vanilla program (entity_shade.glsl) whose uniform locations
+   * come from {@code loc}. The maps are still bound to their units from the raycast pass.
+   */
+  static void setEntityUniforms(ToIntFunction<String> loc) {
+    setLightUniforms(loc);
+    GL33C.glUniform1i(loc.applyAsInt("uShadowMap0"), UNIT_NEAR);
+    GL33C.glUniform1i(loc.applyAsInt("uShadowMap1"), UNIT_FAR);
+    GL33C.glUniform1f(loc.applyAsInt("LookShadowStrength"), strength);
+    GL33C.glUniform1f(loc.applyAsInt("LookWaterLight"), 0.06f + 0.6f * daylight);
+  }
+
+  private static float smoothstep(float a, float b, float x) {
+    float t = Math.min(Math.max((x - a) / (b - a), 0f), 1f);
+    return t * t * (3f - 2f * t);
+  }
+
   private static void setLightUniforms(VoxelRenderer.Program p) {
-    GL33C.glUniform3f(p.loc("uShadowDir"), dir[0], dir[1], dir[2]);
-    GL33C.glUniform3f(p.loc("uShadowRight"), right[0], right[1], right[2]);
-    GL33C.glUniform3f(p.loc("uShadowUp"), up[0], up[1], up[2]);
-    GL33C.glUniform3fv(p.loc("uShadowCenter"), center);
-    GL33C.glUniform1fv(p.loc("uShadowHalf"), half);
-    GL33C.glUniform1fv(p.loc("uShadowRay"), ray);
-    GL33C.glUniform1fv(p.loc("uShadowTexels"), new float[] {size[0], size[1]});
+    setLightUniforms(p::loc);
+  }
+
+  private static void setLightUniforms(ToIntFunction<String> loc) {
+    GL33C.glUniform3f(loc.applyAsInt("uShadowDir"), dir[0], dir[1], dir[2]);
+    GL33C.glUniform3f(loc.applyAsInt("uShadowRight"), right[0], right[1], right[2]);
+    GL33C.glUniform3f(loc.applyAsInt("uShadowUp"), up[0], up[1], up[2]);
+    GL33C.glUniform3fv(loc.applyAsInt("uShadowCenter"), center);
+    GL33C.glUniform1fv(loc.applyAsInt("uShadowHalf"), half);
+    GL33C.glUniform1fv(loc.applyAsInt("uShadowRay"), ray);
+    GL33C.glUniform1fv(loc.applyAsInt("uShadowTexels"), new float[] {size[0], size[1]});
   }
 
   /** Unit light direction (kept above the horizon) and the map's right and up axes. */

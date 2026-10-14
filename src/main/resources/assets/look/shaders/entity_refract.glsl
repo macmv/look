@@ -12,7 +12,8 @@
 // shader refracts with a flat surface. The surface is flat, with the waves only tilting its normal
 // (water_waves.glsl), exactly as in voxel.fsh.
 
-uniform int LookOn;               // 0 outside the world pass: nothing moves
+uniform int LookOn;               // 0 outside the world pass, or with refraction off: nothing moves
+uniform int LookShadow;           // 1 in the world pass: look_pos is filled in for entity_shade.glsl
 uniform mat3 LookView;            // camera rotation: camera-relative world to eye space
 uniform ivec3 LookCamBlock;       // block the camera is in
 uniform vec3 LookCamFrac;         // camera position inside that block
@@ -23,6 +24,17 @@ uniform float LookTime;           // uTime of voxel.fsh
 uniform float LookPixelAngle;     // uPixelAngle of voxel.fsh
 
 #include "water_waves.glsl"
+
+// To the fragment stage (entity_shade.glsl).
+out vec3 look_pos;      // where the vertex really is, relative to the block the camera is in
+out float look_depth;   // blocks of water the bent path runs through, 0 if the vertex is not refracted
+out float look_sky;     // sky light of the vertex, 0..1
+
+void look_init() {
+  look_pos = vec3(0.0);
+  look_depth = 0.0;
+  look_sky = 1.0;
+}
 
 const int LOOK_SIZE = 128;         // EntityRefraction.SIZE
 const float LOOK_NO_WATER = -1.0e4;
@@ -95,13 +107,17 @@ vec3 look_refract(vec3 e) {
   if (look_surface(look_column(P)) < 0.5 * LOOK_NO_WATER) return e;
 
   vec3 Pv = vec3(P.x, hs - cy, P.y);
-  return normalize(Pv) * (length(Pv) + length(e - Pv));
+  look_depth = length(e - Pv);
+  return normalize(Pv) * (length(Pv) + look_depth);
 }
 
 // Vanilla's eye space position of `pos`, moved to where the water shows it.
 vec4 look_eye(mat4 mv, vec3 pos) {
   vec4 eye = mv * vec4(pos, 1.0);
+  if (LookOn == 0 && LookShadow == 0) return eye;
+  vec3 rel = transpose(LookView) * eye.xyz;
+  look_pos = LookCamFrac + rel;
   if (LookOn == 0) return eye;
-  eye.xyz = LookView * look_refract(transpose(LookView) * eye.xyz);
+  eye.xyz = LookView * look_refract(rel);
   return eye;
 }
