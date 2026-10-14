@@ -121,7 +121,8 @@ fn buffer_ptr<T>(
 }
 
 /// Builds the generator from the exported world config and starts its worker
-/// threads (`threads <= 0` picks a default that leaves two cores for the game).
+/// threads (`threads <= 0` picks a default of half of the hardware
+/// threads, so the render and server threads keep the rest).
 /// Returns a handle.
 #[no_mangle]
 pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCreate<'l>(
@@ -138,7 +139,7 @@ pub extern "system" fn Java_dev_macmv_look_NativeLib_terrainCreate<'l>(
     let threads = if threads > 0 {
       threads as usize
     } else {
-      std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(2).max(1)
+      (std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) / 2).max(1)
     };
     Ok(Box::into_raw(Box::new(Engine::new(terrain, want_sections, threads))) as jlong)
   })
