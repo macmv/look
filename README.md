@@ -1,31 +1,43 @@
-# look
+<h1 align="center">Look</h1>
 
-Fabric mod for Minecraft 1.21.1 that replaces the chunk renderer with a voxel raycaster.
-One fullscreen triangle, raycast in the fragment shader, depth written so vanilla entities,
-block entities, particles, clouds and weather draw on top.
+<p align="center">
+  A voxel raycasting renderer for Minecraft 1.21.1 (Fabric).
+</p>
 
-## Layout
+<p align="center">
+  <img src="https://img.shields.io/badge/minecraft-1.21.1-62b47a" alt="Minecraft 1.21.1">
+  <img src="https://img.shields.io/badge/loader-Fabric-dbd0b4" alt="Fabric">
+</p>
 
-- `src/main/java/dev/macmv/look/mixin/LevelRendererMixin.java` -- cancels the opaque section layers
-- `src/main/java/dev/macmv/look/VoxelRenderer.java` -- the fullscreen pass (GL via LWJGL)
-- `src/main/resources/assets/look/shaders/` -- raycast shaders (currently a debug plane at y=64)
-- `src/main/java/dev/macmv/look/NativeLib.java` -- JNI bindings, extracts the bundled library
-- `native/` -- Rust crate (voxel brick / occupancy building). `cargo test` works standalone.
-- `src/main/java/dev/macmv/look/HeightField.java` -- far terrain (past the voxel levels) as a ray-marched
-  heightfield, fed by tiles from the native terrain engine
+<p align="center">
+  <img src="docs/splash.png" alt="Forested hills at sunset, with terrain stretching to the horizon">
+</p>
+
+## Why
+
+- **No meshes.** Terrain is raycast on the GPU straight from voxel data, so there are no chunk
+  meshes to build, upload, or rebuild. Moving fast and flying don't hitch.
+- **Real terrain, not a fake horizon.** Distant Horizons-style mods bake low-detail meshes of
+  chunks the game already generated. Look instead regenerates terrain locally from the world seed,
+  so far terrain is accurate to the real world and nothing is saved to disk or pre-generated.
+- **Cheap distance.** Detail drops off in power-of-two steps with distance, so every ring of
+  terrain costs about the same. Reach doubles per level without costing more memory.
+- **Still Minecraft.** Entities, particles, clouds and weather draw normally on top, and a toggle
+  switches back to the vanilla renderer instantly.
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/far.png" alt="Far terrain with shaders" width="49%">
+  <img src="docs/far-no-shaders.png" alt="Far terrain without shaders" width="49%">
+</p>
+<p align="center"><i>The same view with a shader pack (left) and vanilla lighting (right).</i></p>
 
 ## Building
 
-Gradle must run on JDK 21 (Loom 1.11.x; newer Loom needs Java 25):
+```
+./gradlew build
+./gradlew runClient
+```
 
-    JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew build
-    JAVA_HOME=/usr/lib/jvm/java-21-openjdk ./gradlew runClient
-
-`cargoBuild` builds the host platform only; other platforms are a CI job.
-
-## Keys
-
-Rebindable in Options > Controls > Look:
-
-- F7: toggle voxel / vanilla renderer (vanilla meshes are always kept up to date, so it is instant)
-- F8: toggle step-count heatmap (timing stats are always on screen, in both renderers)
+Needs JDK 21 and a Rust toolchain. See `AGENTS.md` and `docs/` for internals.
