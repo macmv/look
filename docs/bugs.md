@@ -10,6 +10,8 @@
 - **Xaero's waypoints**: waypoints show up in random spots.
 - **Underwater block sides**: the sides of blocks seen under water are continuous stripes instead of
   the block texture.
+- **Grass in LOD'ed chunks**: tall and short grass is missing from the coarse levels. See "Plants
+  missing in coarse levels" below.
 
 ## Position-dependent tints (Regions Unexplored silver birch)
 
@@ -170,3 +172,33 @@ the water refraction setting off (`uWaterRefract`): if that fixes it, the bent r
 
 Fix options: scale `r` and `spread` by the refracted ray's actual footprint, raise `gTapCap` for the
 water rays, or cap `spread` to about one block so the taps stay inside one repeat.
+
+## Plants missing in coarse levels
+
+Grass, tall grass and other plants mostly disappear once a chunk is drawn at a coarse LOD. This is
+from reading the code; it has not been confirmed in game.
+
+Loaded chunks (`WorldSource` -> `LodReduce.reduce`):
+
+- Plants never win a coarse voxel (priority 0, skipped by `reduce`). They only show as a "cover":
+  the ground cube with the plant's sprite drawn over its up face (`BlockClassifier.coverId`).
+- That only works when the ground block and the plant fall in the same 2x2x2 sample group. When
+  the ground is the top layer of a group, the plant is in the bottom layer of the group above. That
+  group holds only the plant, so `best == 0`, `reduce` returns 0 and the plant is gone. Which
+  columns hit this depends on the height parity of the terrain, so roughly half of them do.
+- The cover is skipped when the winner is not a plain cube or is leaves, and it uses only the
+  first quad's sprite, so the upper half of tall grass never shows.
+
+Generated terrain (`SeedSource` -> native `forest.rs`):
+
+- A coarse voxel only gets a plant when at least half of its columns (`size * size / 2`) have one.
+  Grass is sparse, so that almost never holds.
+- In the heightfield levels the threshold is `size * size / 8` (`plant_need`). Grass thinner than
+  that is still dropped.
+
+Fix options:
+
+- Loaded chunks: when a group has a plant but no cube, carry the plant down and put the cover on
+  the ground in the group below (needs a vertical neighbor lookup in `WorldSource`).
+- Generated terrain: lower the thresholds, or tint/texture the ground voxel by plant density
+  instead of requiring coverage.
